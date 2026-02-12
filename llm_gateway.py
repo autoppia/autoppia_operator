@@ -49,7 +49,14 @@ class LLMGateway:
         api_key: Optional[str] = None,
         timeout_seconds: float = 30.0,
     ) -> None:
-        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
+        # Chutes-variant default: prefer CHUTES_BASE_URL when available so this
+        # branch consistently routes through the chutes provider in validator sandbox.
+        resolved_base_url = (
+            base_url
+            or os.getenv("CHUTES_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL", "https://llm.chutes.ai/v1")
+        )
+        self.base_url = str(resolved_base_url).rstrip("/")
         self.api_key = api_key  # If None, read from env per request.
         self.timeout_seconds = float(timeout_seconds)
 
