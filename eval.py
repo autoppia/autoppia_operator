@@ -113,6 +113,7 @@ async def run_evaluation(
     seed: int | None = None,
     repeat: int = 1,
     temperature: float = 0.2,
+    distinct_use_cases: bool = False,
 ):
     # Re-load .env here as a guard: some imported modules may mutate env vars.
     try:
@@ -142,13 +143,47 @@ async def run_evaluation(
     logger.info(f"  Repeat:     {int(repeat)}")
     logger.info("=" * 60)
 
-    # Load tasks
-    tasks = load_tasks(use_case=use_case, web_project_id=web_project_id, task_id=task_id, limit=num_tasks)
+    # Load tasks. If we want distinct use cases, load more upfront then filter down.
+    load_limit = num_tasks
+    if distinct_use_cases:
+        load_limit = max(500, num_tasks * 20)
+    tasks = load_tasks(use_case=use_case, web_project_id=web_project_id, task_id=task_id, limit=load_limit)
     logger.info(f"Loaded {len(tasks)} tasks")
 
     if not tasks:
         logger.error("No tasks found. Check task cache path and use_case filter.")
         return
+
+    if distinct_use_cases:
+        picked: list[Task] = []
+        seen: set[str] = set()
+        rest: list[Task] = []
+        for t in tasks:
+            uc_name = ""
+            uc = getattr(t, "use_case", None)
+            if isinstance(uc, dict):
+                uc_name = str(uc.get("name") or "")
+            elif uc is not None and hasattr(uc, "name"):
+                uc_name = str(getattr(uc, "name") or "")
+            if not uc_name:
+                rest.append(t)
+                continue
+            if uc_name in seen:
+                rest.append(t)
+                continue
+            seen.add(uc_name)
+            picked.append(t)
+            if len(picked) >= num_tasks:
+                break
+        if len(picked) < num_tasks:
+            for t in rest:
+                picked.append(t)
+                if len(picked) >= num_tasks:
+                    break
+        tasks = picked[:num_tasks]
+        logger.info(f"Selected {len(tasks)} tasks with distinct use cases")
+    else:
+        tasks = tasks[:num_tasks]
 
     # Agent endpoint config
     agent_base_url = os.getenv("AGENT_BASE_URL", "").strip().rstrip("/")
@@ -216,6 +251,18 @@ async def run_evaluation(
         server_proc = None
 
 
+
+
+    def _task_relevant_data(t: Task):
+        # In pydantic v2, extra fields may live in model_extra and not as attributes.
+        v = getattr(t, 'relevant_data', None)
+        if v is not None:
+            return v
+        extra = getattr(t, 'model_extra', None)
+        if isinstance(extra, dict):
+            return extra.get('relevant_data')
+        return None
+
     async def call_agent_act(prepared_task: Task, episode_task_id: str, snapshot_html: str, url: str, step_index: int, history: list[dict]) -> tuple[list[BaseAction], dict]:
         import aiohttp
 
@@ -226,7 +273,7 @@ async def run_evaluation(
             "snapshot_html": snapshot_html,
             "step_index": int(step_index),
             "web_project_id": prepared_task.web_project_id,
-            "relevant_data": prepared_task.relevant_data,
+            "relevant_data": _task_relevant_data(prepared_task),
             "history": history,
         }
         async with aiohttp.ClientSession() as session:
@@ -302,6 +349,7 @@ async def run_evaluation(
 
             try:
                 prepared_task = task
+                evaluator = None
                 # Unique id for the agent/gateway header to avoid leaking state across repeats.
                 episode_task_id = f"{prepared_task.id}-{seed_used}-{r}"
 
@@ -427,6 +475,12 @@ async def run_evaluation(
                     logger.info(f"  -> FAILED  (score={final_score:.2f}, steps={steps_count})")
 
             except Exception as e:
+                # Best-effort cleanup (errors can happen before we reach the normal close path).
+                try:
+                    if 'evaluator' in locals() and locals().get('evaluator') is not None:
+                        await locals()['evaluator'].close()
+                except Exception:
+                    pass
                 task_elapsed = time.time() - task_start
                 results["num_tasks"] += 1
                 results["errors"] += 1
@@ -548,6 +602,7 @@ def main():
     parser.add_argument("--seed", type=int, default=None, help="Fixed seed (otherwise random)")
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each selected task N times")
     parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
+    parser.add_argument("--distinct-use-cases", action="store_true", help="Pick tasks with distinct use cases")
     args = parser.parse_args()
 
     asyncio.run(
@@ -561,6 +616,7 @@ def main():
             seed=args.seed,
             repeat=args.repeat,
             temperature=args.temperature,
+            distinct_use_cases=bool(args.distinct_use_cases),
         )
     )
 

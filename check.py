@@ -47,7 +47,10 @@ EXPECTED_SANDBOX_PACKAGES = {
     "tenacity",
     "python-dateutil",
     "rich",
-    "jsonschema",
+    "jsonschema",    "python-dotenv",
+    "loguru",
+    "aiohttp",
+
 }
 
 

@@ -14,3 +14,6 @@ tenacity>=8.2.0
 python-dateutil>=2.9.0.post0
 rich>=13.7.0
 jsonschema>=4.21.0
+python-dotenv>=1.0.0
+loguru>=0.7.0
+aiohttp>=3.9.0

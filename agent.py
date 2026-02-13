@@ -19,11 +19,6 @@ except Exception:  # pragma: no cover
     BeautifulSoup = None
 
 
-FIXED_AUTBOOKS_URL = os.getenv(
-    "FIXED_AUTBOOKS_URL",
-    "http://84.247.180.192:8001/books/book-original-002?seed=36",
-)
-
 app = FastAPI(title="Autoppia Web Agent API")
 
 # In-memory loop detection per task_id (best-effort; process-local).
@@ -106,12 +101,24 @@ class _Candidate:
         self.context = context
 
     def click_selector(self) -> Dict[str, Any]:
-        # Prefer stable attribute selectors when we have them. Text selectors are often ambiguous
-        # (e.g. multiple "Sign in" buttons/links).
+        """Selector for click-like actions.
+
+        Important: avoid class-based selectors because IWA converts them to `.class` CSS.
+        Tailwind-style class tokens often include `/` or `:` which breaks CSS parsing in Playwright.
+        """
         if isinstance(self.selector, dict) and self.selector.get("type") == "attributeValueSelector":
             attr = str(self.selector.get("attribute") or "")
             if attr in {"id", "href", "data-testid", "name", "aria-label", "placeholder", "title"}:
                 return self.selector
+
+        # If the primary selector isn't a safe attribute selector, try to derive one from attrs.
+        for a in ("id", "data-testid", "href", "aria-label", "name", "placeholder", "title"):
+            v = (self.attrs or {}).get(a)
+            if v:
+                # Never click by class.
+                if a == "class":
+                    continue
+                return _sel_attr(a, v)
 
         if self.text_selector:
             ts_val = str(self.text_selector.get("value") or "").strip()
@@ -139,6 +146,23 @@ class _Candidate:
                 return self.text_selector
 
         return self.selector
+
+    def type_selector(self) -> Dict[str, Any]:
+        """Selector for type/select actions.
+
+        Avoid class selectors for the same reason as click_selector().
+        """
+        if isinstance(self.selector, dict) and self.selector.get("type") == "attributeValueSelector":
+            attr = str(self.selector.get("attribute") or "")
+            if attr and attr != "class":
+                return self.selector
+
+        for a in ("id", "data-testid", "name", "aria-label", "placeholder", "title"):
+            v = (self.attrs or {}).get(a)
+            if v:
+                return _sel_attr(a, v)
+
+        return _sel_custom(self.tag)
 
 
 class _CandidateExtractor(HTMLParser):
@@ -203,8 +227,6 @@ def _build_selector(tag: str, attrs: Dict[str, str], *, text: str) -> Dict[str, 
         return _sel_attr("placeholder", attrs["placeholder"])
     if attrs.get("title"):
         return _sel_attr("title", attrs["title"])
-    if attrs.get("class"):
-        return _sel_attr("class", attrs["class"])
     if text and tag in {"button", "a"}:
         return _sel_text(text, case_sensitive=False)
     return _sel_custom(tag)
@@ -1076,15 +1098,16 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             _update_task_state(task_id, str(url), f"click:{_selector_repr(selector)}")
             return _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
 
-        selector = c.selector
         if action == "type":
             if not text:
                 raise HTTPException(status_code=400, detail="type action missing text")
+            selector = c.type_selector()
             _update_task_state(task_id, str(url), f"type:{_selector_repr(selector)}")
             return _resp([{"type": "TypeAction", "selector": selector, "text": str(text)}], {"decision": "type", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
         if action == "select":
             if not text:
                 raise HTTPException(status_code=400, detail="select action missing text")
+            selector = c.type_selector()
             _update_task_state(task_id, str(url), f"select:{_selector_repr(selector)}")
             return _resp([{"type": "SelectDropDownOptionAction", "selector": selector, "text": str(text)}], {"decision": "select", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
 
