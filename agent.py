@@ -755,6 +755,7 @@ def _llm_decide(
     credentials_hint: str = "",
     extra_hint: str = "",
     state_delta: str = "",
+    prev_sig_set: set[str] | None = None,
 ) -> Dict[str, Any]:
     items: List[str] = []
     for i, c in enumerate(candidates):
@@ -767,8 +768,11 @@ def _llm_decide(
         attrs_str = (" | " + ", ".join(attrs_bits)) if attrs_bits else ""
         ctx = (c.context or "").strip()
         ctx_s = (" | ctx=" + ctx) if ctx else ""
+        sig = f"{_selector_repr(c.selector)}|{(c.text or '')[:80]}"
+        is_new = bool(prev_sig_set) and (sig not in (prev_sig_set or set()))
+        prefix = '* ' if is_new else ''
         items.append(
-            f"{i}: <{c.tag}> '{label}' sel={_selector_repr(c.selector)} click_sel={_selector_repr(c.click_selector())}{attrs_str}{ctx_s}"
+            f"{prefix}{i}: <{c.tag}> '{label}' sel={_selector_repr(c.selector)} click_sel={_selector_repr(c.click_selector())}{attrs_str}{ctx_s}"
         )
     system_msg = (
         "You are a web automation agent. Given the task, step number, state, history, and state diff, choose ONE next action. "
@@ -1003,6 +1007,15 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 
     st = _TASK_STATE.get(task_id) if task_id else None
     extra_hint = ""
+    prev_sig_set = None
+    try:
+        if isinstance(st, dict):
+            prev = st.get('prev_sig_set')
+            if isinstance(prev, list):
+                prev_sig_set = set(str(x) for x in prev)
+    except Exception:
+        prev_sig_set = None
+
     state_delta = _compute_state_delta(task_id=task_id, url=str(url), page_summary=page_summary, dom_digest=dom_digest, candidates=candidates)
     try:
         if isinstance(st, dict):
@@ -1029,6 +1042,7 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             credentials_hint=credentials_hint,
             extra_hint=extra_hint,
             state_delta=state_delta,
+            prev_sig_set=prev_sig_set,
         )
         if os.getenv("AGENT_LOG_DECISIONS", "0").lower() in {"1", "true", "yes"}:
             try:

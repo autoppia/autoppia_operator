@@ -434,12 +434,24 @@ async def run_evaluation(
                     if isinstance(cid, str) and cid.isdigit():
                         cid = int(cid)
 
+                    ar = step_result.action_result
+                    exec_ok = True
+                    exec_err = None
+                    try:
+                        if ar is not None:
+                            exec_ok = bool(getattr(ar, 'successfully_executed', True))
+                            exec_err = getattr(ar, 'error', None)
+                    except Exception:
+                        exec_ok = True
+                        exec_err = None
+
                     history.append({
                         "step": step_idx,
                         "action": action.type if action else "done",
                         "candidate_id": cid,
                         "text": getattr(action, "text", None) if action else None,
-                        "exec_ok": True,
+                        "exec_ok": exec_ok,
+                        "error": exec_err,
                     })
 
                     if final_success:
