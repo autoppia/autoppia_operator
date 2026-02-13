@@ -60,6 +60,16 @@ def _sel_custom(value: str, case_sensitive: bool = False) -> Dict[str, Any]:
     }
 
 
+
+
+def _sel_xpath(value: str) -> Dict[str, Any]:
+    return {
+        "type": "xpathSelector",
+        "attribute": None,
+        "value": value,
+        "case_sensitive": False,
+    }
+
 def _selector_repr(selector: Dict[str, Any]) -> str:
     t = selector.get("type")
     a = selector.get("attribute")
@@ -92,6 +102,7 @@ class _Candidate:
         *,
         text_selector: Optional[Dict[str, Any]] = None,
         context: str = "",
+        group: str = "",
     ):
         self.selector = selector
         self.text_selector = text_selector
@@ -99,6 +110,7 @@ class _Candidate:
         self.tag = tag
         self.attrs = attrs
         self.context = context
+        self.group = group
 
     def click_selector(self) -> Dict[str, Any]:
         """Selector for click-like actions.
@@ -119,6 +131,16 @@ class _Candidate:
                 if a == "class":
                     continue
                 return _sel_attr(a, v)
+
+        # Prefer more specific Playwright selectors for common navigation buttons without stable attrs.
+        try:
+            lbl = (self.text or '').strip().lower()
+            if lbl in {'logout', 'log out', 'sign out'}:
+                # Avoid `text=...` alone (can match multiple). Playwright supports :has-text().
+                return _sel_custom('button:has-text("Logout")')
+        except Exception:
+            pass
+
 
         if self.text_selector:
             ts_val = str(self.text_selector.get("value") or "").strip()
@@ -183,7 +205,8 @@ class _CandidateExtractor(HTMLParser):
         if tag in {"button", "a", "input", "textarea", "select"} or attr_map.get("role") in {"button", "link"}:
             label = attr_map.get("aria-label") or attr_map.get("placeholder") or attr_map.get("title") or ""
             selector = _build_selector(tag, attr_map, text=label)
-            self.candidates.append(_Candidate(selector, label, tag, attr_map, context=""))
+            group = 'FORM' if tag in {'input','textarea','select'} else ('LINKS' if tag=='a' else 'BUTTONS')
+            self.candidates.append(_Candidate(selector, label, tag, attr_map, context="", group=group))
 
     def handle_data(self, data: str) -> None:
         if self._last_tag in {"button", "a"} and data.strip():
@@ -293,6 +316,26 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
         tag = str(getattr(el, "name", "") or "")
         attr_map = _attrs_to_str_map(getattr(el, "attrs", {}) or {})
 
+        group = 'PAGE'
+        try:
+            # Group by semantic containers for a more browser-use-like state view.
+            if el.find_parent('nav') is not None:
+                group = 'NAV'
+            elif el.find_parent('header') is not None:
+                group = 'HEADER'
+            elif el.find_parent('footer') is not None:
+                group = 'FOOTER'
+            elif el.find_parent('form') is not None:
+                form = el.find_parent('form')
+                fid = ''
+                try:
+                    fid = str(form.get('id') or form.get('name') or '').strip()
+                except Exception:
+                    fid = ''
+                group = f"FORM:{fid}" if fid else 'FORM'
+        except Exception:
+            group = group
+
         # Skip obvious non-interactives.
         if tag == "input" and attr_map.get("type", "").lower() == "hidden":
             continue
@@ -340,7 +383,7 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
             continue
         seen.add(sig)
 
-        out.append(_Candidate(primary, label, tag, attr_map, text_selector=text_sel, context=context))
+        out.append(_Candidate(primary, label, tag, attr_map, text_selector=text_sel, context=context, group=group))
         if len(out) >= max_candidates:
             break
 
@@ -726,6 +769,57 @@ def _history_hint(history: List[Dict[str, Any]] | None) -> str:
     return ""
 
 
+
+
+def _format_browser_state(*, candidates: List[_Candidate], prev_sig_set: set[str] | None) -> str:
+    # Browser-use-like state view: numbered interactives, grouped + new markers.
+    groups_order = ['HEADER', 'NAV', 'FORM', 'FORM:', 'PAGE', 'FOOTER', 'BUTTONS', 'LINKS']
+
+    group_items: dict[str, list[tuple[int, _Candidate]]] = {}
+    for i, c in enumerate(candidates):
+        g = (getattr(c, 'group', '') or 'PAGE').strip() or 'PAGE'
+        if g == 'FORM:':
+            g = 'FORM'
+        group_items.setdefault(g, []).append((i, c))
+
+    def _g_key(g: str) -> tuple[int, str]:
+        for j, pref in enumerate(groups_order):
+            if pref.endswith(':') and g.startswith(pref):
+                return (j, g)
+            if g == pref:
+                return (j, g)
+        return (len(groups_order), g)
+
+    lines: list[str] = []
+    for g in sorted(group_items.keys(), key=_g_key):
+        items = group_items[g]
+        indent = ''
+        if g != 'PAGE':
+            lines.append(f"{g}:")
+            indent = "	"
+
+        for i, c in items:
+            label = (c.text or '').strip() or (c.attrs or {}).get('placeholder', '') or (c.attrs or {}).get('aria-label', '')
+            label = str(label).strip()
+
+            sig = f"{_selector_repr(c.selector)}|{(c.text or '')[:80]}"
+            is_new = bool(prev_sig_set) and (sig not in (prev_sig_set or set()))
+            star = '* ' if is_new else ''
+
+            attrs_bits: list[str] = []
+            for k in ('id','name','type','placeholder','aria-label','href','role'):
+                v = (c.attrs or {}).get(k)
+                if v:
+                    vv = str(v)
+                    if len(vv) > 60:
+                        vv = vv[:57] + '...'
+                    attrs_bits.append(f"{k}={vv}")
+            attrs_str = (' | ' + ', '.join(attrs_bits)) if attrs_bits else ''
+
+            lines.append(f"{indent}{star}[{i}]<{c.tag}>{label}</{c.tag}>{attrs_str}")
+
+    return "\n".join(lines)
+
 def _rewrite_task_for_llm(task: str, relevant_data: Dict[str, Any]) -> str:
     """Rewrite task text to prefer canonical placeholders from relevant_data.
 
@@ -757,34 +851,19 @@ def _llm_decide(
     state_delta: str = "",
     prev_sig_set: set[str] | None = None,
 ) -> Dict[str, Any]:
-    items: List[str] = []
-    for i, c in enumerate(candidates):
-        label = (c.text or "").strip() or c.attrs.get("placeholder", "") or c.attrs.get("aria-label", "")
-        attrs_bits: List[str] = []
-        for k in ("type", "name", "placeholder", "aria-label", "href", "role"):
-            v = c.attrs.get(k)
-            if v:
-                attrs_bits.append(f"{k}={v}")
-        attrs_str = (" | " + ", ".join(attrs_bits)) if attrs_bits else ""
-        ctx = (c.context or "").strip()
-        ctx_s = (" | ctx=" + ctx) if ctx else ""
-        sig = f"{_selector_repr(c.selector)}|{(c.text or '')[:80]}"
-        is_new = bool(prev_sig_set) and (sig not in (prev_sig_set or set()))
-        prefix = '* ' if is_new else ''
-        items.append(
-            f"{prefix}{i}: <{c.tag}> '{label}' sel={_selector_repr(c.selector)} click_sel={_selector_repr(c.click_selector())}{attrs_str}{ctx_s}"
-        )
+    browser_state = _format_browser_state(candidates=candidates, prev_sig_set=prev_sig_set)
     system_msg = (
         "You are a web automation agent. Given the task, step number, state, history, and state diff, choose ONE next action. "
         "Return JSON only (no markdown). Think step-by-step privately before answering. "
+        "Elements prefixed with '*' in BROWSER_STATE are new since the previous step (URL unchanged). "
         "Do NOT provide detailed chain-of-thought. "
         "Return a JSON object with keys: action, candidate_id, text, evaluation_previous_goal, memory, next_goal. "
         "If STRUCTURED STATE indicates login_form_present=true, you MUST type username and password before clicking a sign-in/submit button. "
         "If you already typed both, then click the sign-in/submit button (prefer attribute selectors). "
         "action must be one of: click,type,select,scroll_down,scroll_up,done. "
-        "Constraints: for click/type/select, candidate_id must be an integer index into the candidate list. "
+        "Constraints: for click/type/select, candidate_id must be an integer index into the BROWSER_STATE list (the number inside [..]). "
         "For type/select, text must be non-empty. "
-                "Avoid done unless the task is clearly completed."
+        "Avoid done unless the task is clearly completed."
     )
 
     history_lines: List[str] = []
@@ -793,12 +872,25 @@ def _llm_decide(
         action = h.get("action", "")
         cid = h.get("candidate_id")
         text = h.get("text", "")
-        ok = h.get("exec_ok", True)
-        history_lines.append(f"{step}. {action} cid={cid} text={text} [{'OK' if ok else 'FAILED'}]")
+        ok = h.get('exec_ok', True)
+        err = h.get('error')
+        suffix = 'OK' if ok else f"FAILED err={str(err)[:80]}"
+        history_lines.append(f"{step}. {action} cid={cid} text={text} [{suffix}]")
 
     hint = _history_hint(history)
 
     structured = _structured_hints(task, candidates)
+    agent_mem = ""
+    try:
+        st2 = _TASK_STATE.get(task_id) if task_id else None
+        if isinstance(st2, dict):
+            pm = str(st2.get("memory") or "").strip()
+            pg = str(st2.get("next_goal") or "").strip()
+            if pm or pg:
+                agent_mem = f"PREVIOUS MEMORY: {pm}\nPREVIOUS NEXT_GOAL: {pg}\n"
+    except Exception:
+        agent_mem = ""
+
     user_msg = (
         f"You have a task and must decide the next single browser action.\n"
         f"TASK: {task}\n"
@@ -811,7 +903,7 @@ def _llm_decide(
         + (f"HISTORY (last steps):\n{chr(10).join(history_lines)}\n\n" if history_lines else "")
         + (f"STATE HINT: {extra_hint}\n\n" if extra_hint else "")
         + (f"STATE DELTA (prev -> current): {state_delta}\n\n" if state_delta else "")
-        + f"CANDIDATES (choose by candidate_id; 0 is best-ranked):\n{chr(10).join(items)}\n\n"
+        + "BROWSER_STATE (interactive elements):\n" + browser_state + "\n\n"
         + "Instructions:\n"
         + "- Output JSON only.\n"
         + "- Return ONE action for this step (no multi-step sequences).\n"
@@ -1079,6 +1171,17 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             except Exception:
                 pass
         return _resp([{"type": "WaitAction", "time_seconds": 1.0}], {"decision": "error_wait"})
+
+    try:
+        if task_id:
+            st3 = _TASK_STATE.get(task_id)
+            if isinstance(st3, dict):
+                if isinstance(decision.get("memory"), str):
+                    st3["memory"] = decision.get("memory")
+                if isinstance(decision.get("next_goal"), str):
+                    st3["next_goal"] = decision.get("next_goal")
+    except Exception:
+        pass
 
     action = (decision.get("action") or "").lower()
     cid = decision.get("candidate_id")
