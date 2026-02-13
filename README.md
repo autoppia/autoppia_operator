@@ -86,6 +86,25 @@ python scripts/generate_tasks.py --project-id autocinema --prompts-per-use-case 
 
 Outputs are written to `data/` (gitignored).
 
+
+## Model comparison
+
+To compare multiple models/providers on the same task set, use:
+
+```bash
+python compare_eval.py --runs openai:gpt-5.2 openai:gpt-4o-mini --num-tasks 5 --distinct-use-cases
+```
+
+Anthropic example (requires `ANTHROPIC_API_KEY` in your env):
+
+```bash
+python compare_eval.py --runs anthropic:claude-sonnet-4 --num-tasks 5 --distinct-use-cases
+```
+
+Outputs:
+- `data/compare/<provider>__<model>.json`
+- `data/compare/compare_summary.json`
+
 ## Repo self-check
 
 ```bash

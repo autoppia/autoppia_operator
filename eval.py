@@ -104,6 +104,7 @@ def inject_seed(task: Task, seed: int | None = None) -> tuple[Task, int]:
 # ── Main evaluation loop ────────────────────────────────────────
 
 async def run_evaluation(
+    provider: str = "openai",
     model: str = "gpt-5.1",
     num_tasks: int = 20,
     max_steps: int = 15,
@@ -114,6 +115,7 @@ async def run_evaluation(
     repeat: int = 1,
     temperature: float = 0.2,
     distinct_use_cases: bool = False,
+    out_path: str | None = None,
 ):
     # Re-load .env here as a guard: some imported modules may mutate env vars.
     try:
@@ -124,15 +126,27 @@ async def run_evaluation(
     except Exception:
         pass
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    api_key_fpr = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:12] if api_key else "missing"
-    logger.info(f"Eval env: OPENAI_API_KEY={'set' if api_key else "missing"} fpr={api_key_fpr}")
-    if not api_key:
-        logger.error("OPENAI_API_KEY not set. Check .env file.")
-        sys.exit(1)
+    provider_s = str(provider or os.getenv('LLM_PROVIDER') or 'openai').strip().lower()
 
+    if provider_s == 'anthropic':
+        api_key = os.getenv('ANTHROPIC_API_KEY')
+        api_key_fpr = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:12] if api_key else "missing"
+        logger.info(f"Eval env: ANTHROPIC_API_KEY={'set' if api_key else 'missing'} fpr={api_key_fpr}")
+        if not api_key:
+            logger.error("ANTHROPIC_API_KEY not set. Check .env file.")
+            sys.exit(1)
+    else:
+        api_key = os.getenv("OPENAI_API_KEY")
+        api_key_fpr = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:12] if api_key else "missing"
+        logger.info(f"Eval env: OPENAI_API_KEY={'set' if api_key else 'missing'} fpr={api_key_fpr}")
+        # For sandbox-gateway routing, OPENAI_API_KEY may be intentionally absent.
+        base_url = (os.getenv('OPENAI_BASE_URL') or 'https://api.openai.com/v1').rstrip('/')
+        if not api_key and not base_url.startswith('http://sandbox-gateway') and not base_url.startswith('http://localhost') and not base_url.startswith('http://127.0.0.1'):
+            logger.error("OPENAI_API_KEY not set. Check .env file.")
+            sys.exit(1)
     logger.info("=" * 60)
     logger.info("  Autoppia Operator – LLM Agent Evaluation")
+    logger.info(f"  Provider:   {provider_s}")
     logger.info(f"  Model:      {model}")
     logger.info(f"  Tasks:      {num_tasks}")
     logger.info(f"  Max steps:  {max_steps}")
@@ -222,6 +236,7 @@ async def run_evaluation(
 
         server_env = os.environ.copy()
         server_env["OPENAI_MODEL"] = str(model)
+        server_env["LLM_PROVIDER"] = str(provider_s)
         server_env["OPENAI_TEMPERATURE"] = str(temperature)
         server_env["AGENT_RETURN_METRICS"] = "1"
         k = server_env.get("OPENAI_API_KEY") or ""
@@ -302,6 +317,7 @@ async def run_evaluation(
 
     # Results tracking
     results = {
+        "provider": provider_s,
         "model": model,
         "num_tasks": 0,
         "successes": 0,
@@ -532,6 +548,7 @@ async def run_evaluation(
     print("\n" + "=" * 60)
     print("  EVALUATION RESULTS")
     print("=" * 60)
+    print(f"  Provider:       {provider_s}")
     print(f"  Model:          {model}")
     print(f"  Tasks run:      {total}")
     print(f"  Successes:      {succ}")
@@ -570,7 +587,8 @@ async def run_evaluation(
     # Save results
     out_dir = SCRIPT_DIR / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "eval_results.json"
+    out_path = Path(out_path).resolve() if out_path else (out_dir / 'eval_results.json')
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"  Results saved to: {out_path}\n")
@@ -593,7 +611,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Autoppia Operator - LLM Agent Evaluation")
-    parser.add_argument("--model", default="gpt-5.1", help="OpenAI model name")
+    parser.add_argument('--provider', default='openai', help='LLM provider: openai|anthropic')
+    parser.add_argument("--model", default="gpt-5.1", help="Model name")
     parser.add_argument("--num-tasks", type=int, default=20, help="Number of tasks to evaluate")
     parser.add_argument("--max-steps", type=int, default=15, help="Max steps per episode")
     parser.add_argument("--use-case", default=None, help="Filter by use case (e.g. LOGIN)")
@@ -602,11 +621,13 @@ def main():
     parser.add_argument("--seed", type=int, default=None, help="Fixed seed (otherwise random)")
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each selected task N times")
     parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
+    parser.add_argument('--out', default=None, help='Output JSON path (default: data/eval_results.json)')
     parser.add_argument("--distinct-use-cases", action="store_true", help="Pick tasks with distinct use cases")
     args = parser.parse_args()
 
     asyncio.run(
         run_evaluation(
+            provider=args.provider,
             model=args.model,
             num_tasks=args.num_tasks,
             max_steps=args.max_steps,
@@ -617,6 +638,7 @@ def main():
             repeat=args.repeat,
             temperature=args.temperature,
             distinct_use_cases=bool(args.distinct_use_cases),
+            out_path=args.out,
         )
     )
 

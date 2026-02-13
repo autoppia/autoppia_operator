@@ -2,13 +2,13 @@
 
 Token pricing helpers for local eval.
 
-Source of truth (as of 2026-02-13):
-- OpenAI pricing pages (openai.com/api/pricing, platform.openai.com/pricing)
+This module exists only to provide a rough, comparable cost estimate across models.
 
 Notes:
-- This is only an estimate: it ignores cached-input discounts and any gateway-side
-  adjustments, and assumes Chat Completions-style token accounting.
-- We only model text input/output token prices.
+- It is an estimate: ignores cached-input discounts and any gateway-side adjustments.
+- We assume text token billing with separate input/output rates.
+- For providers that return different usage shapes, the caller should normalize to:
+  {prompt_tokens, completion_tokens}.
 """
 
 from __future__ import annotations
@@ -23,50 +23,44 @@ class ModelPrice:
     output_per_1m: float
 
 
-# Keep this explicit; extend as needed.
 # Prices are USD per 1M tokens.
+# Keep this explicit and update when providers change public pricing.
 _PRICES: dict[str, ModelPrice] = {
-    # GPT-5.2 family
+    # OpenAI (selected models used in this repo)
     'gpt-5.2': ModelPrice(input_per_1m=1.75, output_per_1m=14.00),
     'gpt-5.2-pro': ModelPrice(input_per_1m=21.00, output_per_1m=168.00),
-    'gpt-5.2-codex': ModelPrice(input_per_1m=1.75, output_per_1m=14.00),
-    'gpt-5.2-chat-latest': ModelPrice(input_per_1m=1.75, output_per_1m=14.00),
-
-    # GPT-5 / GPT-5.1 family
-    'gpt-5.1': ModelPrice(input_per_1m=1.25, output_per_1m=10.00),
-    'gpt-5': ModelPrice(input_per_1m=1.25, output_per_1m=10.00),
     'gpt-5-mini': ModelPrice(input_per_1m=0.25, output_per_1m=2.00),
-    'gpt-5-nano': ModelPrice(input_per_1m=0.05, output_per_1m=0.40),
-    'gpt-5-pro': ModelPrice(input_per_1m=15.00, output_per_1m=120.00),
-    'gpt-5.1-chat-latest': ModelPrice(input_per_1m=1.25, output_per_1m=10.00),
-    'gpt-5-chat-latest': ModelPrice(input_per_1m=1.25, output_per_1m=10.00),
-    'gpt-5.1-codex': ModelPrice(input_per_1m=1.25, output_per_1m=10.00),
-    'gpt-5.1-codex-max': ModelPrice(input_per_1m=1.25, output_per_1m=10.00),
-    'gpt-5-codex': ModelPrice(input_per_1m=1.25, output_per_1m=10.00),
-
-    # GPT-4o family
     'gpt-4o': ModelPrice(input_per_1m=2.50, output_per_1m=10.00),
     'gpt-4o-mini': ModelPrice(input_per_1m=0.15, output_per_1m=0.60),
-
-    # GPT-4.1 family
-    'gpt-4.1': ModelPrice(input_per_1m=2.00, output_per_1m=8.00),
-    'gpt-4.1-mini': ModelPrice(input_per_1m=0.40, output_per_1m=1.60),
-    'gpt-4.1-nano': ModelPrice(input_per_1m=0.10, output_per_1m=0.40),
-
-    # o-series
     'o4-mini': ModelPrice(input_per_1m=1.10, output_per_1m=4.40),
-    'o3': ModelPrice(input_per_1m=2.00, output_per_1m=8.00),
-    'o3-pro': ModelPrice(input_per_1m=20.00, output_per_1m=80.00),
-    'o1': ModelPrice(input_per_1m=15.00, output_per_1m=60.00),
-    'o1-pro': ModelPrice(input_per_1m=150.00, output_per_1m=600.00),
+
+    # Anthropic (Claude)
+    # Prices from Anthropic pricing docs (base input/output tokens).
+    # Model IDs vary; we include common aliases + a few dated IDs.
+    'claude-opus-4-1': ModelPrice(input_per_1m=15.00, output_per_1m=75.00),
+    'claude-opus-4': ModelPrice(input_per_1m=15.00, output_per_1m=75.00),
+    'claude-sonnet-4': ModelPrice(input_per_1m=3.00, output_per_1m=15.00),
+    'claude-sonnet-3-7': ModelPrice(input_per_1m=3.00, output_per_1m=15.00),
+    'claude-haiku-3-5': ModelPrice(input_per_1m=0.80, output_per_1m=4.00),
+    'claude-haiku-3': ModelPrice(input_per_1m=0.25, output_per_1m=1.25),
+
+    # Some observed dated IDs (map to the same rates as their family).
+    'claude-opus-4-1-20250805': ModelPrice(input_per_1m=15.00, output_per_1m=75.00),
+    'claude-opus-4-20250514': ModelPrice(input_per_1m=15.00, output_per_1m=75.00),
+    'claude-sonnet-4-20250514': ModelPrice(input_per_1m=3.00, output_per_1m=15.00),
+    'claude-haiku-4-20250514': ModelPrice(input_per_1m=1.00, output_per_1m=5.00),
+
+    # Sonnet 4.5: commonly priced the same as Sonnet 4.
+    'claude-sonnet-4-5': ModelPrice(input_per_1m=3.00, output_per_1m=15.00),
+    'claude-sonnet-4-5-20250929': ModelPrice(input_per_1m=3.00, output_per_1m=15.00),
 }
 
 
 def _normalize_model(model: str) -> str:
     m = (model or '').strip().lower()
-    # Strip snapshot suffix if present, keep the base alias.
+    # Strip snapshot/date suffix if present, keep the base alias we know.
     for base in sorted(_PRICES.keys(), key=len, reverse=True):
-        if m == base or m.startswith(base + '-'):  # e.g. gpt-5.2-2025-12-11
+        if m == base or m.startswith(base + '-'):
             return base
     return m
 
