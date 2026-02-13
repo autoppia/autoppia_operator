@@ -117,8 +117,10 @@ class _Candidate:
     def click_selector(self) -> Dict[str, Any]:
         """Selector for click-like actions.
 
-        Important: avoid class-based selectors because IWA converts them to `.class` CSS.
-        Tailwind-style class tokens often include `/` or `:` which breaks CSS parsing in Playwright.
+        Prefer stable attribute selectors. Avoid class-based selectors because IWA converts them to `.class` CSS
+        and tailwind-style tokens often include `/` or `:` which breaks CSS parsing in Playwright.
+
+        Note: keep this logic generic (no site-specific button text shortcuts).
         """
         if isinstance(self.selector, dict) and self.selector.get("type") == "attributeValueSelector":
             attr = str(self.selector.get("attribute") or "")
@@ -129,45 +131,20 @@ class _Candidate:
         for a in ("id", "data-testid", "href", "aria-label", "name", "placeholder", "title"):
             v = (self.attrs or {}).get(a)
             if v:
-                # Never click by class.
-                if a == "class":
-                    continue
                 return _sel_attr(a, v)
 
-        # Prefer more specific Playwright selectors for common navigation buttons without stable attrs.
+        # Fall back to the element text selector (can be ambiguous, but generic).
+        # Generic refinement: if we only have element text, prefer a Playwright :has-text() selector
+        # scoped to the tag (button/a). This reduces ambiguity without hardcoding any website logic.
         try:
-            lbl = (self.text or '').strip().lower()
-            if lbl in {'logout', 'log out', 'sign out'}:
-                # Avoid `text=...` alone (can match multiple). Playwright supports :has-text().
-                return _sel_custom('button:has-text("Logout")')
+            t = (self.text or '').strip()
+            if t and self.tag in {'button', 'a'}:
+                return _sel_custom(f"{self.tag}:has-text({json.dumps(t)})")
         except Exception:
             pass
 
-
         if self.text_selector:
-            ts_val = str(self.text_selector.get("value") or "").strip()
-            generic = {
-                "view details",
-                "view info",
-                "details",
-                "learn more",
-                "more",
-                "ok",
-                "yes",
-                "no",
-                "close",
-                "cancel",
-                "submit",
-                "sign in",
-                "log in",
-                "login",
-                "sign up",
-                "register",
-                "send",
-                "save",
-            }
-            if ts_val and ts_val.lower() not in generic and len(ts_val) >= 6:
-                return self.text_selector
+            return self.text_selector
 
         return self.selector
 
@@ -431,8 +408,6 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
             context_raw = ""
             title = ""
 
-        if title and dom_label and dom_label.strip().lower() in {"view details", "view info", "details"}:
-            label = f"{dom_label} - {title}"[:120]
 
         if context and len(context) > 180:
             context = context[:177] + "..."
