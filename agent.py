@@ -1099,7 +1099,7 @@ def _llm_decide(
         + "- If CREDENTIALS are provided, use those exact values when typing.\n"
     )
 
-    model = os.getenv("OPENAI_MODEL", "gpt-5.2")
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
 
