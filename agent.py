@@ -1508,7 +1508,8 @@ def _llm_decide(
         + "- If CREDENTIALS are provided, use those exact values when typing.\n"
     )
 
-    model = os.getenv("OPENAI_MODEL", "deepseek-ai/DeepSeek-V3-0324")
+    # Default Chutes model must exist in `https://llm.chutes.ai/v1/models`.
+    model = os.getenv("OPENAI_MODEL", "deepseek-ai/DeepSeek-V3-0324-TEE")
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
 
