@@ -273,16 +273,6 @@ async def run_evaluation(
 
 
 
-    def _task_relevant_data(t: Task):
-        # In pydantic v2, extra fields may live in model_extra and not as attributes.
-        v = getattr(t, 'relevant_data', None)
-        if v is not None:
-            return v
-        extra = getattr(t, 'model_extra', None)
-        if isinstance(extra, dict):
-            return extra.get('relevant_data')
-        return None
-
     async def call_agent_act(prepared_task: Task, episode_task_id: str, snapshot_html: str, url: str, step_index: int, history: list[dict]) -> tuple[list[BaseAction], dict]:
         import aiohttp
 
@@ -293,7 +283,6 @@ async def run_evaluation(
             "snapshot_html": snapshot_html,
             "step_index": int(step_index),
             "web_project_id": prepared_task.web_project_id,
-            "relevant_data": _task_relevant_data(prepared_task),
             "history": history,
         }
         async with aiohttp.ClientSession() as session:
