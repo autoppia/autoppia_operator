@@ -11,8 +11,8 @@ from html.parser import HTMLParser
 
 from fastapi import Body, FastAPI, HTTPException
 
-# Default this branch to OpenAI via the validator gateway.
-os.environ.setdefault("LLM_PROVIDER", "openai")
+# Default this branch to Anthropic.
+os.environ.setdefault("LLM_PROVIDER", "anthropic")
 
 from llm_gateway import openai_chat_completions, is_sandbox_gateway_base_url
 
@@ -1508,8 +1508,8 @@ def _llm_decide(
         + "- If CREDENTIALS are provided, use those exact values when typing.\n"
     )
 
-    # Default to validator gateway default model.
-    model = os.getenv("OPENAI_MODEL", "gpt-5.2")
+    # Default Anthropic model for this branch.
+    model = os.getenv("OPENAI_MODEL", "claude-opus-4-1")
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
 
