@@ -11,8 +11,8 @@ from html.parser import HTMLParser
 
 from fastapi import Body, FastAPI, HTTPException
 
-# Default this branch to the Chutes provider (OpenAI-compatible).
-os.environ.setdefault("LLM_PROVIDER", "chutes")
+# Default this branch to OpenAI via the validator gateway.
+os.environ.setdefault("LLM_PROVIDER", "openai")
 
 from llm_gateway import openai_chat_completions, is_sandbox_gateway_base_url
 
@@ -1508,8 +1508,8 @@ def _llm_decide(
         + "- If CREDENTIALS are provided, use those exact values when typing.\n"
     )
 
-    # Default Chutes model must exist in `https://llm.chutes.ai/v1/models`.
-    model = os.getenv("OPENAI_MODEL", "deepseek-ai/DeepSeek-V3-0324-TEE")
+    # Default to validator gateway default model.
+    model = os.getenv("OPENAI_MODEL", "gpt-5.2")
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
 
