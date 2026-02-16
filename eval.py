@@ -104,8 +104,8 @@ def inject_seed(task: Task, seed: int | None = None) -> tuple[Task, int]:
 # ── Main evaluation loop ────────────────────────────────────────
 
 async def run_evaluation(
-    provider: str = "openai",
-    model: str = "gpt-5.2",
+    provider: str = "chutes",
+    model: str = "deepseek-ai/DeepSeek-V3-0324",
     num_tasks: int = 20,
     max_steps: int = 15,
     use_case: str | None = None,
