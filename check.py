@@ -170,6 +170,7 @@ def _call_act(app) -> dict[str, Any] | None:
                 "prompt": "open the homepage",
                 "url": "http://localhost",
                 "snapshot_html": "<html><body><a href='/' aria-label='Home'>Home</a><button>OK</button></body></html>",
+                "screenshot": None,
                 "step_index": 0,
                 "history": [],
                 "relevant_data": {},

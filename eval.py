@@ -7,6 +7,7 @@ HTTP API directly (no autoppia_rl dependencies).
 """
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ import subprocess
 import socket
 import sys
 import time
+from typing import Any
 from copy import deepcopy
 from pathlib import Path
 
@@ -92,6 +94,16 @@ def load_tasks(
     return tasks
 
 
+def _serialize_screenshot(raw: Any | None) -> str | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return raw or None
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        return base64.b64encode(bytes(raw)).decode("ascii")
+    return None
+
+
 def inject_seed(task: Task, seed: int | None = None) -> tuple[Task, int]:
     """Inject a seed into the task URL for variation (or use a provided seed)."""
     t = deepcopy(task)
@@ -117,6 +129,8 @@ async def run_evaluation(
     distinct_use_cases: bool = False,
     out_path: str | None = None,
     task_cache: str | None = None,
+    memory_path: str | None = None,
+    strict_model: bool = True,
 ):
     # Re-load .env here as a guard: some imported modules may mutate env vars.
     try:
@@ -130,6 +144,10 @@ async def run_evaluation(
     provider_s = str(provider or os.getenv('LLM_PROVIDER') or 'openai').strip().lower()
 
     cache_path = Path(task_cache).resolve() if task_cache else TASK_CACHE
+    resolved_memory_path = Path(memory_path).resolve() if memory_path else (SCRIPT_DIR / "data" / "memory" / "trajectories.jsonl")
+    resolved_memory_path.parent.mkdir(parents=True, exist_ok=True)
+    mirror_path = Path(os.getenv("EVAL_TRAJECTORY_MIRROR_PATH", str(SCRIPT_DIR / "data" / "memory" / "trajectories_eval_mirror.jsonl"))).resolve()
+    mirror_path.parent.mkdir(parents=True, exist_ok=True)
 
 
     if provider_s == 'anthropic':
@@ -160,6 +178,7 @@ async def run_evaluation(
     logger.info(f"  Task id:    {task_id or 'auto'}")
     logger.info(f"  Seed:       {seed if seed is not None else 'random'}")
     logger.info(f"  Repeat:     {int(repeat)}")
+    logger.info(f"  Strict mdl: {bool(strict_model)}")
     logger.info("=" * 60)
 
     # Load tasks. If we want distinct use cases, load more upfront then filter down.
@@ -244,9 +263,11 @@ async def run_evaluation(
         server_env["LLM_PROVIDER"] = str(provider_s)
         server_env["OPENAI_TEMPERATURE"] = str(temperature)
         server_env["AGENT_RETURN_METRICS"] = "1"
+        # Persist trajectories by default in a stable location unless explicitly overridden.
+        server_env["TRAJECTORY_MEMORY_PATH"] = str(resolved_memory_path)
         k = server_env.get("OPENAI_API_KEY") or ""
         k_fpr = hashlib.sha256(k.encode("utf-8")).hexdigest()[:12] if k else "missing"
-        logger.info(f"Agent server env: OPENAI_API_KEY={'set' if k else "missing"} fpr={k_fpr}")
+        logger.info(f"Agent server env: OPENAI_MODEL={server_env.get('OPENAI_MODEL')} LLM_PROVIDER={server_env.get('LLM_PROVIDER')} START_AGENT_SERVER={os.getenv('START_AGENT_SERVER')} AGENT_BASE_URL={agent_base_url or 'local'} OPENAI_API_KEY={'set' if k else "missing"} fpr={k_fpr}")
         server_proc = subprocess.Popen(
             [
                 sys.executable,
@@ -273,7 +294,16 @@ async def run_evaluation(
 
 
 
-    async def call_agent_act(prepared_task: Task, episode_task_id: str, snapshot_html: str, url: str, step_index: int, history: list[dict]) -> tuple[list[BaseAction], dict]:
+    async def call_agent_act(
+        prepared_task: Task,
+        episode_task_id: str,
+        snapshot_html: str,
+        url: str,
+        step_index: int,
+        history: list[dict],
+        requested_model: str,
+        screenshot: str | None = None,
+    ) -> tuple[list[BaseAction], dict]:
         import aiohttp
 
         payload = {
@@ -281,9 +311,11 @@ async def run_evaluation(
             "prompt": prepared_task.prompt,
             "url": url,
             "snapshot_html": snapshot_html,
+            "screenshot": screenshot,
             "step_index": int(step_index),
             "web_project_id": prepared_task.web_project_id,
             "history": history,
+            "model": str(requested_model),
         }
         async with aiohttp.ClientSession() as session:
             async with session.post(f"{agent_base_url}/act", json=payload) as resp:
@@ -309,14 +341,46 @@ async def run_evaluation(
                 continue
         return actions, metrics
 
+    async def call_memory_trajectory(*, prepared_task: Task, episode_task_id: str, success: bool, score: float, history: list[dict]) -> None:
+        """Best-effort push of finished trajectory to agent memory endpoint."""
+        import aiohttp
+
+        payload = {
+            "task_id": str(episode_task_id),
+            "prompt": prepared_task.prompt,
+            "outcome": "success" if bool(success) else "error",
+            "success": bool(success),
+            "reward": float(score),
+            "steps": history,
+            "summary": f"success={bool(success)} score={float(score):.3f} steps={len(history)}",
+        }
+        # Always keep a local mirror from eval side to avoid losing trajectories.
+        try:
+            with mirror_path.open("a", encoding="utf-8") as mf:
+                mf.write(json.dumps(payload, ensure_ascii=True) + "\n")
+        except Exception:
+            pass
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(f"{agent_base_url}/memory/trajectory", json=payload) as resp:
+                    # /memory/trajectory may not exist on old agents; ignore gracefully.
+                    if resp.status >= 400:
+                        return
+                    await resp.json()
+        except Exception:
+            return
+
     # Results tracking
+    requested_model = str(model)
     results = {
         "provider": provider_s,
         "model": model,
+        "requested_model": requested_model,
         "num_tasks": 0,
         "successes": 0,
         "failures": 0,
         "errors": 0,
+        "model_mismatch_errors": 0,
         "timing": {
             "total_seconds": 0.0,
             "avg_task_seconds": 0.0,
@@ -379,7 +443,9 @@ async def run_evaluation(
                         snapshot_html=step_result.snapshot.html,
                         url=step_result.snapshot.url,
                         step_index=step_idx,
+                        screenshot=_serialize_screenshot(getattr(step_result.snapshot, "screenshot", None)),
                         history=history,
+                        requested_model=str(requested_model),
                     )
 
                     # Metrics are returned by the agent when AGENT_RETURN_METRICS=1.
@@ -388,6 +454,10 @@ async def run_evaluation(
                         usages = llm_meta.get("llm_usages")
                         model_name = llm_meta.get("model") or model
                         episode_model = str(model_name)
+                        if bool(strict_model) and str(episode_model).strip() != str(requested_model).strip():
+                            raise RuntimeError(
+                                f"model_mismatch requested={requested_model} effective={episode_model} task={episode_task_id} step={step_idx}"
+                            )
                         if isinstance(usages, list):
                             for u in usages:
                                 if not isinstance(u, dict):
@@ -441,11 +511,19 @@ async def run_evaluation(
 
                     history.append({
                         "step": step_idx,
+                        "url": str(step_result.snapshot.url),
                         "action": action.type if action else "done",
                         "candidate_id": cid,
                         "text": getattr(action, "text", None) if action else None,
                         "exec_ok": exec_ok,
                         "error": exec_err,
+                        "agent_decision": (metrics.get("decision") if isinstance(metrics, dict) else None),
+                        "agent_next_goal": (metrics.get("next_goal") if isinstance(metrics, dict) else None),
+                        "agent_eval_prev_goal": (metrics.get("evaluation_previous_goal") if isinstance(metrics, dict) else None),
+                        "agent_memory_note": (metrics.get("memory") if isinstance(metrics, dict) else None),
+                        "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
+                        "prompt_tokens": int(sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
+                        "completion_tokens": int(sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
                     })
 
                     if final_success:
@@ -496,6 +574,14 @@ async def run_evaluation(
                     results["failures"] += 1
                     logger.info(f"  -> FAILED  (score={final_score:.2f}, steps={steps_count})")
 
+                await call_memory_trajectory(
+                    prepared_task=prepared_task,
+                    episode_task_id=str(episode_task_id),
+                    success=bool(final_success),
+                    score=float(final_score),
+                    history=history,
+                )
+
             except Exception as e:
                 # Best-effort cleanup (errors can happen before we reach the normal close path).
                 try:
@@ -506,6 +592,8 @@ async def run_evaluation(
                 task_elapsed = time.time() - task_start
                 results["num_tasks"] += 1
                 results["errors"] += 1
+                if "model_mismatch" in str(e):
+                    results["model_mismatch_errors"] += 1
                 results["episodes"].append({
                     "task_id": str(task.id),
                     "episode_task_id": str(getattr(locals().get('prepared_task', None), 'id', task.id)),
@@ -525,6 +613,18 @@ async def run_evaluation(
                     "error": str(e),
                 })
                 logger.error(f"  -> ERROR: {e}")
+                try:
+                    prepared_task_err = locals().get('prepared_task', task)
+                    history_err = locals().get('history', [])
+                    await call_memory_trajectory(
+                        prepared_task=prepared_task_err,
+                        episode_task_id=str(getattr(prepared_task_err, 'id', task.id)),
+                        success=False,
+                        score=0.0,
+                        history=history_err if isinstance(history_err, list) else [],
+                    )
+                except Exception:
+                    pass
     elapsed = time.time() - t_start
 
     # ── Summary ──────────────────────────────────────────────────
@@ -560,6 +660,7 @@ async def run_evaluation(
     print(f"  Successes:      {succ}")
     print(f"  Failures:       {results['failures']}")
     print(f"  Errors:         {results['errors']}")
+    print(f"  Model mismatch: {results.get('model_mismatch_errors', 0)}")
     print(f"  Success rate:   {rate:.1%}")
     print(f"  Avg score:      {avg_score:.3f}")
     print(f"  Avg steps:      {avg_steps:.1f}")
@@ -629,6 +730,8 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
     parser.add_argument('--out', default=None, help='Output JSON path (default: data/eval_results.json)')
     parser.add_argument('--task-cache', default=None, help='Task cache JSON path')
+    parser.add_argument('--memory-path', default=None, help='Trajectory memory JSONL path used by agent (default: data/memory/trajectories.jsonl)')
+    parser.add_argument("--strict-model", action=argparse.BooleanOptionalAction, default=True, help="Fail episodes when effective model != requested model")
     parser.add_argument("--distinct-use-cases", action="store_true", help="Pick tasks with distinct use cases")
     args = parser.parse_args()
 
@@ -647,6 +750,8 @@ def main():
             distinct_use_cases=bool(args.distinct_use_cases),
             out_path=args.out,
             task_cache=args.task_cache,
+            memory_path=args.memory_path,
+            strict_model=bool(args.strict_model),
         )
     )
 

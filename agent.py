@@ -6,6 +6,7 @@ import json
 import hashlib
 import os
 import re
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from html.parser import HTMLParser
 
@@ -15,6 +16,17 @@ from fastapi import Body, FastAPI, HTTPException
 os.environ.setdefault("LLM_PROVIDER", "openai")
 
 from llm_gateway import openai_chat_completions, is_sandbox_gateway_base_url
+from experience_memory import TrajectoryMemory, infer_high_level_intents, format_memory_context
+
+try:
+    from autoppia_iwa.src.web_agents.classes import IWebAgent
+    from autoppia_iwa.src.data_generation.tasks.classes import Task
+    from autoppia_iwa.src.execution.actions.base import BaseAction
+    import autoppia_iwa.src.execution.actions.actions  # noqa: F401
+except Exception:  # pragma: no cover
+    IWebAgent = object  # type: ignore[assignment]
+    Task = Any  # type: ignore[assignment]
+    BaseAction = Any  # type: ignore[assignment]
 
 try:
     from bs4 import BeautifulSoup  # type: ignore
@@ -449,6 +461,8 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
             continue
         if attr_map.get("disabled") is not None or attr_map.get("aria-disabled", "").lower() == "true":
             continue
+        if _is_hidden_candidate_attr(attr_map):
+            continue
 
         label = _extract_label_from_bs4(soup, el, attr_map)
 
@@ -670,6 +684,258 @@ def _dom_digest(html: str, limit: int = 1400) -> str:
             pass
 
     return _summarize_html(html, limit=limit)
+
+
+def _is_hidden_candidate_attr(attr_map: Dict[str, str]) -> bool:
+    try:
+        if attr_map.get("hidden") is not None:
+            return True
+        if str(attr_map.get("aria-hidden") or "").lower() == "true":
+            return True
+        style = str(attr_map.get("style") or "").lower()
+        if "display:none" in style or "visibility:hidden" in style:
+            return True
+        classes = str(attr_map.get("class") or "").lower()
+        if any(tok in classes for tok in ("hidden", "sr-only", "invisible")):
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _extract_page_ir(*, html: str, url: str, candidates: List[_Candidate], max_forms: int = 4, max_links: int = 20, max_cards: int = 10) -> Dict[str, Any]:
+    """Build deterministic, compact page IR to reduce prompt bloat."""
+    ir: Dict[str, Any] = {
+        "title": "",
+        "url_path": "",
+        "headings": [],
+        "forms": [],
+        "ctas": [],
+        "links": [],
+        "cards": [],
+    }
+    if not html:
+        return ir
+
+    try:
+        us = urlsplit(str(url or ""))
+        ir["url_path"] = str(us.path or "/")
+    except Exception:
+        ir["url_path"] = str(url or "")
+
+    if BeautifulSoup is not None:
+        try:
+            soup = BeautifulSoup(html, "lxml")
+            for t in soup(["script", "style", "noscript"]):
+                try:
+                    t.decompose()
+                except Exception:
+                    pass
+
+            try:
+                if soup.title:
+                    ir["title"] = _norm_ws(soup.title.get_text(" ", strip=True))[:120]
+            except Exception:
+                ir["title"] = ""
+
+            heads: list[str] = []
+            for h in soup.find_all(["h1", "h2", "h3"], limit=12):
+                tx = _norm_ws(h.get_text(" ", strip=True))
+                if tx and tx not in heads:
+                    heads.append(tx[:100])
+            ir["headings"] = heads[:10]
+        except Exception:
+            pass
+
+    forms_obj = _tool_extract_forms(html=html, max_forms=max_forms, max_inputs=16)
+    if isinstance(forms_obj, dict) and forms_obj.get("ok"):
+        forms = forms_obj.get("forms")
+        if isinstance(forms, list):
+            cleaned_forms = []
+            for f in forms[:max_forms]:
+                if not isinstance(f, dict):
+                    continue
+                controls = f.get("controls") if isinstance(f.get("controls"), list) else []
+                keep_controls = []
+                for c in controls[:12]:
+                    if not isinstance(c, dict):
+                        continue
+                    blob = _norm_ws(
+                        " ".join([
+                            str(c.get("tag") or ""),
+                            str(c.get("type") or ""),
+                            str(c.get("name") or ""),
+                            str(c.get("id") or ""),
+                            str(c.get("placeholder") or ""),
+                            str(c.get("aria_label") or ""),
+                            str(c.get("text") or ""),
+                        ])
+                    )
+                    if blob:
+                        keep_controls.append(blob[:140])
+                if keep_controls:
+                    cleaned_forms.append({
+                        "id": str(f.get("id") or ""),
+                        "name": str(f.get("name") or ""),
+                        "method": str(f.get("method") or ""),
+                        "controls": keep_controls[:8],
+                    })
+            ir["forms"] = cleaned_forms[:max_forms]
+
+    links_obj = _tool_list_links(html=html, base_url=str(url), max_links=max_links, context_max=150)
+    if isinstance(links_obj, dict) and links_obj.get("ok"):
+        links = links_obj.get("links")
+        if isinstance(links, list):
+            clean_links = []
+            for l in links[:max_links]:
+                if not isinstance(l, dict):
+                    continue
+                text = _norm_ws(str(l.get("text") or ""))
+                href = _norm_ws(str(l.get("href") or ""))
+                ctx = _norm_ws(str(l.get("context") or ""))
+                if not text and not href:
+                    continue
+                clean_links.append({
+                    "text": text[:90],
+                    "href": href[:150],
+                    "ctx": ctx[:140],
+                })
+            ir["links"] = clean_links[:max_links]
+
+    cards_obj = _tool_list_cards(candidates=candidates, max_cards=max_cards, max_text=380, max_actions_per_card=3)
+    if isinstance(cards_obj, dict) and cards_obj.get("ok"):
+        cards = cards_obj.get("cards")
+        if isinstance(cards, list):
+            out_cards = []
+            for c in cards[:max_cards]:
+                if not isinstance(c, dict):
+                    continue
+                actions = c.get("actions") if isinstance(c.get("actions"), list) else []
+                actions_clean = []
+                for a in actions[:3]:
+                    if not isinstance(a, dict):
+                        continue
+                    actions_clean.append({
+                        "tag": str(a.get("tag") or ""),
+                        "text": _norm_ws(str(a.get("text") or ""))[:90],
+                        "href": _norm_ws(str(a.get("href") or ""))[:120],
+                    })
+                out_cards.append({
+                    "facts": [str(x)[:100] for x in (c.get("card_facts") or [])[:4]],
+                    "actions": actions_clean,
+                    "text": _norm_ws(str(c.get("card_text") or ""))[:260],
+                })
+            ir["cards"] = out_cards
+
+    ctas: list[str] = []
+    for c in candidates:
+        if c.tag not in {"button", "a"}:
+            continue
+        tx = _norm_ws(c.text or "")
+        if not tx:
+            continue
+        tx_l = tx.lower()
+        if tx_l in {"home", "logo"}:
+            continue
+        if tx not in ctas:
+            ctas.append(tx[:90])
+        if len(ctas) >= 16:
+            break
+    ir["ctas"] = ctas
+    return ir
+
+
+def _render_page_ir(ir: Dict[str, Any], max_chars: int = 2200) -> str:
+    lines: list[str] = []
+    title = _norm_ws(str(ir.get("title") or ""))
+    path = _norm_ws(str(ir.get("url_path") or ""))
+    if title:
+        lines.append(f"TITLE: {title[:120]}")
+    if path:
+        lines.append(f"PATH: {path[:140]}")
+
+    heads = ir.get("headings") if isinstance(ir.get("headings"), list) else []
+    if heads:
+        lines.append("HEADINGS: " + " | ".join(str(h)[:90] for h in heads[:8]))
+
+    forms = ir.get("forms") if isinstance(ir.get("forms"), list) else []
+    if forms:
+        lines.append("FORMS:")
+        for i, f in enumerate(forms[:4]):
+            if not isinstance(f, dict):
+                continue
+            method = str(f.get("method") or "")
+            controls = f.get("controls") if isinstance(f.get("controls"), list) else []
+            lines.append(f"- form[{i}] method={method} controls=" + " ; ".join(str(x)[:120] for x in controls[:6]))
+
+    ctas = ir.get("ctas") if isinstance(ir.get("ctas"), list) else []
+    if ctas:
+        lines.append("CTAS: " + " | ".join(str(c)[:80] for c in ctas[:12]))
+
+    links = ir.get("links") if isinstance(ir.get("links"), list) else []
+    if links:
+        lines.append("LINKS:")
+        for l in links[:8]:
+            if not isinstance(l, dict):
+                continue
+            lines.append(f"- text={str(l.get('text') or '')[:80]} href={str(l.get('href') or '')[:120]} ctx={str(l.get('ctx') or '')[:120]}")
+
+    cards = ir.get("cards") if isinstance(ir.get("cards"), list) else []
+    if cards:
+        lines.append("CARDS:")
+        for i, c in enumerate(cards[:6]):
+            if not isinstance(c, dict):
+                continue
+            facts = c.get("facts") if isinstance(c.get("facts"), list) else []
+            lines.append(f"- card[{i}] facts=" + " | ".join(str(x)[:80] for x in facts[:3]))
+            acts = c.get("actions") if isinstance(c.get("actions"), list) else []
+            for a in acts[:2]:
+                if not isinstance(a, dict):
+                    continue
+                lines.append(f"  action tag={str(a.get('tag') or '')} text={str(a.get('text') or '')[:70]} href={str(a.get('href') or '')[:100]}")
+
+    out = "\n".join(lines)
+    return out[:max_chars]
+
+
+def _compute_ir_delta(*, task_id: str, page_ir: Dict[str, Any]) -> str:
+    if not task_id:
+        return ""
+    try:
+        st = _TASK_STATE.get(task_id)
+        if not isinstance(st, dict):
+            st = {}
+            _TASK_STATE[task_id] = st
+        prev = st.get("prev_ir")
+        if not isinstance(prev, dict):
+            prev = {}
+
+        def _set(key: str, d: Dict[str, Any]) -> set[str]:
+            v = d.get(key)
+            if not isinstance(v, list):
+                return set()
+            return {str(x)[:120] for x in v if isinstance(x, (str, int, float))}
+
+        prev_cta = _set("ctas", prev)
+        cur_cta = _set("ctas", page_ir)
+
+        prev_heads = _set("headings", prev)
+        cur_heads = _set("headings", page_ir)
+
+        p_forms = prev.get("forms") if isinstance(prev.get("forms"), list) else []
+        c_forms = page_ir.get("forms") if isinstance(page_ir.get("forms"), list) else []
+        p_cards = prev.get("cards") if isinstance(prev.get("cards"), list) else []
+        c_cards = page_ir.get("cards") if isinstance(page_ir.get("cards"), list) else []
+
+        st["prev_ir"] = page_ir
+        return (
+            f"forms:{len(p_forms)}->{len(c_forms)}, "
+            f"cards:{len(p_cards)}->{len(c_cards)}, "
+            f"ctas_added={len(cur_cta - prev_cta)}, ctas_removed={len(prev_cta - cur_cta)}, "
+            f"headings_added={len(cur_heads - prev_heads)}, headings_removed={len(prev_heads - cur_heads)}"
+        )
+    except Exception:
+        return ""
 
 
 # -----------------------------
@@ -907,6 +1173,22 @@ def _history_hint(history: List[Dict[str, Any]] | None) -> str:
         return "You appear to be repeating the same action. Choose a DIFFERENT candidate or try scroll."
 
     return ""
+
+
+def _task_risk_hint(task: str, step_index: int, candidates: List[_Candidate]) -> str:
+    t = str(task or "").lower()
+    risk_words = ("delete", "remove", "edit", "update", "add film", "registration", "contact")
+    if not any(w in t for w in risk_words):
+        return ""
+    n = len(candidates or [])
+    if step_index <= 1 and n >= 12:
+        return (
+            "High-risk task detected. Before destructive or irreversible clicks, identify the exact target via "
+            "find_card/list_cards/search_text using task constraints, then click the matched action."
+        )
+    return (
+        "For high-risk actions, verify target attributes in context first and avoid generic repeated clicks."
+    )
 
 
 
@@ -1383,6 +1665,35 @@ def _tool_list_cards(*, candidates: List["_Candidate"], max_cards: int = 25, max
     return {"ok": True, "count": len(cards), "cards": cards}
 
 
+def _tool_find_card(*, candidates: List["_Candidate"], query: str, max_cards: int = 10, max_text: int = 900, max_actions_per_card: int = 6) -> Dict[str, Any]:
+    """Find card-like groups whose text/facts/actions match a query."""
+    q = _norm_ws(str(query or "")).lower()
+    if not q:
+        return {"ok": False, "error": "missing query"}
+    base = _tool_list_cards(candidates=candidates, max_cards=max_cards * 4, max_text=max_text, max_actions_per_card=max_actions_per_card)
+    if not isinstance(base, dict) or not base.get("ok"):
+        return base
+    cards = base.get("cards") if isinstance(base.get("cards"), list) else []
+    out = []
+    for c in cards:
+        if not isinstance(c, dict):
+            continue
+        blob_parts = [str(c.get("card_text") or "")]
+        facts = c.get("card_facts") if isinstance(c.get("card_facts"), list) else []
+        blob_parts.extend(str(x) for x in facts[:8])
+        acts = c.get("actions") if isinstance(c.get("actions"), list) else []
+        for a in acts[:6]:
+            if isinstance(a, dict):
+                blob_parts.append(str(a.get("text") or ""))
+                blob_parts.append(str(a.get("href") or ""))
+        blob = _norm_ws(" ".join(blob_parts)).lower()
+        if q in blob:
+            out.append(c)
+        if len(out) >= int(max_cards or 0):
+            break
+    return {"ok": True, "query": q, "count": len(out), "cards": out}
+
+
 _TOOL_REGISTRY = {
     "search_text": _tool_search_text,
     "visible_text": _tool_visible_text,
@@ -1392,6 +1703,7 @@ _TOOL_REGISTRY = {
     "list_links": _tool_list_links,
     "list_candidates": _tool_list_candidates,
     "list_cards": _tool_list_cards,
+    "find_card": _tool_find_card,
 }
 
 
@@ -1407,6 +1719,8 @@ def _run_tool(tool: str, args: Dict[str, Any], *, html: str, url: str, candidate
         return fn(candidates=candidates, **{k: v for k, v in a.items() if k in {"max_n"}})
     if t == "list_cards":
         return fn(candidates=candidates, **{k: v for k, v in a.items() if k in {"max_cards", "max_text", "max_actions_per_card"}})
+    if t == "find_card":
+        return fn(candidates=candidates, **{k: v for k, v in a.items() if k in {"query", "max_cards", "max_text", "max_actions_per_card"}})
     if t == "list_links":
         return fn(html=html, base_url=str(url or ""), **{k: v for k, v in a.items() if k in {"max_links", "context_max", "href_regex", "text_regex"}})
     if t in {"search_text", "visible_text", "css_select", "xpath_select", "extract_forms"}:
@@ -1425,9 +1739,14 @@ def _llm_decide(
     dom_digest: str,
     html_snapshot: str,
     history: List[Dict[str, Any]] | None,
+    page_ir_text: str = "",
     extra_hint: str = "",
+    target_hint: str = "",
     state_delta: str = "",
+    ir_delta: str = "",
     prev_sig_set: set[str] | None = None,
+    memory_context: str = "",
+    model_override: str = "",
 ) -> Dict[str, Any]:
     browser_state = _format_browser_state(candidates=candidates, prev_sig_set=prev_sig_set)
     system_msg = (
@@ -1444,7 +1763,8 @@ def _llm_decide(
         "Available tools: search_text(args: {query, regex?, case_sensitive?, max_matches?, context_chars?}); "
         "visible_text(args: {max_chars?}); css_select(args: {selector, max_nodes?}); xpath_select(args: {xpath, max_nodes?}); "
         "extract_forms(args: {max_forms?, max_inputs?}); list_links(args: {max_links?, context_max?, href_regex?, text_regex?}); "
-        "list_candidates(args: {max_n?}); list_cards(args: {max_cards?, max_text?, max_actions_per_card?}). "
+        "list_candidates(args: {max_n?}); list_cards(args: {max_cards?, max_text?, max_actions_per_card?}); "
+        "find_card(args: {query, max_cards?, max_text?, max_actions_per_card?}). "
         "After a tool result is returned, pick the next action. Prefer at most 2 tool calls per step."
     )
 
@@ -1489,13 +1809,17 @@ def _llm_decide(
         f"TASK: {task}\n"
         f"STEP: {int(step_index)}\n"
         f"URL: {url}\n\n"
-        f"CURRENT STATE (TEXT SUMMARY):\n{page_summary}\n\n"
+        + (f"PAGE IR (PRIMARY STRUCTURED STATE):\n{page_ir_text}\n\n" if page_ir_text else "")
+        + f"CURRENT STATE (TEXT SUMMARY):\n{page_summary}\n\n"
         + (f"DOM DIGEST (STRUCTURED):\n{dom_digest}\n\n" if dom_digest else "")
         + (f"CARDS (GROUPED CLICKABLE CONTEXTS JSON):\n{cards_preview}\n\n" if cards_preview else "")
         + f"STRUCTURED STATE (JSON):\n{json.dumps(structured, ensure_ascii=True)}\n\n"
         + (f"HISTORY (last steps):\n{chr(10).join(history_lines)}\n\n" if history_lines else "")
         + (f"STATE HINT: {extra_hint}\n\n" if extra_hint else "")
+        + (f"TARGETING HINT: {target_hint}\n\n" if target_hint else "")
+        + (f"EPISODIC MEMORY:\n{memory_context}\n\n" if memory_context else "")
         + (f"STATE DELTA (prev -> current): {state_delta}\n\n" if state_delta else "")
+        + (f"PAGE IR DELTA (prev -> current): {ir_delta}\n\n" if ir_delta else "")
         + "BROWSER_STATE (interactive elements):\n" + browser_state + "\n\n"
         + "Instructions:\n"
         + "- Output JSON only.\n"
@@ -1504,12 +1828,14 @@ def _llm_decide(
         + "- Use candidate_id for click/type/select and ensure it is in-range.\n"
         + "- Use navigate with a full URL when you need to change pages (prefer preserving existing query params like seed).\n"
         + "- For type/select, include non-empty text.\n"
+        + "- For delete/remove/edit tasks: confirm the target item with find_card/list_cards before clicking destructive actions.\n"
         + "- Provide evaluation_previous_goal, memory, next_goal (each 1 sentence). Do NOT provide detailed chain-of-thought.\n"
         + "- If CREDENTIALS are provided, use those exact values when typing.\n"
+        + "- Use successful memory as positive guidance and failed memory as anti-patterns.\n"
     )
 
     # Default to validator gateway default model.
-    model = os.getenv("OPENAI_MODEL", "gpt-5.2")
+    model = str(model_override or os.getenv("OPENAI_MODEL", "gpt-5.2"))
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
 
@@ -1714,228 +2040,364 @@ def _compute_state_delta(
     except Exception:
         return ""
 
+
+class ApifiedWebAgent(IWebAgent):
+    """Core operator implementing IWA's IWebAgent interface."""
+
+    def __init__(self, id: str = "1", name: str = "AutoppiaOperator") -> None:
+        self.id = str(id)
+        self.name = str(name)
+        self.memory = TrajectoryMemory()
+
+    async def act(
+        self,
+        *,
+        task: Task,
+        snapshot_html: str,
+        screenshot: str | bytes | None = None,
+        url: str,
+        step_index: int,
+        history: list[dict[str, Any]] | None = None,
+    ) -> list[BaseAction]:
+        task_id = str(getattr(task, "id", "") or "")
+        prompt = str(getattr(task, "prompt", "") or "")
+        payload = {
+            "task_id": task_id,
+            "prompt": prompt,
+            "snapshot_html": snapshot_html,
+            "screenshot": screenshot,
+            "url": url,
+            "step_index": int(step_index),
+            "history": history or [],
+        }
+        resp = await self.act_from_payload(payload)
+        actions = resp.get("actions") if isinstance(resp, dict) else []
+        out: list[BaseAction] = []
+        for a in actions if isinstance(actions, list) else []:
+            if not isinstance(a, dict):
+                continue
+            try:
+                ac = BaseAction.create_action(a)
+                if ac is not None:
+                    out.append(ac)
+            except Exception:
+                continue
+        return out
+
+    async def act_from_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        task_id = str(payload.get("task_id") or "")
+        task = payload.get("prompt") or payload.get("task_prompt") or ""
+        model_override = str(payload.get("model") or "").strip()
+        url = payload.get("url") or ""
+        step_index = int(payload.get("step_index") or 0)
+        return_metrics = os.getenv("AGENT_RETURN_METRICS", "0").lower() in {"1", "true", "yes"}
+        html = payload.get("snapshot_html") or ""
+        history = payload.get("history") if isinstance(payload.get("history"), list) else None
+        page_summary = _summarize_html(html)
+        dom_digest = _dom_digest(html)
+        task = str(task or "")
+
+        def _resp(actions: list[dict[str, Any]], metrics: dict[str, Any] | None = None) -> Dict[str, Any]:
+            out: Dict[str, Any] = {"actions": actions}
+            if return_metrics and metrics is not None:
+                out["metrics"] = metrics
+            return out
+
+        candidates = _extract_candidates(html, max_candidates=80)
+        candidates_all = list(candidates)
+        candidates = _select_candidates_for_llm(task, candidates_all, current_url=str(url), max_total=60)
+        page_ir = _extract_page_ir(html=html, url=str(url), candidates=candidates)
+        page_ir_text = _render_page_ir(page_ir, max_chars=int(os.getenv("AGENT_PAGE_IR_MAX_CHARS", "2200")))
+
+        if task_id == "check":
+            if candidates:
+                return _resp([{"type": "ClickAction", "selector": candidates[0].click_selector()}], {"decision": "check_click", "candidate_id": 0})
+            return _resp([{"type": "WaitAction", "time_seconds": 0.1}], {"decision": "check_wait"})
+
+        st = _TASK_STATE.get(task_id) if task_id else None
+        effective_url = str(url)
+        try:
+            if isinstance(st, dict):
+                eu = str(st.get("effective_url") or "").strip()
+                if eu:
+                    effective_url = eu
+        except Exception:
+            effective_url = str(url)
+        extra_hint = ""
+        target_hint = ""
+        prev_sig_set = None
+        try:
+            if isinstance(st, dict):
+                prev = st.get('prev_sig_set')
+                if isinstance(prev, list):
+                    prev_sig_set = set(str(x) for x in prev)
+        except Exception:
+            prev_sig_set = None
+
+        state_delta = _compute_state_delta(task_id=task_id, url=str(url), page_summary=page_summary, dom_digest=dom_digest, html_snapshot=html, candidates=candidates)
+        ir_delta = _compute_ir_delta(task_id=task_id, page_ir=page_ir)
+        try:
+            if isinstance(st, dict):
+                last_url = str(st.get("last_url") or "")
+                repeat = int(st.get("repeat") or 0)
+                if last_url and last_url == str(url) and repeat >= 2:
+                    extra_hint = "You appear stuck on the same URL after repeating an action. Choose a different element or scroll."
+        except Exception:
+            extra_hint = ""
+        try:
+            risk_hint = _task_risk_hint(task=task, step_index=int(step_index), candidates=candidates)
+            if risk_hint:
+                extra_hint = ((extra_hint + " ") if extra_hint else "") + risk_hint
+        except Exception:
+            pass
+        try:
+            target_hint = str(payload.get("target_hint") or os.getenv("AGENT_TARGET_HINT", "")).strip()
+        except Exception:
+            target_hint = ""
+
+        mem_ctx = ""
+        try:
+            mem = self.memory.retrieve_similar(task=task, k_success=int(os.getenv("MEMORY_TOPK_SUCCESS", "3")), k_error=int(os.getenv("MEMORY_TOPK_ERROR", "2")))
+            mem_ctx = format_memory_context(mem)
+        except Exception:
+            mem_ctx = ""
+
+        try:
+            base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+            if not os.getenv("OPENAI_API_KEY") and not is_sandbox_gateway_base_url(base_url):
+                raise RuntimeError("OPENAI_API_KEY not set")
+            decision = _llm_decide(
+                task_id=task_id,
+                task=task,
+                step_index=step_index,
+                url=effective_url,
+                candidates=candidates,
+                page_summary=page_summary,
+                dom_digest=dom_digest,
+                html_snapshot=html,
+                history=history,
+                page_ir_text=page_ir_text,
+                extra_hint=extra_hint,
+                target_hint=target_hint,
+                state_delta=state_delta,
+                ir_delta=ir_delta,
+                prev_sig_set=prev_sig_set,
+                memory_context=mem_ctx,
+                model_override=model_override,
+            )
+        except Exception as e:
+            if os.getenv("AGENT_DEBUG_ERRORS", "0").lower() in {"1", "true", "yes"}:
+                raise HTTPException(status_code=500, detail=str(e)[:400])
+            return _resp([{"type": "WaitAction", "time_seconds": 1.0}], {"decision": "error_wait"})
+
+        try:
+            if task_id:
+                st3 = _TASK_STATE.get(task_id)
+                if isinstance(st3, dict):
+                    if isinstance(decision.get("memory"), str):
+                        st3["memory"] = decision.get("memory")
+                    if isinstance(decision.get("next_goal"), str):
+                        st3["next_goal"] = decision.get("next_goal")
+        except Exception:
+            pass
+
+        action = (decision.get("action") or "").lower()
+        cid = decision.get("candidate_id")
+        text = decision.get("text")
+        if isinstance(cid, str) and cid.isdigit():
+            cid = int(cid)
+
+        try:
+            if task_id:
+                st_ep = _TASK_STATE.setdefault(task_id, {})
+                ep_steps = st_ep.get("episode_steps")
+                if not isinstance(ep_steps, list):
+                    ep_steps = []
+                    st_ep["episode_steps"] = ep_steps
+                ep_steps.append({
+                    "step_index": int(step_index),
+                    "url": str(url),
+                    "action": str(action),
+                    "candidate_id": int(cid) if isinstance(cid, int) else None,
+                    "text": str(text or "")[:220],
+                    "model_meta": decision.get("_meta", {}),
+                })
+        except Exception:
+            pass
+
+        out: Dict[str, Any]
+        if action == "navigate":
+            nav_url_raw = str(decision.get("url") or "").strip()
+            if not nav_url_raw:
+                out = _resp([{"type": "WaitAction", "time_seconds": 1.0}], {"decision": "navigate_missing_url"})
+            else:
+                nav_url = _resolve_url(nav_url_raw, effective_url or str(url))
+                if _same_path_query(nav_url, effective_url, base_a=effective_url, base_b=""):
+                    _update_task_state(task_id, str(url), "navigate_same_url_scroll")
+                    out = _resp([{ "type": "ScrollAction", "down": True, "up": False}], {"decision": "scroll_override"})
+                else:
+                    _update_task_state(task_id, str(url), f"navigate:{nav_url}")
+                    try:
+                        if task_id and isinstance(_TASK_STATE.get(task_id), dict):
+                            _TASK_STATE[task_id]["effective_url"] = str(nav_url)
+                    except Exception:
+                        pass
+                    out = _resp([{"type": "NavigateAction", "url": nav_url, "go_back": False, "go_forward": False}], {"decision": "navigate", "url": nav_url, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+        elif action in {"scroll_down", "scroll_up"}:
+            _update_task_state(task_id, str(url), f"{action}")
+            out = _resp([{"type": "ScrollAction", "down": action == "scroll_down", "up": action == "scroll_up"}], {"decision": decision.get("action"), "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+        elif action == "done":
+            _update_task_state(task_id, str(url), "done")
+            out = _resp([], {"decision": "done", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+        elif action in {"click", "type", "select"} and isinstance(cid, int) and 0 <= cid < len(candidates):
+            c = candidates[cid]
+            if action == "click":
+                selector = c.click_selector()
+                try:
+                    if isinstance(selector, dict) and selector.get("type") == "attributeValueSelector" and selector.get("attribute") == "href":
+                        href = str(selector.get("value") or "")
+                        fixed = _preserve_seed_url(href, effective_url or str(url))
+                        if fixed and fixed != href:
+                            fixed_abs = _resolve_url(fixed, effective_url or str(url))
+                            if _same_path_query(fixed_abs, effective_url, base_a=effective_url, base_b=""):
+                                _update_task_state(task_id, str(url), "navigate_seed_fix_same_url_scroll")
+                                out = _resp([{ "type": "ScrollAction", "down": True, "up": False}], {"decision": "scroll_override"})
+                            else:
+                                _update_task_state(task_id, str(url), f"navigate_seed_fix:{fixed_abs}")
+                                try:
+                                    if task_id and isinstance(_TASK_STATE.get(task_id), dict):
+                                        _TASK_STATE[task_id]["effective_url"] = str(fixed_abs)
+                                except Exception:
+                                    pass
+                                out = _resp([{ "type": "NavigateAction", "url": fixed_abs, "go_back": False, "go_forward": False}], {"decision": "navigate", "url": fixed_abs, "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+                        else:
+                            _update_task_state(task_id, str(url), f"click:{_selector_repr(selector)}")
+                            out = _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+                    else:
+                        _update_task_state(task_id, str(url), f"click:{_selector_repr(selector)}")
+                        out = _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+                except Exception:
+                    _update_task_state(task_id, str(url), f"click:{_selector_repr(selector)}")
+                    out = _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+            elif action == "type":
+                if not text:
+                    raise HTTPException(status_code=400, detail="type action missing text")
+                selector = c.type_selector()
+                _update_task_state(task_id, str(url), f"type:{_selector_repr(selector)}")
+                out = _resp([{"type": "TypeAction", "selector": selector, "text": str(text)}], {"decision": "type", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+            else:
+                if not text:
+                    raise HTTPException(status_code=400, detail="select action missing text")
+                selector = c.type_selector()
+                _update_task_state(task_id, str(url), f"select:{_selector_repr(selector)}")
+                out = _resp([{"type": "SelectDropDownOptionAction", "selector": selector, "text": str(text), "timeout_ms": int(os.getenv("AGENT_SELECT_TIMEOUT_MS", "4000"))}], {"decision": "select", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+        else:
+            if candidates and step_index < 5:
+                selector = candidates[0].click_selector()
+                _update_task_state(task_id, str(url), f"fallback_click:{_selector_repr(selector)}")
+                out = _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click_override", "candidate_id": 0 if candidates else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+            else:
+                _update_task_state(task_id, str(url), "fallback_wait")
+                out = _resp([{"type": "WaitAction", "time_seconds": 2.0}], {"decision": "fallback_wait", "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+
+        try:
+            episode_done = bool(payload.get("episode_done")) or bool(payload.get("done")) or action == "done"
+            if episode_done and task_id:
+                success_raw = payload.get("episode_success", payload.get("success", payload.get("outcome", "")))
+                if isinstance(success_raw, bool):
+                    outcome = "success" if success_raw else "error"
+                else:
+                    outcome = str(success_raw or ("success" if action == "done" else "error"))
+                reward_raw = payload.get("reward", payload.get("episode_reward", 1.0 if outcome == "success" else 0.0))
+                reward = float(reward_raw) if str(reward_raw).strip() else (1.0 if outcome == "success" else 0.0)
+
+                st_ep = _TASK_STATE.get(task_id) if task_id else None
+                steps = []
+                if isinstance(st_ep, dict) and isinstance(st_ep.get("episode_steps"), list):
+                    steps = st_ep.get("episode_steps") or []
+                summary = (decision.get("memory") or decision.get("evaluation_previous_goal") or "") if isinstance(decision, dict) else ""
+                intents = infer_high_level_intents(task)
+                self.memory.save_trajectory(
+                    task_id=task_id,
+                    task=task,
+                    outcome=outcome,
+                    reward=reward,
+                    steps=[s for s in steps if isinstance(s, dict)],
+                    summary=str(summary or f"Outcome={outcome}; steps={len(steps)}"),
+                    intents=intents,
+                    metadata={"url": str(url), "step_index": int(step_index)},
+                )
+                if isinstance(st_ep, dict):
+                    st_ep["episode_steps"] = []
+        except Exception:
+            pass
+
+        return out
+
 # -----------------------------
 # HTTP entrypoint
 # -----------------------------
 
-@app.post("/act", summary="Decide next agent actions")
-async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    def _resp(actions: list[dict[str, Any]], metrics: dict[str, Any] | None = None) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"actions": actions}
-        if return_metrics and metrics is not None:
-            out["metrics"] = metrics
-        return out
-
-    task_id = str(payload.get("task_id") or "")
-    task = payload.get("prompt") or payload.get("task_prompt") or ""
-    url = payload.get("url") or ""
-    step_index = int(payload.get("step_index") or 0)
-    return_metrics = os.getenv("AGENT_RETURN_METRICS", "0").lower() in {"1", "true", "yes"}
-    html = payload.get("snapshot_html") or ""
-    history = payload.get("history") if isinstance(payload.get("history"), list) else None
-    page_summary = _summarize_html(html)
-    dom_digest = _dom_digest(html)
-    task = str(task or "")
-    task_for_llm = task
+AutoppiaOperator = ApifiedWebAgent
+OPERATOR = AutoppiaOperator(id=os.getenv("WEB_AGENT_ID", "1"), name="AutoppiaOperator")
 
 
-    # Extract + rank candidates before LLM.
-    candidates = _extract_candidates(html, max_candidates=80)
-    candidates_all = list(candidates)
-    candidates = _select_candidates_for_llm(task, candidates_all, current_url=str(url), max_total=60)
-
-    if task_id == "check":
-        # Permit repo self-checks without requiring OPENAI credentials.
-        if candidates:
-            return _resp([{"type": "ClickAction", "selector": candidates[0].click_selector()}], {"decision": "check_click", "candidate_id": 0})
-        return _resp([{"type": "WaitAction", "time_seconds": 0.1}], {"decision": "check_wait"})
-
-
-    st = _TASK_STATE.get(task_id) if task_id else None
-    effective_url = str(url)
+def _task_from_payload(payload: Dict[str, Any]) -> Task:
+    """Build a minimal Task object from /act payload for the IWebAgent interface."""
+    task_payload = {
+        "id": str(payload.get("task_id") or ""),
+        "url": str(payload.get("url") or ""),
+        "prompt": str(payload.get("prompt") or payload.get("task_prompt") or ""),
+        "web_project_id": payload.get("web_project_id"),
+    }
     try:
-        if isinstance(st, dict):
-            eu = str(st.get("effective_url") or "").strip()
-            if eu:
-                effective_url = eu
-    except Exception:
-        effective_url = str(url)
-    extra_hint = ""
-    prev_sig_set = None
-    try:
-        if isinstance(st, dict):
-            prev = st.get('prev_sig_set')
-            if isinstance(prev, list):
-                prev_sig_set = set(str(x) for x in prev)
-    except Exception:
-        prev_sig_set = None
-
-    state_delta = _compute_state_delta(task_id=task_id, url=str(url), page_summary=page_summary, dom_digest=dom_digest, html_snapshot=html, candidates=candidates)
-    try:
-        if isinstance(st, dict):
-            last_url = str(st.get("last_url") or "")
-            repeat = int(st.get("repeat") or 0)
-            if last_url and last_url == str(url) and repeat >= 2:
-                extra_hint = "You appear stuck on the same URL after repeating an action. Choose a different element or scroll."
-    except Exception:
-        extra_hint = ""
-
-    try:
-        base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
-        if not os.getenv("OPENAI_API_KEY") and not is_sandbox_gateway_base_url(base_url):
-            raise RuntimeError("OPENAI_API_KEY not set")
-        decision = _llm_decide(
-            task_id=task_id,
-            task=task_for_llm,
-            step_index=step_index,
-            url=effective_url,
-            candidates=candidates,
-            page_summary=page_summary,
-            dom_digest=dom_digest,
-            html_snapshot=html,
-            history=history,
-            extra_hint=extra_hint,
-            state_delta=state_delta,
-            prev_sig_set=prev_sig_set,
-        )
-        if os.getenv("AGENT_LOG_DECISIONS", "0").lower() in {"1", "true", "yes"}:
-            try:
-                top = []
-                for i, c in enumerate(candidates[:5]):
-                    top.append({
-                        "i": i,
-                        "tag": c.tag,
-                        "text": (c.text or "")[:80],
-                        "context": (c.context or "")[:80],
-                        "sel": _selector_repr(c.selector),
-                        "click_sel": _selector_repr(c.click_selector()),
-                    })
-                print(json.dumps({
-                    "task_id": task_id,
-                    "url": url,
-                    "task": task_for_llm[:200],
-                    "decision": decision,
-                    "top_candidates": top,
-                }, ensure_ascii=True))
-            except Exception:
-                pass
-    except Exception as e:
-        # Fail closed: don't navigate away on internal errors (it destroys the episode).
-        # If you want detailed errors during local dev, set AGENT_DEBUG_ERRORS=1.
-        if os.getenv("AGENT_DEBUG_ERRORS", "0").lower() in {"1", "true", "yes"}:
-            raise HTTPException(status_code=500, detail=str(e)[:400])
-        if task_id != "check" and os.getenv("AGENT_LOG_ERRORS", "0").lower() in {"1", "true", "yes"}:
-            try:
-                key = os.getenv("OPENAI_API_KEY", "")
-                key_fpr = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12] if key else "missing"
-                base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
-                print(json.dumps({"event": "agent_error", "task_id": task_id, "error": str(e)[:400], "key_fpr": key_fpr, "base_url": base_url}, ensure_ascii=True))
-            except Exception:
-                pass
-        return _resp([{"type": "WaitAction", "time_seconds": 1.0}], {"decision": "error_wait"})
-
-    try:
-        if task_id:
-            st3 = _TASK_STATE.get(task_id)
-            if isinstance(st3, dict):
-                if isinstance(decision.get("memory"), str):
-                    st3["memory"] = decision.get("memory")
-                if isinstance(decision.get("next_goal"), str):
-                    st3["next_goal"] = decision.get("next_goal")
+        if isinstance(Task, type):
+            return Task(**task_payload)
     except Exception:
         pass
-
-    action = (decision.get("action") or "").lower()
-    cid = decision.get("candidate_id")
-    text = decision.get("text")
-
-    # Be forgiving if model emits numbers as strings.
-    if isinstance(cid, str) and cid.isdigit():
-        cid = int(cid)
+    return SimpleNamespace(**task_payload)
 
 
-    if action == "navigate":
-        nav_url_raw = str(decision.get("url") or "").strip()
-        if not nav_url_raw:
-            return _resp([{"type": "WaitAction", "time_seconds": 1.0}], {"decision": "navigate_missing_url"})
+@app.post("/act", summary="Decide next agent actions")
+async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    task = _task_from_payload(payload)
+    snapshot_html = str(payload.get("snapshot_html") or "")
+    url = str(payload.get("url") or "")
+    screenshot = payload.get("screenshot")
+    step_index = int(payload.get("step_index") or 0)
+    history = payload.get("history")
+    if not isinstance(history, list):
+        history = []
+    actions = await OPERATOR.act(
+        task=task,
+        snapshot_html=snapshot_html,
+        screenshot=screenshot,
+        url=url,
+        step_index=step_index,
+        history=history,
+    )
+    return {"actions": [action.model_dump(exclude_none=True) for action in actions]}
 
-        nav_url = _resolve_url(nav_url_raw, effective_url or str(url))
 
-        # If the evaluator reports a stale URL, track an effective URL ourselves to prevent navigate loops.
-        if _same_path_query(nav_url, effective_url, base_a=effective_url, base_b=""):
-            _update_task_state(task_id, str(url), "navigate_same_url_scroll")
-            return _resp([{ "type": "ScrollAction", "down": True, "up": False}], {"decision": "scroll_override"})
-
-        _update_task_state(task_id, str(url), f"navigate:{nav_url}")
-        try:
-            if task_id and isinstance(_TASK_STATE.get(task_id), dict):
-                _TASK_STATE[task_id]["effective_url"] = str(nav_url)
-        except Exception:
-            pass
-        return _resp([{"type": "NavigateAction", "url": nav_url, "go_back": False, "go_forward": False}], {"decision": "navigate", "url": nav_url, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
-
-    if action in {"scroll_down", "scroll_up"}:
-        _update_task_state(task_id, str(url), f"{action}")
-        return _resp([{"type": "ScrollAction", "down": action == "scroll_down", "up": action == "scroll_up"}], {"decision": decision.get("action"), "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
-    if action == "wait":
-        # Avoid wait; it is rarely the right move in this benchmark.
-        if candidates:
-            selector = candidates[0].click_selector()
-            _update_task_state(task_id, str(url), f"click_override:{_selector_repr(selector)}")
-            return _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
-        _update_task_state(task_id, str(url), "scroll_override")
-        return _resp([{"type": "ScrollAction", "down": True, "up": False}], {"decision": "scroll_override", "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
-    if action == "done":
-        _update_task_state(task_id, str(url), "done")
-        return _resp([], {"decision": "done", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
-
-    if action in {"click", "type", "select"} and isinstance(cid, int) and 0 <= cid < len(candidates):
-        c = candidates[cid]
-
-        if action == "click":
-            selector = c.click_selector()
-            # Preserve seed across internal navigations when clicking href-based links.
-            try:
-                if isinstance(selector, dict) and selector.get("type") == "attributeValueSelector" and selector.get("attribute") == "href":
-                    href = str(selector.get("value") or "")
-                    fixed = _preserve_seed_url(href, effective_url or str(url))
-                    if fixed and fixed != href:
-                        fixed_abs = _resolve_url(fixed, effective_url or str(url))
-                        # Avoid endless navigate loops if this would keep us on the same page.
-                        if _same_path_query(fixed_abs, effective_url, base_a=effective_url, base_b=""):
-                            _update_task_state(task_id, str(url), "navigate_seed_fix_same_url_scroll")
-                            return _resp([{ "type": "ScrollAction", "down": True, "up": False}], {"decision": "scroll_override"})
-                        _update_task_state(task_id, str(url), f"navigate_seed_fix:{fixed_abs}")
-                        try:
-                            if task_id and isinstance(_TASK_STATE.get(task_id), dict):
-                                _TASK_STATE[task_id]["effective_url"] = str(fixed_abs)
-                        except Exception:
-                            pass
-                        return _resp([{ "type": "NavigateAction", "url": fixed_abs, "go_back": False, "go_forward": False}], {"decision": "navigate", "url": fixed_abs, "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
-            except Exception:
-                pass
-            _update_task_state(task_id, str(url), f"click:{_selector_repr(selector)}")
-            return _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
-
-        if action == "type":
-            if not text:
-                raise HTTPException(status_code=400, detail="type action missing text")
-            selector = c.type_selector()
-            _update_task_state(task_id, str(url), f"type:{_selector_repr(selector)}")
-            return _resp([{"type": "TypeAction", "selector": selector, "text": str(text)}], {"decision": "type", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
-        if action == "select":
-            if not text:
-                raise HTTPException(status_code=400, detail="select action missing text")
-            selector = c.type_selector()
-            _update_task_state(task_id, str(url), f"select:{_selector_repr(selector)}")
-            return _resp([{"type": "SelectDropDownOptionAction", "selector": selector, "text": str(text), "timeout_ms": int(os.getenv("AGENT_SELECT_TIMEOUT_MS", "4000"))}], {"decision": "select", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
-
-    if candidates and step_index < 5:
-        selector = candidates[0].click_selector()
-        _update_task_state(task_id, str(url), f"fallback_click:{_selector_repr(selector)}")
-        return _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click_override", "candidate_id": 0 if candidates else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
-    _update_task_state(task_id, str(url), "fallback_wait")
-    return _resp([{"type": "WaitAction", "time_seconds": 2.0}], {"decision": "fallback_wait", "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+@app.post("/memory/trajectory", summary="Persist finished trajectory in episodic memory")
+async def memory_trajectory(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    task = str(payload.get("prompt") or payload.get("task_prompt") or "")
+    task_id = str(payload.get("task_id") or "")
+    outcome = str(payload.get("outcome") or ("success" if bool(payload.get("success")) else "error"))
+    reward = float(payload.get("reward") or (1.0 if outcome == "success" else 0.0))
+    steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+    summary = str(payload.get("summary") or f"Outcome={outcome}; steps={len(steps)}")
+    entry = OPERATOR.memory.save_trajectory(
+        task_id=task_id,
+        task=task,
+        outcome=outcome,
+        reward=reward,
+        steps=[s for s in steps if isinstance(s, dict)],
+        summary=summary,
+        intents=infer_high_level_intents(task),
+        metadata={"source": "memory_endpoint"},
+    )
+    return {"ok": True, "id": entry.get("id"), "outcome": entry.get("outcome")}
 
 
 @app.post("/step", summary="Alias for /act")
