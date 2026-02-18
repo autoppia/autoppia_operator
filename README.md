@@ -127,3 +127,10 @@ python check.py
 ```
 
 This validates entrypoints, endpoint shapes, and scans for obvious secrets.
+
+⚠️ deploy_check may fail locally if handshake env vars are missing:
+- set `MINER_AGENT_NAME` (or `AGENT_NAME`)
+- set `MINER_GITHUB_URL` (or `AGENT_GITHUB_URL` / `GITHUB_URL`)
+- optional: `AGENT_IMAGE`, `AGENT_VERSION`
+
+If those are absent, subnet metadata can be considered missing during handshake.
