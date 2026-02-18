@@ -45,11 +45,11 @@ def _normalize_demo_url(raw_url: str | None) -> str:
         if "://" not in normalized:
             if not normalized.startswith("/"):
                 normalized = f"/{normalized}"
-            return f"http://127.0.0.1{normalized}"
+            return f"http://localhost{normalized}"
         parsed = urlsplit(normalized)
-        return urlunsplit(("http", "127.0.0.1", parsed.path or "/", parsed.query, parsed.fragment))
+        return urlunsplit(("http", "localhost", parsed.path or "/", parsed.query, parsed.fragment))
     except Exception:
-        return "http://127.0.0.1/"
+        return "http://localhost/"
 
 
 def _is_navigate_action_type(action_type: Any) -> bool:
@@ -2100,7 +2100,7 @@ class ApifiedWebAgent(IWebAgent):
         task_id = str(payload.get("task_id") or "")
         task = payload.get("prompt") or payload.get("task_prompt") or ""
         model_override = str(payload.get("model") or "").strip()
-        url = payload.get("url") or ""
+        url = _normalize_demo_url(str(payload.get("url") or ""))
         step_index = int(payload.get("step_index") or 0)
         return_metrics = os.getenv("AGENT_RETURN_METRICS", "0").lower() in {"1", "true", "yes"}
         html = payload.get("snapshot_html") or ""
@@ -2296,7 +2296,7 @@ def _task_from_payload(payload: Dict[str, Any]) -> Task:
     """Build a minimal Task object from /act payload for the IWebAgent interface."""
     task_payload = {
         "id": str(payload.get("task_id") or ""),
-        "url": str(payload.get("url") or ""),
+        "url": _normalize_demo_url(str(payload.get("url") or "")),
         "prompt": str(payload.get("prompt") or payload.get("task_prompt") or ""),
         "web_project_id": payload.get("web_project_id"),
     }
@@ -2312,7 +2312,7 @@ def _task_from_payload(payload: Dict[str, Any]) -> Task:
 async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     task = _task_from_payload(payload)
     snapshot_html = str(payload.get("snapshot_html") or "")
-    url = str(payload.get("url") or "")
+    url = _normalize_demo_url(str(payload.get("url") or ""))
     screenshot = payload.get("screenshot")
     step_index = int(payload.get("step_index") or 0)
     history = payload.get("history")
