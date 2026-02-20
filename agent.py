@@ -7,13 +7,17 @@ import os
 import re
 import logging
 from types import SimpleNamespace
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from html.parser import HTMLParser
 
 from fastapi import Body, FastAPI, HTTPException
+from dotenv import load_dotenv
 
 # Default this branch to OpenAI via the validator gateway.
 os.environ.setdefault("LLM_PROVIDER", "openai")
+# Load local development env file when present.
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
 
 from llm_gateway import openai_chat_completions, is_sandbox_gateway_base_url
 
@@ -66,9 +70,17 @@ else:
 
 
 def _normalize_demo_url(raw_url: str | None) -> str:
-    """Rewrite URLs to localhost while preserving path/query/fragment."""
+    """Normalize URL, with optional demo-mode localhost rewriting.
+
+    By default we preserve real URLs.
+    Set `AGENT_FORCE_LOCALHOST_URLS=1` to force all URLs onto localhost for demo-web testing.
+    """
     normalized = str(raw_url or "").strip()
     if not normalized:
+        return normalized
+
+    force_localhost = _env_bool("AGENT_FORCE_LOCALHOST_URLS", False)
+    if not force_localhost:
         return normalized
 
     try:
@@ -1886,7 +1898,7 @@ def _llm_decide(
     )
 
     # Default to validator gateway default model.
-    model = str(model_override or os.getenv("OPENAI_MODEL", "gpt-5-mini"))
+    model = str(model_override or os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "350"))
 
@@ -2295,7 +2307,15 @@ class ApifiedWebAgent(IWebAgent):
             out = _resp([{"type": "ScrollAction", "down": action == "scroll_down", "up": action == "scroll_up"}], {"decision": decision.get("action"), "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
         elif action == "done":
             _update_task_state(task_id, str(url), "done")
-            out = _resp([], {"decision": "done", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+            out = _resp(
+                [{"type": "DoneAction", "reason": "Task complete"}],
+                {
+                    "decision": "done",
+                    "candidate_id": int(cid) if isinstance(cid, int) else None,
+                    "model": decision.get("_meta", {}).get("model"),
+                    "llm": decision.get("_meta", {}),
+                },
+            )
         elif action in {"click", "type", "select"} and isinstance(cid, int) and 0 <= cid < len(candidates):
             c = candidates[cid]
             if action == "click":
@@ -2386,7 +2406,12 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     task_id = str(payload.get("task_id") or "")
     step_index = int(payload.get("step_index") or 0)
     url = _normalize_demo_url(str(payload.get("url") or ""))
-    _log_trace(f"/act start task_id={task_id} step_index={step_index} url={url}")
+    _log_trace(
+        f"/act start task_id={task_id} step_index={step_index} url={url} "
+        f"prompt_len={len(str(payload.get('prompt') or payload.get('task_prompt') or ''))} "
+        f"html_len={len(str(payload.get('snapshot_html') or ''))} "
+        f"history_len={len(payload.get('history') or []) if isinstance(payload.get('history'), list) else 0}"
+    )
     raw_resp = await OPERATOR.act_from_payload(payload)
     actions = raw_resp.get("actions") if isinstance(raw_resp, dict) else []
     normalized = []
