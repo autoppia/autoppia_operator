@@ -169,6 +169,48 @@ _chutes = OpenAIGateway(
 _anthropic = AnthropicGateway()
 
 
+def _normalize_usage_from_response(
+    *,
+    raw_resp: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+) -> Dict[str, int]:
+    usage = raw_resp.get("usage") if isinstance(raw_resp.get("usage"), dict) else {}
+    pt = usage.get("prompt_tokens")
+    ct = usage.get("completion_tokens")
+    if pt is None:
+        pt = usage.get("input_tokens")
+    if ct is None:
+        ct = usage.get("output_tokens")
+    try:
+        pt_i = int(pt or 0)
+    except Exception:
+        pt_i = 0
+    try:
+        ct_i = int(ct or 0)
+    except Exception:
+        ct_i = 0
+
+    if pt_i > 0 or ct_i > 0:
+        return {"prompt_tokens": pt_i, "completion_tokens": ct_i, "total_tokens": pt_i + ct_i}
+
+    # Fallback estimate for providers/gateways that omit usage:
+    # ~4 chars/token is a coarse but practical default.
+    msg_chars = 0
+    for m in messages:
+        try:
+            msg_chars += len(str(m.get("content") or ""))
+        except Exception:
+            pass
+    out_chars = 0
+    try:
+        out_chars = len(str(raw_resp.get("choices", [{}])[0].get("message", {}).get("content") or ""))
+    except Exception:
+        out_chars = 0
+    est_pt = max(1, msg_chars // 4) if msg_chars > 0 else 0
+    est_ct = max(1, out_chars // 4) if out_chars > 0 else 0
+    return {"prompt_tokens": int(est_pt), "completion_tokens": int(est_ct), "total_tokens": int(est_pt + est_ct)}
+
+
 def openai_chat_completions(
     *,
     task_id: str,
@@ -191,7 +233,7 @@ def openai_chat_completions(
     m = str(model)
 
     if provider == "chutes":
-        return _chutes.chat_completions(task_id=task_id, body={
+        resp = _chutes.chat_completions(task_id=task_id, body={
             "model": m,
             "messages": messages,
             # Keep compatible defaults; some OpenAI-compatible providers may not
@@ -199,6 +241,9 @@ def openai_chat_completions(
             "temperature": float(temperature),
             "max_tokens": int(max_tokens),
         })
+        if isinstance(resp, dict):
+            resp["usage"] = _normalize_usage_from_response(raw_resp=resp, messages=messages)
+        return resp
 
     if provider == 'anthropic':
         # Convert OpenAI-style messages into Anthropic messages+system.
@@ -225,7 +270,10 @@ def openai_chat_completions(
         if system:
             body['system'] = system
 
-        return _anthropic.messages(task_id=task_id, body=body)
+        resp = _anthropic.messages(task_id=task_id, body=body)
+        if isinstance(resp, dict):
+            resp["usage"] = _normalize_usage_from_response(raw_resp=resp, messages=messages)
+        return resp
 
     # Default: OpenAI-compatible.
     body = {
@@ -244,7 +292,10 @@ def openai_chat_completions(
         })
 
     def _post(b: Dict[str, Any]) -> Dict[str, Any]:
-        return _openai.chat_completions(task_id=task_id, body=b)
+        resp = _openai.chat_completions(task_id=task_id, body=b)
+        if isinstance(resp, dict):
+            resp["usage"] = _normalize_usage_from_response(raw_resp=resp, messages=messages)
+        return resp
 
     try:
         return _post(body)

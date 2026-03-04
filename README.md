@@ -67,8 +67,21 @@ The operator then:
 1. Extracts interactive candidates from HTML (buttons/links/inputs, etc.).
 2. Ranks candidates against the task.
 3. Builds a compact deterministic **Page IR** (forms, headings, links, cards, CTAs) plus deltas from previous step.
-4. Calls the LLM to choose the next single action (`click`/`type`/`select`/`scroll_*`/`done`) using Page IR + step context.
-5. Returns a single IWA action (e.g. `ClickAction`, `TypeAction`, ...).
+4. Optionally runs a completion-check LLM call (small model, step/repeat-gated by default) to decide if task is already complete.
+5. Maintains RAM subgoal memory per `task_id` (inferred milestones, done/blocked tracking) and injects active-subgoal hint into planning.
+6. Calls the planner LLM to choose the next single action (`click`/`type`/`select`/`scroll_*`/`done`) using Page IR + step context.
+7. Returns IWA action(s) (for example `ClickAction`, `TypeAction`, and optional appended `DoneAction`).
+
+### Completion checker defaults
+
+- `AGENT_ENABLE_COMPLETION_CHECK=1` (enabled by default)
+- `AGENT_COMPLETION_MODEL=gpt-4o-mini` (smaller than typical planner model)
+- `AGENT_COMPLETION_MIN_CONFIDENCE=0.82`
+
+Planner reliability/cost behavior is now opinionated by default (not env-tuned):
+- candidate extraction/ranking budgeted internally
+- deterministic repair path (no extra planner call)
+- repeated URL+decision patterns hard-stop with `DoneAction`
 
 Credential placeholders like `<username>` / `<password>` are handled by IWA (the evaluator replaces placeholders in actions before execution).
 
@@ -77,6 +90,8 @@ Credential placeholders like `<username>` / `<password>` are handled by IWA (the
 The planner can request tools before choosing an action:
 - `search_text`
 - `visible_text`
+- `extract_tables`
+- `extract_entities`
 - `css_select`
 - `xpath_select`
 - `extract_forms`
@@ -119,6 +134,65 @@ python scripts/compare_eval.py --runs anthropic:claude-sonnet-4 --num-tasks 5 --
 Outputs:
 - `data/compare/<provider>__<model>.json`
 - `data/compare/compare_summary.json`
+
+## IWAP/S3 Training Pipelines
+
+`autoppia_operator/training` now includes:
+- typed trajectory classes (`TaskInfo`, `StepRecord`, `TrajectoryRecord`, ...)
+- IWAP API ingestion
+- direct S3 ingestion (`s3://bucket/prefix`) for task-log payloads
+- SFT exports (`sft_train.jsonl`, `sft_val.jsonl`)
+- PPO bootstrap export (`ppo_bootstrap.jsonl`)
+- online PPO-style rollout collector with IWA `StatefulEvaluator` as reward loop
+
+### Build datasets from IWAP API
+
+```bash
+python scripts/build_iwap_training_dataset.py \
+  --source iwap-api \
+  --base-url http://127.0.0.1:8000 \
+  --max-runs 200 \
+  --min-eval-score 0.5
+```
+
+Optional auth:
+- pass `--token <bearer-token>`, or
+- set `IWAP_API_TOKEN` in your environment.
+
+### Build datasets directly from S3
+
+```bash
+python scripts/build_iwap_training_dataset.py \
+  --source s3 \
+  --s3-bucket my-iwap-logs \
+  --s3-prefix task-logs/ \
+  --s3-region us-east-1
+```
+
+Note:
+- S3 mode requires `boto3` available on the training machine.
+
+Outputs (timestamped under `data/training/iwap/`):
+- `cleaned_trajectories.jsonl`: normalized + class-mapped trajectories.
+- `sft_all.jsonl`: chat-format SFT samples.
+- `sft_train.jsonl` / `sft_val.jsonl`: fine-tuning splits.
+- `ppo_bootstrap.jsonl`: transition rows usable for PPO/offline-RL bootstrap.
+- `manifest.json`: config + stats + file paths.
+
+### Collect PPO-style online rollouts (LLM exploration + StatefulEvaluator reward)
+
+```bash
+python scripts/run_iwa_ppo_loop.py \
+  --tasks-json data/tasks/tasks.json \
+  --num-episodes 50 \
+  --max-steps 25 \
+  --epsilon 0.05
+```
+
+Outputs (timestamped under `data/training/ppo/`):
+- `ppo_episodes.jsonl`
+- `ppo_transitions.jsonl`
+- `ppo_summary.json`
 
 ## Repo self-check
 
