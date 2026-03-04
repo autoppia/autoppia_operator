@@ -135,7 +135,7 @@ Outputs:
 - `data/compare/<provider>__<model>.json`
 - `data/compare/compare_summary.json`
 
-## IWAP/S3 Training Pipelines
+## IWAP/S3 Training Scripts
 
 `autoppia_operator/training` now includes:
 - typed trajectory classes (`TaskInfo`, `StepRecord`, `TrajectoryRecord`, ...)
@@ -143,9 +143,45 @@ Outputs:
 - direct S3 ingestion (`s3://bucket/prefix`) for task-log payloads
 - SFT exports (`sft_train.jsonl`, `sft_val.jsonl`)
 - PPO bootstrap export (`ppo_bootstrap.jsonl`)
-- online PPO-style rollout collector with IWA `StatefulEvaluator` as reward loop
+- optional online PPO rollout collector with IWA `StatefulEvaluator` as reward loop
 
-### Build datasets from IWAP API
+Recommended orchestration-friendly flow (modular, no monolithic auto-pipeline):
+
+1) List S3 task-log objects
+
+```bash
+python scripts/s3_list_task_logs.py \
+  --s3-bucket my-iwap-logs \
+  --s3-prefix task-logs/ \
+  --out data/training/s3_manifest.jsonl
+```
+
+2) Normalize S3 payloads into cleaned trajectories
+
+```bash
+python scripts/s3_normalize_trajectories.py \
+  --s3-bucket my-iwap-logs \
+  --s3-prefix task-logs/ \
+  --out-dir data/training/cleaned
+```
+
+3) Export SFT files from cleaned trajectories
+
+```bash
+python scripts/export_sft_from_cleaned.py \
+  --cleaned-jsonl data/training/cleaned/cleaned_trajectories.jsonl \
+  --out-dir data/training/sft
+```
+
+4) Export PPO bootstrap transitions from cleaned trajectories
+
+```bash
+python scripts/export_ppo_bootstrap_from_cleaned.py \
+  --cleaned-jsonl data/training/cleaned/cleaned_trajectories.jsonl \
+  --out-jsonl data/training/ppo/ppo_bootstrap.jsonl
+```
+
+Alternative single command still exists if needed:
 
 ```bash
 python scripts/build_iwap_training_dataset.py \
@@ -159,7 +195,7 @@ Optional auth:
 - pass `--token <bearer-token>`, or
 - set `IWAP_API_TOKEN` in your environment.
 
-### Build datasets directly from S3
+or:
 
 ```bash
 python scripts/build_iwap_training_dataset.py \
@@ -172,12 +208,12 @@ python scripts/build_iwap_training_dataset.py \
 Note:
 - S3 mode requires `boto3` available on the training machine.
 
-Outputs (timestamped under `data/training/iwap/`):
+Core outputs:
 - `cleaned_trajectories.jsonl`: normalized + class-mapped trajectories.
 - `sft_all.jsonl`: chat-format SFT samples.
 - `sft_train.jsonl` / `sft_val.jsonl`: fine-tuning splits.
 - `ppo_bootstrap.jsonl`: transition rows usable for PPO/offline-RL bootstrap.
-- `manifest.json`: config + stats + file paths.
+- `manifest` JSON files with stats + file paths.
 
 ### Collect PPO-style online rollouts (LLM exploration + StatefulEvaluator reward)
 
