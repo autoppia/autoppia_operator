@@ -87,7 +87,7 @@ def _normalized_to_record(normalized: dict[str, Any]) -> TrajectoryRecord:
     return TrajectoryRecord.from_dict(normalized)
 
 
-def _build_ppo_bootstrap_rows(records: list[TrajectoryRecord], *, terminal_bonus: float = 1.0) -> list[dict[str, Any]]:
+def build_ppo_bootstrap_rows(records: list[TrajectoryRecord], *, terminal_bonus: float = 1.0) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for rec in records:
         if not rec.steps:
@@ -282,7 +282,7 @@ def export_training_bundle(
     cleaned_rows = [r.to_dict() for r in records]
     sft_rows = [r.to_sft_record(system_prompt=system_prompt) for r in records]
     train_rows, val_rows = split_train_val(sft_rows, val_ratio=val_ratio, seed=seed)
-    ppo_rows = _build_ppo_bootstrap_rows(records)
+    ppo_rows = build_ppo_bootstrap_rows(records)
 
     cleaned_path = out_dir / "cleaned_trajectories.jsonl"
     sft_all_path = out_dir / "sft_all.jsonl"
@@ -332,6 +332,7 @@ __all__ = [
     "DatasetArtifacts",
     "IngestionStats",
     "TrajectoryBuildConfig",
+    "build_ppo_bootstrap_rows",
     "export_training_bundle",
     "ingest_from_iwap_api",
     "ingest_from_s3",
