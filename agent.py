@@ -24,6 +24,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False
 from llm_gateway import openai_chat_completions, is_sandbox_gateway_base_url
 from pricing import estimate_cost_usd
 from completion_checker import run_completion_check
+from fsm_operator import FSMOperator
 
 try:
     from autoppia_iwa.src.web_agents.act_protocol import ACT_PROTOCOL_VERSION as IWA_ACT_PROTOCOL_VERSION
@@ -85,6 +86,8 @@ _LOG_ERRORS = _env_bool("AGENT_LOG_ERRORS", False)
 _DEFAULT_EXECUTION_MODE = str(os.getenv("AGENT_ACT_EXECUTION_MODE", "single_step") or "").strip().lower()
 if _DEFAULT_EXECUTION_MODE not in {"single_step", "batch"}:
     _DEFAULT_EXECUTION_MODE = "single_step"
+_USE_FSM_OPERATOR = _env_bool("AGENT_USE_FSM_OPERATOR", True)
+_FSM_OPERATOR = FSMOperator(llm_call=openai_chat_completions)
 
 
 def _log_trace(message: str) -> None:
@@ -4030,6 +4033,33 @@ class ApifiedWebAgent(IWebAgent):
         page_summary = _summarize_html(html)
         dom_digest = _dom_digest(html)
         task = str(task or "")
+
+        if _USE_FSM_OPERATOR:
+            fsm_payload = dict(payload or {})
+            # Keep normalized values used by existing callers/tests.
+            fsm_payload["task_id"] = task_id
+            fsm_payload["prompt"] = task
+            fsm_payload["url"] = url
+            fsm_payload["step_index"] = int(step_index)
+            fsm_payload["snapshot_html"] = str(html or "")
+            fsm_payload["history"] = history or []
+            fsm_payload["include_reasoning"] = bool(include_reasoning)
+            try:
+                fsm_out = _FSM_OPERATOR.run(payload=fsm_payload, model_override=model_override)
+                if isinstance(fsm_out, dict):
+                    if return_metrics and isinstance(fsm_out.get("usage"), dict):
+                        fsm_out["metrics"] = {
+                            "llm": {
+                                "llm_calls": 1 if int((fsm_out.get("total_tokens") or 0)) > 0 else 0,
+                                "llm_usages": [dict(fsm_out.get("usage") or {})] if isinstance(fsm_out.get("usage"), dict) else [],
+                                "model": str(fsm_out.get("model") or model_override or os.getenv("OPENAI_MODEL", "gpt-4o-mini")),
+                            }
+                        }
+                    return fsm_out
+            except Exception as exc:
+                logger.error(
+                    f"[AGENT_TRACE] fsm_operator failed task_id={task_id} step_index={step_index} err={str(exc)}"
+                )
 
         def _build_reasoning(actions: list[dict[str, Any]], metrics: dict[str, Any] | None) -> str:
             if isinstance(metrics, dict):
