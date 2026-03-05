@@ -13,7 +13,8 @@ uvicorn main:app --host 0.0.0.0 --port $SANDBOX_AGENT_PORT
 So the only hard requirements are:
 - `main.py` exports `app`
 - `GET /health` returns 200
-- `POST /act` returns `{ "actions": [...] }`
+- `POST /act` returns canonical IWA payload:
+  `{ "tool_calls": [...], "content": "...", "done": false, "state_out": {} }`
 
 ### Sandbox dependencies / requirements.txt
 
@@ -63,6 +64,13 @@ This is how the gateway correlates all model calls to a single evaluation episod
 
 The API layer is intentionally thin: it forwards to `AutoppiaOperator` (class implementing `IWebAgent.act()` from IWA).
 
+Current canonical `/act` response keys:
+- `protocol_version` (currently `1.0`)
+- `tool_calls` (namespaced tool calls, e.g. `browser.click`, `user.request_input`)
+- `content` (optional final user-facing text)
+- `done` (boolean completion hint)
+- `state_out` (state roundtrip object)
+
 The operator then:
 1. Extracts interactive candidates from HTML (buttons/links/inputs, etc.).
 2. Ranks candidates against the task.
@@ -70,7 +78,7 @@ The operator then:
 4. Optionally runs a completion-check LLM call (small model, step/repeat-gated by default) to decide if task is already complete.
 5. Maintains RAM subgoal memory per `task_id` (inferred milestones, done/blocked tracking) and injects active-subgoal hint into planning.
 6. Calls the planner LLM to choose the next single action (`click`/`type`/`select`/`scroll_*`/`done`) using Page IR + step context.
-7. Returns IWA action(s) (for example `ClickAction`, `TypeAction`, and optional appended `DoneAction`).
+7. Returns tool calls for browser/user interaction and sets `done/content` when the task is complete.
 
 ### Completion checker defaults
 
@@ -81,7 +89,7 @@ The operator then:
 Planner reliability/cost behavior is now opinionated by default (not env-tuned):
 - candidate extraction/ranking budgeted internally
 - deterministic repair path (no extra planner call)
-- repeated URL+decision patterns hard-stop with `DoneAction`
+- repeated URL+decision patterns hard-stop with `done=true`
 
 Credential placeholders like `<username>` / `<password>` are handled by IWA (the evaluator replaces placeholders in actions before execution).
 

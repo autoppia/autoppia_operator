@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from agent import (
+    _TASK_STATE,
     _Candidate,
     _all_subgoals_done,
+    _extract_focus_terms,
+    _host_label,
     _ensure_subgoal_memory,
     _pick_fallback_candidate_id,
+    _render_observation_result,
     _split_task_subgoals,
+    _text_quality_score,
     _tool_extract_entities,
     _tool_extract_tables,
     _update_subgoal_memory,
@@ -86,3 +91,44 @@ def test_pick_fallback_candidate_prefers_matching_click_target() -> None:
     decision = {"action": "click", "url": "https://autoppia.com/studio", "text": "open studio"}
     picked = _pick_fallback_candidate_id(candidates=[c0, c1], action="click", decision=decision)
     assert picked == 1
+
+
+def test_text_quality_score_penalizes_numeric_noise() -> None:
+    noisy = "2259 0.004253 0.00% 13/129 10.1% 7674808 315.20% 129 96 99 54 63 62 71"
+    clean = "The current portfolio value is shown in the header as T 399,29."
+    assert _text_quality_score(noisy) < _text_quality_score(clean)
+
+
+def test_host_label_is_generic_without_domain_hardcoding() -> None:
+    assert _host_label("docs.example-platform.io") == "Example Platform"
+    assert _host_label("app.service.co") == "Service"
+
+
+def test_render_observation_result_prefers_relevant_clean_evidence() -> None:
+    task_id = "t-observation-generic"
+    _TASK_STATE[task_id] = {
+        "observations": [
+            {
+                "url": "https://example.com/dashboard",
+                "title": "Dashboard",
+                "headings": ["Treasury", "Portfolio Overview"],
+                "facts": [
+                    "2259 0.004253 0.00% 13/129 10.1% 7674808 315.20%",
+                    "Treasury value is T 399,29 at current block.",
+                ],
+                "summary": "Numbers table",
+            }
+        ]
+    }
+    out = _render_observation_result("Go to example.com and tell me portfolio treasury value", task_id)
+    assert isinstance(out, str)
+    assert "treasury value" in out.lower()
+    assert "2259 0.004253" not in out.lower()
+    _TASK_STATE.pop(task_id, None)
+
+
+def test_extract_focus_terms_removes_common_stopwords() -> None:
+    terms = _extract_focus_terms("Please go to the website and tell me the portfolio treasury value")
+    assert "portfolio" in terms
+    assert "treasury" in terms
+    assert "please" not in terms

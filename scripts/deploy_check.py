@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib.util
+import os
 import sys
 from typing import Any
 from pathlib import Path
@@ -69,19 +70,42 @@ def _invoke_route_function(app, path: str, payload: dict[str, Any]) -> Any:
     _fail(f"Route not found: {path}")
 
 
+def _invoke_route_no_payload(app, path: str) -> Any:
+    for route in getattr(app, "routes", []):
+        if getattr(route, "path", None) != path:
+            continue
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is None:
+            _fail(f"Route {path} has no endpoint callable")
+        if asyncio.iscoroutinefunction(endpoint):
+            return asyncio.run(endpoint())  # type: ignore[misc]
+        return endpoint()  # type: ignore[misc]
+    _fail(f"Route not found: {path}")
+
+
 def _check_action_payload_shape(resp: dict[str, Any]) -> str | None:
     if not isinstance(resp, dict):
         return f"expected dict response, got {type(resp).__name__}"
-    if "actions" not in resp:
-        return "missing 'actions'"
-    actions = resp.get("actions")
-    if not isinstance(actions, list):
-        return f"'actions' should be list, got {type(actions).__name__}"
-    for idx, action in enumerate(actions):
-        if not isinstance(action, dict):
-            return f"actions[{idx}] should be object, got {type(action).__name__}"
-        if "type" not in action:
-            return f"actions[{idx}] missing 'type'"
+    if "tool_calls" not in resp:
+        return "missing 'tool_calls'"
+    tool_calls = resp.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return f"'tool_calls' should be list, got {type(tool_calls).__name__}"
+    for idx, call in enumerate(tool_calls):
+        if not isinstance(call, dict):
+            return f"tool_calls[{idx}] should be object, got {type(call).__name__}"
+        if not isinstance(call.get("name"), str) or not str(call.get("name") or "").strip():
+            return f"tool_calls[{idx}] missing valid 'name'"
+        if "arguments" in call and not isinstance(call.get("arguments"), dict):
+            return f"tool_calls[{idx}].arguments should be object when present"
+    if "protocol_version" in resp:
+        pv = resp.get("protocol_version")
+        if not isinstance(pv, str) or not pv.strip():
+            return "protocol_version should be a non-empty string when present"
+    if "state_out" not in resp or not isinstance(resp.get("state_out"), dict):
+        return "state_out should be object"
+    if "done" in resp and not isinstance(resp.get("done"), bool):
+        return "done should be bool when present"
     return None
 
 
@@ -89,35 +113,57 @@ def _check_url_normalizer(agent_mod) -> None:
     normalize_fn = getattr(agent_mod, "_normalize_demo_url", None)
     if not callable(normalize_fn):
         _fail("agent._normalize_demo_url not found")
+    # Default behavior preserves real URLs unless AGENT_FORCE_LOCALHOST_URLS=1.
     normed = normalize_fn("84.247.180.192")
-    if normed != "http://localhost":
-        _fail(f"_normalize_demo_url failed to rewrite bare host. expected http://localhost, got {normed!r}")
+    if normed != "84.247.180.192":
+        _fail(f"_normalize_demo_url default mode should preserve raw URL. got {normed!r}")
+    _ok("_normalize_demo_url default mode preserves incoming URL")
 
-    normed = normalize_fn("84.247.180.192/task?a=1")
-    if normed != "http://localhost/task?a=1":
-        _fail(
-            "_normalize_demo_url failed for path with query. "
-            f"expected http://localhost/task?a=1, got {normed!r}"
-        )
+    prev = os.getenv("AGENT_FORCE_LOCALHOST_URLS")
+    os.environ["AGENT_FORCE_LOCALHOST_URLS"] = "1"
+    try:
+        normed = normalize_fn("84.247.180.192")
+        if normed != "http://localhost":
+            _fail(f"_normalize_demo_url failed to rewrite bare host. expected http://localhost, got {normed!r}")
 
-    normed = normalize_fn("http://84.247.180.192/task?a=1")
-    if normed != "http://localhost/task?a=1":
-        _fail(
-            "_normalize_demo_url failed to rewrite scheme+host. "
-            f"expected http://localhost/task?a=1, got {normed!r}"
-        )
+        normed = normalize_fn("84.247.180.192/task?a=1")
+        if normed != "http://localhost/task?a=1":
+            _fail(
+                "_normalize_demo_url failed for path with query. "
+                f"expected http://localhost/task?a=1, got {normed!r}"
+            )
 
-    _ok("_normalize_demo_url rewrites non-local URLs to localhost")
+        normed = normalize_fn("http://84.247.180.192/task?a=1")
+        if normed != "http://localhost/task?a=1":
+            _fail(
+                "_normalize_demo_url failed to rewrite scheme+host. "
+                f"expected http://localhost/task?a=1, got {normed!r}"
+            )
+    finally:
+        if prev is None:
+            os.environ.pop("AGENT_FORCE_LOCALHOST_URLS", None)
+        else:
+            os.environ["AGENT_FORCE_LOCALHOST_URLS"] = prev
+
+    _ok("_normalize_demo_url localhost-rewrite mode works")
 
     sanitize_action = getattr(agent_mod, "_sanitize_action_payload", None)
     if callable(sanitize_action):
-        nav_action = sanitize_action({"type": "NavigateAction", "url": "84.247.180.192/foo?x=1"})
-        if nav_action.get("url") != "http://localhost/foo?x=1":
-            _fail(
-                "_sanitize_action_payload did not sanitize NavigateAction url. "
-                f"got: {nav_action.get('url')!r}"
-            )
-        _ok("_sanitize_action_payload rewrites NavigateAction URL")
+        prev = os.getenv("AGENT_FORCE_LOCALHOST_URLS")
+        os.environ["AGENT_FORCE_LOCALHOST_URLS"] = "1"
+        try:
+            nav_action = sanitize_action({"type": "NavigateAction", "url": "84.247.180.192/foo?x=1"})
+            if nav_action.get("url") != "http://localhost/foo?x=1":
+                _fail(
+                    "_sanitize_action_payload did not sanitize NavigateAction url. "
+                    f"got: {nav_action.get('url')!r}"
+                )
+            _ok("_sanitize_action_payload rewrites NavigateAction URL when localhost mode is enabled")
+        finally:
+            if prev is None:
+                os.environ.pop("AGENT_FORCE_LOCALHOST_URLS", None)
+            else:
+                os.environ["AGENT_FORCE_LOCALHOST_URLS"] = prev
 
 
 def _check_task_payload_task_from_payload(agent_mod) -> None:
@@ -127,9 +173,9 @@ def _check_task_payload_task_from_payload(agent_mod) -> None:
     task = task_fn({"task_id": "check", "url": "http://84.247.180.192/test", "prompt": "open page"})
     if not hasattr(task, "url"):
         _fail("_task_from_payload did not return task-like object")
-    if str(getattr(task, "url")) != "http://localhost/test":
-        _fail(f"_task_from_payload did not normalize incoming task url. got {getattr(task, 'url')!r}")
-    _ok("_task_from_payload normalizes task url to localhost")
+    if str(getattr(task, "url")) != "http://84.247.180.192/test":
+        _fail(f"_task_from_payload should preserve incoming URL by default. got {getattr(task, 'url')!r}")
+    _ok("_task_from_payload preserves incoming task URL by default")
 
 
 def _check_handshake_fields() -> None:
@@ -188,6 +234,18 @@ def _check_act_response(app) -> None:
     _ok("/act responds with subnet-compatible action payload")
 
 
+def _check_capabilities_response(app) -> None:
+    if not _find_route(app, "/capabilities", "GET"):
+        _warn("GET /capabilities route not found")
+        return
+    resp = _invoke_route_no_payload(app, "/capabilities")
+    if not isinstance(resp, dict):
+        _fail(f"/capabilities returned non-dict: {type(resp).__name__}")
+    if not isinstance(resp.get("protocol_version"), str) or not str(resp.get("protocol_version")).strip():
+        _fail("/capabilities missing valid protocol_version")
+    _ok("/capabilities responds with protocol metadata")
+
+
 def _check_http_live(url: str) -> None:
     import httpx
 
@@ -217,8 +275,13 @@ def _check_http_live(url: str) -> None:
             if err:
                 _fail(f"Live /act response invalid: {err}")
             _ok("Live POST /act 200 and payload shape valid")
-            if any(isinstance(a.get("url"), str) and "84.247.180.192" in a.get("url", "") for a in act_resp.get("actions", [])):
-                _warn("Live /act response still contains remote host in action URL")
+            if any(
+                isinstance(((c.get("arguments") or {}).get("url")), str)
+                and "84.247.180.192" in str((c.get("arguments") or {}).get("url") or "")
+                for c in (act_resp.get("tool_calls") or [])
+                if isinstance(c, dict) and str(c.get("name") or "").strip().lower() == "browser.navigate"
+            ):
+                _warn("Live /act response still contains remote host in navigate tool url")
     except Exception as exc:
         _fail(f"Live check failed for {url}: {exc}")
 
@@ -256,11 +319,16 @@ def main() -> None:
     if not _find_route(app, "/health", "GET"):
         _fail("GET /health route not found")
     _ok("GET /health route found")
+    if _find_route(app, "/capabilities", "GET"):
+        _ok("GET /capabilities route found")
+    else:
+        _warn("GET /capabilities route not found")
 
     _check_url_normalizer(agent_mod)
     _check_task_payload_task_from_payload(agent_mod)
     _check_handshake_fields()
     _check_act_response(app)
+    _check_capabilities_response(app)
 
     if args.live_url:
         _check_http_live(args.live_url.rstrip("/"))

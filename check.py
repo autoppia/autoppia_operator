@@ -185,21 +185,48 @@ def _call_act(app) -> dict[str, Any] | None:
     return None
 
 
+def _call_capabilities(app) -> dict[str, Any] | None:
+    for route in getattr(app, "routes", []):
+        if getattr(route, "path", None) == "/capabilities":
+            endpoint = getattr(route, "endpoint", None)
+            if endpoint is None:
+                return None
+            if inspect.iscoroutinefunction(endpoint):
+                import asyncio
+
+                return asyncio.run(endpoint())  # type: ignore[misc]
+            return endpoint()  # type: ignore[misc]
+    return None
+
+
 def _validate_actions_shape(resp: dict[str, Any]) -> Optional[str]:
-    if "actions" not in resp:
-        return "Missing top-level 'actions' key"
+    if "tool_calls" not in resp:
+        return "Missing top-level 'tool_calls' key"
 
-    actions = resp.get("actions")
-    if not isinstance(actions, list):
-        return f"'actions' must be a list, got {type(actions).__name__}"
+    tool_calls = resp.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return f"'tool_calls' must be a list, got {type(tool_calls).__name__}"
 
-    for i, a in enumerate(actions):
-        if not isinstance(a, dict):
-            return f"actions[{i}] must be an object, got {type(a).__name__}"
+    for i, call in enumerate(tool_calls):
+        if not isinstance(call, dict):
+            return f"tool_calls[{i}] must be an object, got {type(call).__name__}"
+        name = call.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return f"tool_calls[{i}].name must be a non-empty string"
+        arguments = call.get("arguments")
+        if arguments is not None and not isinstance(arguments, dict):
+            return f"tool_calls[{i}].arguments must be an object when present"
 
-        t = a.get("type")
-        if not isinstance(t, str) or not t:
-            return f"actions[{i}].type must be a non-empty string"
+    if "protocol_version" in resp:
+        pv = resp.get("protocol_version")
+        if not isinstance(pv, str) or not pv.strip():
+            return "protocol_version must be a non-empty string when present"
+
+    if "state_out" not in resp or not isinstance(resp.get("state_out"), dict):
+        return "state_out must be a JSON object"
+
+    if "done" in resp and not isinstance(resp.get("done"), bool):
+        return "done must be boolean when present"
 
     return None
 
@@ -319,6 +346,10 @@ def main() -> None:
         _ok("POST /step route found")
     else:
         _warn("POST /step route not found (optional)")
+    if _find_route(app, "/capabilities", "GET"):
+        _ok("GET /capabilities route found")
+    else:
+        _warn("GET /capabilities route not found (recommended)")
 
     # Basic response shape check
     resp = _call_act(app)
@@ -333,6 +364,17 @@ def main() -> None:
         _fail(f"/act response shape invalid: {err}. Response: {json.dumps(resp)[:200]}")
 
     _ok("/act response shape looks subnet-compatible")
+
+    caps = _call_capabilities(app)
+    if caps is None:
+        _warn("Unable to invoke /capabilities")
+    elif not isinstance(caps, dict):
+        _warn(f"/capabilities returned non-object: {type(caps).__name__}")
+    else:
+        if isinstance(caps.get("protocol_version"), str) and caps.get("protocol_version"):
+            _ok("/capabilities includes protocol_version")
+        else:
+            _warn("/capabilities missing protocol_version")
     print("\nAll checks passed.")
 
 

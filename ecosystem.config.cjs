@@ -4,7 +4,7 @@ module.exports = {
       name: 'autoppia-operator',
       cwd: '/home/usuario1/autoppia/operator/autoppia_operator',
       script: '/home/usuario1/miniconda3/bin/python',
-      args: '-m uvicorn main:app --host 127.0.0.1 --port 5060',
+      args: '-m uvicorn main:app --host 0.0.0.0 --port 18060',
       interpreter: 'none',
       env: {
         PYTHONUNBUFFERED: '1',

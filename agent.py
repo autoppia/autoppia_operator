@@ -6,12 +6,14 @@ import json
 import os
 import re
 import logging
+import inspect
 from types import SimpleNamespace
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from html.parser import HTMLParser
 
 from fastapi import Body, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 # Default this branch to OpenAI via the validator gateway.
@@ -24,6 +26,7 @@ from pricing import estimate_cost_usd
 from completion_checker import run_completion_check
 
 try:
+    from autoppia_iwa.src.web_agents.act_protocol import ACT_PROTOCOL_VERSION as IWA_ACT_PROTOCOL_VERSION
     from autoppia_iwa.src.web_agents.classes import IWebAgent
     from autoppia_iwa.src.data_generation.tasks.classes import Task
     from autoppia_iwa.src.execution.actions.base import BaseAction
@@ -34,6 +37,7 @@ except Exception:  # pragma: no cover
     IWebAgent = object  # type: ignore[assignment]
     Task = Any  # type: ignore[assignment]
     BaseAction = Any  # type: ignore[assignment]
+    IWA_ACT_PROTOCOL_VERSION = "1.0"
     _AUTOPPIA_IWA_IMPORT_OK = False
     _AUTOPPIA_IWA_IMPORT_ERROR = "autoppia_iwa import failed in miner runtime"
 
@@ -48,6 +52,26 @@ logger = logging.getLogger("autoppia_operator")
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
 
+# Allow local extension/browser clients to call operator endpoints from
+# chrome-extension:// origins during local development.
+_cors_kwargs = dict(
+    allow_origins=[
+        "http://127.0.0.1",
+        "http://localhost",
+        "http://127.0.0.1:5060",
+        "http://localhost:5060",
+    ],
+    allow_origin_regex=r"chrome-extension://.*",
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# Newer Starlette versions support Private Network Access preflight handling.
+if "allow_private_network" in inspect.signature(CORSMiddleware.__init__).parameters:
+    _cors_kwargs["allow_private_network"] = True
+
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -58,6 +82,9 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 _LOG_DECISIONS = _env_bool("AGENT_LOG_DECISIONS", False)
 _LOG_ERRORS = _env_bool("AGENT_LOG_ERRORS", False)
+_DEFAULT_EXECUTION_MODE = str(os.getenv("AGENT_ACT_EXECUTION_MODE", "single_step") or "").strip().lower()
+if _DEFAULT_EXECUTION_MODE not in {"single_step", "batch"}:
+    _DEFAULT_EXECUTION_MODE = "single_step"
 
 
 def _log_trace(message: str) -> None:
@@ -109,6 +136,21 @@ def _is_navigate_action_type(action_type: Any) -> bool:
     return value in {"navigateaction", "navigate"}
 
 
+def _is_done_action_type(action_type: Any) -> bool:
+    value = str(action_type or "").strip().lower()
+    return value in {"doneaction", "finishaction", "done", "finish"}
+
+
+def _is_report_result_action_type(action_type: Any) -> bool:
+    value = str(action_type or "").strip().lower().replace("-", "_")
+    return value in {"reportresultaction", "report_result", "report_result_action"}
+
+
+def _is_request_user_input_action_type(action_type: Any) -> bool:
+    value = str(action_type or "").strip().lower().replace("-", "_")
+    return value in {"requestuserinputaction", "request_user_input", "request_user_input_action"}
+
+
 def _sanitize_action_payload(action_payload: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(action_payload or {})
     if _is_navigate_action_type(payload.get("type")):
@@ -116,8 +158,1081 @@ def _sanitize_action_payload(action_payload: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _candidate_text(value: Any) -> str | None:
+    if isinstance(value, str):
+        v = " ".join(value.strip().split())
+        return v if v else None
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        for item in value:
+            parsed = _candidate_text(item)
+            if parsed:
+                return parsed
+        return None
+    if isinstance(value, dict):
+        for key in ("content", "final_text", "final_answer", "summary", "answer", "result", "output", "text", "message"):
+            parsed = _candidate_text(value.get(key))
+            if parsed:
+                return parsed
+        return None
+    return None
+
+
+def _extract_result_text_from_action(action: Dict[str, Any] | None) -> str | None:
+    if not isinstance(action, dict):
+        return None
+    return _candidate_text(action)
+
+
 # Per-task loop detection cache (process-local).
 _TASK_STATE: dict[str, dict[str, object]] = {}
+
+_STATE_OUT_KEYS = {
+    "last_sig",
+    "last_url",
+    "repeat",
+    "effective_url",
+    "prev_url",
+    "prev_summary",
+    "prev_digest",
+    "prev_sig_set",
+    "prev_ir",
+    "subgoal_memory",
+    "visited_urls",
+    "observations",
+    "research_queue",
+    "research_cursor",
+}
+
+
+def _json_safe_copy(value: Any, *, max_chars: int = 120_000) -> Any:
+    try:
+        raw = json.dumps(value, ensure_ascii=True)
+    except Exception:
+        return {} if isinstance(value, dict) else []
+    if len(raw) > max_chars:
+        return {} if isinstance(value, dict) else []
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {} if isinstance(value, dict) else []
+
+
+def _merge_state_in(task_id: str, state_in: Any) -> None:
+    if not task_id or not isinstance(state_in, dict):
+        return
+    st = _TASK_STATE.get(task_id)
+    if not isinstance(st, dict):
+        st = {}
+        _TASK_STATE[task_id] = st
+    safe = _json_safe_copy(state_in, max_chars=160_000)
+    if not isinstance(safe, dict):
+        return
+    # Keep incoming state flexible, but avoid accidental internals override.
+    for key, value in safe.items():
+        key_s = str(key or "").strip()
+        if not key_s or key_s.startswith("__"):
+            continue
+        st[key_s] = value
+
+
+def _build_state_out(task_id: str) -> dict[str, Any]:
+    if not task_id:
+        return {}
+    st = _TASK_STATE.get(task_id)
+    if not isinstance(st, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in _STATE_OUT_KEYS:
+        if key in st:
+            out[key] = st.get(key)
+    safe = _json_safe_copy(out, max_chars=160_000)
+    return safe if isinstance(safe, dict) else {}
+
+
+def _task_is_info_seeking(task: str) -> bool:
+    t = str(task or "").lower()
+    if not t:
+        return False
+    markers = {
+        "what",
+        "which",
+        "tell",
+        "list",
+        "summary",
+        "summarize",
+        "information",
+        "info",
+        "details",
+        "research",
+        "find",
+        "dime",
+        "que",
+        "qué",
+        "resume",
+        "resumen",
+        "productos",
+        "products",
+        "features",
+        "pricing",
+        "portfolio",
+        "value",
+    }
+    return any(m in t for m in markers)
+
+
+def _task_is_auth_flow(task: str) -> bool:
+    t = str(task or "").lower()
+    if not t:
+        return False
+    markers = {
+        "login",
+        "log in",
+        "sign in",
+        "signin",
+        "sign-in",
+        "password",
+        "register",
+        "sign up",
+        "signup",
+        "otp",
+        "2fa",
+        "auth",
+        "authenticate",
+        "verification code",
+    }
+    return any(m in t for m in markers)
+
+
+def _task_prefers_docs(task: str) -> bool:
+    t = str(task or "").lower()
+    if not t:
+        return False
+    markers = {
+        "api",
+        "docs",
+        "documentation",
+        "openapi",
+        "swagger",
+        "endpoint",
+        "developer",
+        "sdk",
+    }
+    return any(m in t for m in markers)
+
+
+def _url_looks_auth(url: str) -> bool:
+    try:
+        parsed = urlsplit(str(url or ""))
+        host = str(parsed.hostname or "").lower()
+        path = str(parsed.path or "").lower()
+    except Exception:
+        host = ""
+        path = str(url or "").lower()
+    blob = f"{host} {path}"
+    markers = {
+        "/login",
+        "/signin",
+        "/sign-in",
+        "/auth/",
+        "/register",
+        "/signup",
+        "/sign-up",
+        "/forgot-password",
+        "session",
+        "password",
+    }
+    return any(m in blob for m in markers)
+
+
+def _host_of_url(url: str) -> str:
+    try:
+        return str(urlsplit(str(url or "")).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _url_looks_troubleshooting(url: str) -> bool:
+    blob = str(url or "").lower()
+    markers = {
+        "cloudflare",
+        "errorcode_",
+        "5xx-error",
+        "/cdn-cgi/",
+        "/error/",
+        "/errors/",
+        "gateway timeout",
+        "bad gateway",
+        "/troubleshooting/",
+    }
+    return any(m in blob for m in markers)
+
+
+def _is_http_url(url: str) -> bool:
+    try:
+        scheme = str(urlsplit(str(url or "")).scheme or "").lower()
+    except Exception:
+        return False
+    return scheme in {"http", "https"}
+
+
+_TASK_TERM_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "this",
+    "that",
+    "then",
+    "into",
+    "about",
+    "what",
+    "which",
+    "tell",
+    "show",
+    "open",
+    "visit",
+    "navigate",
+    "list",
+    "find",
+    "please",
+    "quiero",
+    "dime",
+    "que",
+    "qué",
+    "como",
+    "cómo",
+    "para",
+    "con",
+    "desde",
+    "sobre",
+    "abre",
+    "visita",
+    "navega",
+    "lista",
+    "busca",
+}
+
+_LOW_VALUE_PATH_MARKERS = {
+    "/privacy",
+    "/terms",
+    "/cookies",
+    "/cookie",
+    "/legal",
+    "/policy",
+    "/careers",
+    "/jobs",
+    "/blog",
+    "/changelog",
+    "/status",
+}
+
+_NOISY_TEXT_MARKERS = {
+    "error 5",
+    "error 52",
+    "cloudflare",
+    "hosting provider",
+    "temporarily unavailable",
+    "forbidden",
+    "not found",
+}
+
+
+def _extract_focus_terms(text: str, *, max_terms: int = 18) -> set[str]:
+    tokens = [t for t in re.findall(r"[a-z0-9]{3,}", str(text or "").lower()) if t not in _TASK_TERM_STOPWORDS]
+    freq: dict[str, int] = {}
+    for tok in tokens:
+        freq[tok] = freq.get(tok, 0) + 1
+    ranked = sorted(freq.items(), key=lambda kv: (kv[1], len(kv[0])), reverse=True)
+    out = [tok for tok, _ in ranked[: max(1, int(max_terms))]]
+    return set(out)
+
+
+def _score_text_relevance(text: str, focus_terms: set[str]) -> float:
+    if not focus_terms:
+        return 0.0
+    toks = set(re.findall(r"[a-z0-9]{3,}", str(text or "").lower()))
+    if not toks:
+        return 0.0
+    overlap = toks.intersection(focus_terms)
+    if not overlap:
+        return 0.0
+    return float(len(overlap)) / float(max(1, min(len(focus_terms), 8)))
+
+
+def _text_quality_score(text: str) -> float:
+    raw = _norm_ws(str(text or ""))
+    if not raw:
+        return -2.0
+
+    lowered = raw.lower()
+    if any(marker in lowered for marker in _NOISY_TEXT_MARKERS):
+        return -2.0
+
+    tokens = re.findall(r"[A-Za-z0-9_.%-]+", raw)
+    if len(tokens) < 3:
+        return -0.8
+
+    alpha = sum(ch.isalpha() for ch in raw)
+    digits = sum(ch.isdigit() for ch in raw)
+    punct = sum((not ch.isalnum()) and (not ch.isspace()) for ch in raw)
+    token_count = len(tokens)
+    unique_ratio = (len(set(t.lower() for t in tokens)) / max(1, token_count))
+    digit_ratio = digits / max(1, alpha + digits)
+    punct_ratio = punct / max(1, len(raw))
+    prefix = tokens[:8]
+    prefix_numeric = 0
+    for tok in prefix:
+        stripped = tok.replace(",", "").replace(".", "", 1).replace("%", "")
+        if stripped.isdigit():
+            prefix_numeric += 1
+
+    score = 0.0
+    score += 1.2 if unique_ratio >= 0.55 else 0.4
+    if digit_ratio > 0.45:
+        score -= 1.4
+    elif digit_ratio > 0.3:
+        score -= 0.8
+    if punct_ratio > 0.3:
+        score -= 0.8
+    if prefix and (prefix_numeric / max(1, len(prefix))) >= 0.6:
+        score -= 0.9
+    if token_count >= 7:
+        score += 0.4
+    return score
+
+
+def _strip_numeric_noise_chunks(text: str) -> str:
+    value = _norm_ws(str(text or ""))
+    if not value:
+        return ""
+    # Remove long runs of mostly numeric tokens (typical ticker/table dumps).
+    value = re.sub(r"(?:\b[\d][\d.,%+\-/:]*\b\s*){4,}", " ", value)
+    value = _norm_ws(value).strip(" |:-")
+    return value
+
+
+def _looks_low_value_path(url: str) -> bool:
+    try:
+        path = str(urlsplit(str(url or "")).path or "").lower()
+    except Exception:
+        path = str(url or "").lower()
+    return any(marker in path for marker in _LOW_VALUE_PATH_MARKERS)
+
+
+def _host_label(host: str) -> str:
+    h = str(host or "").strip().lower()
+    if not h:
+        return "Unknown host"
+    parts = [p for p in h.split(".") if p and p not in {"www"}]
+    if not parts:
+        return h
+    core = parts[-2] if len(parts) >= 2 else parts[0]
+    core = core.replace("-", " ").replace("_", " ").strip()
+    return core.title() if core else h
+
+
+def _text_has_product_signal(text: str) -> bool:
+    t = str(text or "").lower()
+    if not t:
+        return False
+    markers = {
+        "product",
+        "products",
+        "platform",
+        "feature",
+        "features",
+        "pricing",
+        "plan",
+        "plans",
+        "service",
+        "services",
+        "solution",
+        "solutions",
+        "integrations",
+        "capabilities",
+        "offerings",
+    }
+    return any(m in t for m in markers)
+
+
+def _task_is_product_catalog(task: str) -> bool:
+    t = str(task or "").lower()
+    if not t:
+        return False
+    markers = {
+        "product",
+        "products",
+        "producto",
+        "productos",
+        "offering",
+        "offerings",
+        "catalog",
+        "catálogo",
+        "que ofrece",
+        "what does",
+    }
+    return any(m in t for m in markers)
+
+
+def _task_requires_link_visits(task: str) -> bool:
+    t = str(task or "").lower()
+    if not t:
+        return False
+    markers = {
+        "visit",
+        "visita",
+        "open links",
+        "enlaces",
+        "links",
+        "navigate",
+        "navega",
+        "abre",
+        "go through",
+    }
+    return any(m in t for m in markers)
+
+
+def _quick_product_result_from_page_ir(*, task: str, page_ir: dict[str, Any], current_url: str) -> str | None:
+    if not _task_is_product_catalog(task):
+        return None
+    links = page_ir.get("links")
+    if not isinstance(links, list) or not links:
+        return None
+    scored: list[tuple[float, str]] = []
+    seen_names: set[str] = set()
+    seen_urls: set[str] = set()
+    focus_terms = _extract_focus_terms(task)
+    ignore_names = {
+        "home",
+        "docs",
+        "documentation",
+        "learn more",
+        "contact",
+        "about",
+        "blog",
+        "pricing",
+        "login",
+        "sign in",
+        "sign up",
+    }
+    for link in links[:40]:
+        if not isinstance(link, dict):
+            continue
+        text = _norm_ws(str(link.get("text") or ""))
+        href = _resolve_url(str(link.get("href") or ""), current_url)
+        ctx = _norm_ws(str(link.get("ctx") or ""))
+        if not text or not href:
+            continue
+        if _url_looks_auth(href) or _url_looks_troubleshooting(href):
+            continue
+        if _looks_low_value_path(href):
+            continue
+        name = re.sub(r"^(open|enter)\s+", "", text, flags=re.I).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in ignore_names:
+            continue
+        if key in seen_names:
+            continue
+        if href in seen_urls:
+            continue
+        relevance = _score_text_relevance(f"{name} {ctx}", focus_terms)
+        has_catalog_signal = _text_has_product_signal(name) or _text_has_product_signal(ctx)
+        if not has_catalog_signal and relevance < 0.2:
+            continue
+        quality = _text_quality_score(ctx or name)
+        if quality < -1.0:
+            continue
+        seen_names.add(key)
+        seen_urls.add(href)
+        utility = ""
+        if ctx:
+            utility = ctx[:140]
+        if not utility:
+            utility = "Relevant product area discovered on this site."
+        score = (2.8 if _text_has_product_signal(name) else 0.0) + (1.2 if _text_has_product_signal(ctx) else 0.0)
+        score += 3.0 * relevance
+        score += max(-0.5, quality)
+        scored.append((score, f"- {name}: {utility} ({href})"))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    out_lines = [line for _, line in scored[:5]]
+    if len(out_lines) < 2:
+        return None
+    return ("Product findings:\n" + "\n".join(out_lines))[:1100]
+
+
+def _build_research_queue_from_page_ir(*, task: str, page_ir: dict[str, Any], current_url: str) -> list[str]:
+    links = page_ir.get("links")
+    if not isinstance(links, list) or not links:
+        return []
+    prefer_docs = _task_prefers_docs(task)
+    product_focus = _task_is_product_catalog(task)
+    focus_terms = _extract_focus_terms(task)
+    current_host = _host_of_url(current_url)
+    task_hosts = [str(h or "").lower() for h in _extract_host_hints(task) if str(h or "").strip()]
+
+    def _host_matches_task(host: str) -> bool:
+        if not task_hosts:
+            return True
+        h = str(host or "").lower()
+        if not h:
+            return False
+        for t in task_hosts:
+            if h == t or h.endswith(f".{t}") or t.endswith(f".{h}"):
+                return True
+        return False
+
+    scored: list[tuple[float, str]] = []
+    seen: set[str] = set()
+    for link in links[:50]:
+        if not isinstance(link, dict):
+            continue
+        href_raw = str(link.get("href") or "").strip()
+        if not href_raw or href_raw.startswith("#"):
+            continue
+        abs_url = _resolve_url(href_raw, current_url)
+        if not abs_url or abs_url in seen:
+            continue
+        if not _is_http_url(abs_url):
+            continue
+        if "/websites/" in abs_url.lower():
+            continue
+        if not _host_matches_task(_host_of_url(abs_url)):
+            continue
+        host_l = _host_of_url(abs_url)
+        if (not prefer_docs) and (host_l.startswith("docs.") or host_l.startswith("documentation.")):
+            continue
+        if _url_looks_auth(abs_url) or _url_looks_troubleshooting(abs_url):
+            continue
+        if (not prefer_docs) and any(x in abs_url.lower() for x in {"/docs", "swagger", "openapi"}):
+            continue
+        text = _norm_ws(str(link.get("text") or ""))
+        ctx = _norm_ws(str(link.get("ctx") or ""))
+        blob = f"{text} {ctx} {abs_url}".lower()
+        relevance = _score_text_relevance(blob, focus_terms)
+        if product_focus and (not _text_has_product_signal(blob)) and relevance < 0.2:
+            continue
+        quality = _text_quality_score(f"{text} {ctx}")
+        if quality < -1.0:
+            continue
+        score = 0.0
+        if _text_has_product_signal(text):
+            score += 3.0
+        if _text_has_product_signal(ctx):
+            score += 1.2
+        score += 2.8 * relevance
+        score += max(-0.4, quality)
+        host = _host_of_url(abs_url)
+        if current_host and host:
+            if host == current_host:
+                score += 0.4
+            elif host.endswith(f".{current_host}") or current_host.endswith(f".{host}"):
+                score += 1.5
+            else:
+                score -= 0.6
+        try:
+            path_l = str(urlsplit(abs_url).path or "").lower()
+        except Exception:
+            path_l = ""
+        if _looks_low_value_path(abs_url):
+            score -= 2.2
+        if any(x in abs_url.lower() for x in {"/product", "/products", "/pricing", "/feature", "/features", "/solution", "/solutions"}):
+            score += 1.8
+        seen.add(abs_url)
+        scored.append((score, abs_url))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    out: list[str] = []
+    seen_out: set[str] = set()
+    for score, url in scored:
+        if score <= 0.2:
+            continue
+        if url in seen_out:
+            continue
+        seen_out.add(url)
+        out.append(url)
+        if len(out) >= 6:
+            break
+    return out
+
+
+def _remember_page_observation(*, task_id: str, url: str, page_ir: dict[str, Any], page_summary: str) -> None:
+    if not task_id:
+        return
+    st = _TASK_STATE.get(task_id)
+    if not isinstance(st, dict):
+        st = {}
+        _TASK_STATE[task_id] = st
+
+    visited = st.get("visited_urls")
+    if not isinstance(visited, list):
+        visited = []
+    u = str(url or "").strip()
+    if u and u not in visited:
+        visited.append(u)
+    st["visited_urls"] = visited[-80:]
+
+    observations = st.get("observations")
+    if not isinstance(observations, list):
+        observations = []
+
+    title = str(page_ir.get("title") or "").strip()
+    headings = [str(x) for x in (page_ir.get("headings") or []) if isinstance(x, str)][:4]
+    facts: list[str] = []
+    for card in (page_ir.get("cards") or [])[:4]:
+        if not isinstance(card, dict):
+            continue
+        for f in (card.get("facts") or [])[:2]:
+            if isinstance(f, str) and f.strip():
+                facts.append(_norm_ws(f)[:120])
+    links = [str((l or {}).get("text") or "") for l in (page_ir.get("links") or []) if isinstance(l, dict)][:5]
+
+    obs = {
+        "url": u[:240],
+        "title": title[:140],
+        "headings": headings,
+        "facts": facts[:6],
+        "links": [x[:100] for x in links if x.strip()],
+        "summary": _norm_ws(page_summary)[:260],
+    }
+    if not obs["url"] and not obs["title"] and not obs["headings"] and not obs["facts"]:
+        return
+
+    # Replace latest observation for same URL; otherwise append.
+    replaced = False
+    for idx in range(len(observations) - 1, -1, -1):
+        item = observations[idx]
+        if isinstance(item, dict) and str(item.get("url") or "") == obs["url"] and obs["url"]:
+            observations[idx] = obs
+            replaced = True
+            break
+    if not replaced:
+        observations.append(obs)
+    st["observations"] = observations[-24:]
+
+
+def _render_observation_result(task: str, task_id: str) -> str | None:
+    if not task_id or not _task_is_info_seeking(task):
+        return None
+    st = _TASK_STATE.get(task_id)
+    if not isinstance(st, dict):
+        return None
+    obs = st.get("observations")
+    if not isinstance(obs, list) or not obs:
+        return None
+
+    task_hosts = _extract_host_hints(task)
+
+    def _host_of(u: str) -> str:
+        try:
+            return str(urlsplit(u).hostname or "").lower()
+        except Exception:
+            return ""
+
+    def _matches_task_host(host: str) -> bool:
+        if not task_hosts:
+            return True
+        h = str(host or "").lower()
+        if not h:
+            return False
+        for target in task_hosts:
+            t = str(target or "").lower()
+            if h == t or h.endswith(f".{t}") or t.endswith(f".{h}"):
+                return True
+        return False
+
+    typed_obs = [x for x in obs if isinstance(x, dict)]
+    if task_hosts:
+        typed_obs = [x for x in typed_obs if _matches_task_host(_host_of(str(x.get("url") or "")))]
+    recent = typed_obs[-4:]
+    if not recent:
+        return None
+
+    product_focus = any(x in str(task or "").lower() for x in {"product", "products", "producto", "productos"})
+    focus_terms = _extract_focus_terms(task)
+    lines: list[str] = []
+    used_texts: set[str] = set()
+    min_quality = 0.1 if product_focus else -0.2
+    for item in recent:
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or "").strip()
+        heads = [str(x) for x in (item.get("headings") or []) if isinstance(x, str) and x.strip()]
+        facts = [str(x) for x in (item.get("facts") or []) if isinstance(x, str) and x.strip()]
+        candidate_texts: list[str] = []
+        candidate_texts.extend(facts[:3])
+        candidate_texts.extend(heads[:3])
+        if title:
+            candidate_texts.append(title)
+        if isinstance(item.get("summary"), str):
+            candidate_texts.append(str(item.get("summary") or "").strip())
+        scored_candidates: list[tuple[float, str]] = []
+        for cand in candidate_texts:
+            cc = _strip_numeric_noise_chunks(cand)
+            if not cc:
+                continue
+            quality = _text_quality_score(cc)
+            relevance = _score_text_relevance(cc, focus_terms)
+            if product_focus and (not _text_has_product_signal(cc)) and relevance < 0.1:
+                continue
+            score = quality + (2.6 * relevance)
+            if _text_has_product_signal(cc):
+                score += 0.8
+            scored_candidates.append((score, cc))
+        scored_candidates.sort(key=lambda x: x[0], reverse=True)
+        best = scored_candidates[0][1] if scored_candidates else ""
+        best_score = scored_candidates[0][0] if scored_candidates else -2.0
+        if not best:
+            continue
+        if best_score < min_quality:
+            continue
+        if not _task_is_auth_flow(task) and _url_looks_auth(url):
+            continue
+        best_l = best.lower()
+        if any(term in best_l for term in _NOISY_TEXT_MARKERS):
+            continue
+        best_norm = _norm_ws(best).lower()
+        if best_norm in used_texts:
+            continue
+        used_texts.add(best_norm)
+        url_short = url[:80] if url else "current page"
+        lines.append(f"- {url_short}: {best[:180]}")
+
+    if not lines:
+        return None
+    text = "Findings:\n" + "\n".join(lines[:4])
+    return text[:900]
+
+
+def _render_queue_visit_result(task: str, task_id: str) -> str | None:
+    st = _TASK_STATE.get(task_id)
+    if not isinstance(st, dict):
+        return None
+    visited = [str(x) for x in (st.get("visited_urls") or []) if isinstance(x, str)]
+    if not visited:
+        return None
+    task_hosts = _extract_host_hints(task)
+    seen_hosts: set[str] = set()
+    lines: list[str] = []
+    for u in visited:
+        host = _host_of_url(u)
+        if not host:
+            continue
+        if _url_looks_auth(u) or _url_looks_troubleshooting(u):
+            continue
+        if task_hosts and not any(host == h or host.endswith(f".{h}") or h.endswith(f".{host}") for h in task_hosts if h):
+            continue
+        if host in seen_hosts:
+            continue
+        seen_hosts.add(host)
+        label = _host_label(host)
+        lines.append(f"- {label}: visited {u[:100]}")
+        if len(lines) >= 5:
+            break
+    if len(lines) < 2:
+        return None
+    return ("Findings:\n" + "\n".join(lines))[:900]
+
+
+def _looks_like_error_page(page_summary: str, page_ir_text: str, url: str) -> bool:
+    blob = " ".join([str(page_summary or ""), str(page_ir_text or ""), str(url or "")]).lower()
+    markers = {
+        "error 500",
+        "error 502",
+        "error 503",
+        "error 504",
+        "error 520",
+        "error 521",
+        "error 522",
+        "error 523",
+        "error 524",
+        "cloudflare",
+        "site down",
+        "temporarily unavailable",
+        "gateway timeout",
+        "bad gateway",
+    }
+    return any(m in blob for m in markers)
+
+
+def _pick_host_recovery_url(*, task: str, current_url: str, task_state: dict[str, Any] | None) -> str | None:
+    task_hosts = _extract_host_hints(task)
+    if not task_hosts:
+        return None
+    blocked = set(str(x) for x in ((task_state or {}).get("blocked_hosts") or []) if isinstance(x, str))
+    current_host = ""
+    try:
+        current_host = str(urlsplit(current_url).hostname or "").lower()
+    except Exception:
+        current_host = ""
+
+    def _host_matches(host: str, target: str) -> bool:
+        h = str(host or "").lower()
+        t = str(target or "").lower()
+        return bool(h and t and (h == t or h.endswith(f".{t}") or t.endswith(f".{h}")))
+
+    if current_host and not any(_host_matches(current_host, h) for h in task_hosts):
+        direct = str(task_hosts[0] or "").strip().lower()
+        if direct and direct not in blocked:
+            return f"https://{direct}/"
+
+    candidates: list[str] = []
+    for host in task_hosts[:6]:
+        h = str(host or "").lower().strip()
+        if not h:
+            continue
+        candidates.append(h)
+        parts = h.split(".")
+        if len(parts) > 2:
+            candidates.append(".".join(parts[-2:]))
+    for host in candidates:
+        if not host or host in blocked:
+            continue
+        candidate_url = f"https://{host}/"
+        # Revisit is allowed here: this heuristic is specifically for recovery
+        # from off-target/error hosts.
+        if current_host and (current_host == host or current_host.endswith(f".{host}")):
+            continue
+        return candidate_url
+    return None
+
+
+def _should_auto_complete_info_task(
+    *,
+    task: str,
+    task_id: str,
+    step_index: int,
+    history: List[Dict[str, Any]] | None,
+) -> bool:
+    if not _task_is_info_seeking(task):
+        return False
+    if int(step_index) < 6:
+        return False
+    st = _TASK_STATE.get(task_id)
+    if not isinstance(st, dict):
+        return False
+    observations = st.get("observations")
+    if not isinstance(observations, list) or len(observations) < 2:
+        return False
+    product_focus = any(x in str(task or "").lower() for x in {"product", "products", "producto", "productos"})
+    non_auth_obs = [
+        item
+        for item in observations
+        if isinstance(item, dict) and not _url_looks_auth(str(item.get("url") or ""))
+    ]
+    if len(non_auth_obs) < 2:
+        return False
+    if product_focus:
+        product_hits = 0
+        for item in non_auth_obs:
+            blob = " ".join(
+                [
+                    str(item.get("title") or ""),
+                    " ".join(str(x) for x in (item.get("headings") or []) if isinstance(x, str)),
+                    " ".join(str(x) for x in (item.get("facts") or []) if isinstance(x, str)),
+                    str(item.get("summary") or ""),
+                ]
+            )
+            if _text_has_product_signal(blob):
+                product_hits += 1
+        if product_hits < 2:
+            return False
+    task_hosts = _extract_host_hints(task)
+    if task_hosts:
+        relevant = 0
+        for item in non_auth_obs:
+            if not isinstance(item, dict):
+                continue
+            try:
+                host = str(urlsplit(str(item.get("url") or "")).hostname or "").lower()
+            except Exception:
+                host = ""
+            if any(host == h or host.endswith(f".{h}") or h.endswith(f".{host}") for h in task_hosts if h):
+                relevant += 1
+        if relevant < 2:
+            return False
+    visited = [str(x) for x in (st.get("visited_urls") or []) if isinstance(x, str)]
+    if len(set(visited)) < 2:
+        return False
+    if int(step_index) >= 12:
+        return True
+    tail = _history_tail(history, default_window=5)
+    recent_urls = [str(h.get("url") or "") for h in tail if isinstance(h, dict) and str(h.get("url") or "").strip()]
+    if len(set(recent_urls)) <= 2:
+        return True
+    repeat = 0
+    try:
+        repeat = int(st.get("repeat") or 0)
+    except Exception:
+        repeat = 0
+    if repeat >= 2 and int(step_index) >= 8:
+        return True
+    return False
+
+
+def _pick_research_navigation_url(*, task: str, current_url: str, page_ir: dict[str, Any], task_state: dict[str, Any] | None) -> str | None:
+    if not _task_is_info_seeking(task):
+        return None
+    t = str(task or "").lower()
+    if _task_is_auth_flow(task):
+        return None
+    allow_auth = _task_is_auth_flow(task)
+    prefer_docs = _task_prefers_docs(task)
+    links = page_ir.get("links")
+    if not isinstance(links, list) or not links:
+        return None
+    task_hosts = _extract_host_hints(task)
+
+    current_host = _host_of_url(current_url)
+
+    def _host_matches_task(host: str) -> bool:
+        if not task_hosts:
+            return True
+        h = str(host or "").lower()
+        if not h:
+            return False
+        for target in task_hosts:
+            t = str(target or "").lower()
+            if not t:
+                continue
+            if h == t or h.endswith(f".{t}") or t.endswith(f".{h}"):
+                return True
+        return False
+
+    task_tokens = _extract_focus_terms(t)
+    visited = set(str(x) for x in ((task_state or {}).get("visited_urls") or []) if isinstance(x, str))
+    blocked_hosts = set(str(x).lower() for x in ((task_state or {}).get("blocked_hosts") or []) if isinstance(x, str))
+    generic_bonus = {"product", "products", "feature", "features", "pricing", "platform", "docs", "documentation", "about", "solutions", "capabilities", "integration"}
+
+    best_url = None
+    best_score = 0.0
+    for link in links[:20]:
+        if not isinstance(link, dict):
+            continue
+        href = str(link.get("href") or "").strip()
+        if not href:
+            continue
+        if href.startswith("#"):
+            continue
+        abs_url = _resolve_url(href, current_url)
+        if not abs_url:
+            continue
+        if not _is_http_url(abs_url):
+            continue
+        if "/websites/" in abs_url.lower():
+            continue
+        if _url_looks_troubleshooting(abs_url):
+            continue
+        if not allow_auth and _url_looks_auth(abs_url):
+            continue
+        host = _host_of_url(abs_url)
+        if host in blocked_hosts:
+            continue
+        if host and not _host_matches_task(host):
+            continue
+        if (not prefer_docs) and (host.startswith("docs.") or host.startswith("documentation.")):
+            continue
+        if not prefer_docs:
+            abs_url_l = abs_url.lower()
+            if (
+                host.startswith("api-")
+                or "/docs" in abs_url_l
+                or "swagger" in abs_url_l
+                or "openapi" in abs_url_l
+            ):
+                continue
+        if abs_url in visited:
+            continue
+        try:
+            if _same_path_query(abs_url, current_url, base_a=current_url, base_b=""):
+                continue
+        except Exception:
+            pass
+        blob = " ".join(
+            [
+                str(link.get("text") or ""),
+                str(link.get("ctx") or ""),
+                href,
+            ]
+        ).lower()
+        if any(
+            bad in blob
+            for bad in {
+                "cloudflare",
+                "error 5",
+                "error-5",
+                "error 52",
+                "troubleshoot",
+                "status code",
+            }
+        ):
+            continue
+        score = 0.0
+        if task_tokens:
+            tok = set(re.findall(r"[a-z0-9]{3,}", blob))
+            score += 2.0 * len(tok.intersection(task_tokens))
+        score += 3.0 * _score_text_relevance(blob, task_tokens)
+        score += sum(1.0 for w in generic_bonus if w in blob)
+        score += max(-0.5, _text_quality_score(blob))
+        if current_host and host:
+            if host == current_host:
+                score += 0.5
+            elif host.endswith(f".{current_host}") or current_host.endswith(f".{host}"):
+                score += 1.5
+            else:
+                score -= 1.0
+        try:
+            path_l = str(urlsplit(abs_url).path or "").lower()
+        except Exception:
+            path_l = ""
+        if _looks_low_value_path(abs_url):
+            score -= 2.2
+        if "/product" in href.lower() or "/pricing" in href.lower() or "/feature" in href.lower():
+            score += 2.0
+        if score > best_score:
+            best_score = score
+            best_url = abs_url
+    min_score = 2.5 if task_tokens else 3.0
+    if best_score < min_score:
+        return None
+    return best_url
+
+
+def _action_to_tool_call(action: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(action, dict):
+        return None
+    action_type = str(action.get("type") or "").strip()
+    if not action_type:
+        return None
+    if _is_done_action_type(action_type) or _is_report_result_action_type(action_type):
+        return None
+    args = {k: v for k, v in action.items() if k != "type"}
+    t = action_type.lower()
+    if _is_request_user_input_action_type(action_type):
+        return {"name": "user.request_input", "arguments": args}
+    mapping = {
+        "navigateaction": "browser.navigate",
+        "clickaction": "browser.click",
+        "typeaction": "browser.type",
+        "fillaction": "browser.type",
+        "scrollaction": "browser.scroll",
+        "waitaction": "browser.wait",
+        "selectaction": "browser.select",
+        "selectdropdownoptionaction": "browser.select",
+        "hoveraction": "browser.hover",
+        "holdkeyaction": "browser.hold_key",
+        "sendkeysaction": "browser.send_keys",
+        "sendkeysiwaaction": "browser.send_keys",
+        "runworkflowaction": "browser.run_workflow",
+    }
+    tool_name = mapping.get(t)
+    if not tool_name:
+        # Fallback: preserve unknown action names under browser namespace.
+        suffix = action_type[:-6] if action_type.endswith("Action") else action_type
+        tool_name = f"browser.{suffix.strip().lower()}"
+    return {"name": tool_name, "arguments": args}
 
 
 @app.get("/health", summary="Health check")
@@ -672,7 +1787,25 @@ def _summarize_html(html: str, limit: int = 1200) -> str:
     if BeautifulSoup is not None:
         try:
             soup = BeautifulSoup(html, "lxml")
+            for t in soup(["script", "style", "noscript"]):
+                try:
+                    t.decompose()
+                except Exception:
+                    pass
             text = _norm_ws(soup.get_text(" ", strip=True))
+            if _text_quality_score(text) < -0.8:
+                # Prefer concise title/headings when page text is too noisy.
+                head_bits: list[str] = []
+                if soup.title:
+                    tt = _norm_ws(soup.title.get_text(" ", strip=True))
+                    if tt:
+                        head_bits.append(tt)
+                for h in soup.find_all(["h1", "h2", "h3"], limit=6):
+                    ht = _norm_ws(h.get_text(" ", strip=True))
+                    if ht:
+                        head_bits.append(ht)
+                if head_bits:
+                    text = _norm_ws(" ".join(head_bits))
             return text[:limit]
         except Exception:
             pass
@@ -1545,6 +2678,76 @@ def _typed_values_from_history(history: List[Dict[str, Any]] | None) -> list[str
     return out
 
 
+def _user_inputs_from_history(history: List[Dict[str, Any]] | None) -> list[str]:
+    out: list[str] = []
+    for h in (history or []):
+        if not isinstance(h, dict):
+            continue
+        # New path: runner writes direct user_input field.
+        ui = h.get("user_input")
+        if isinstance(ui, str) and ui.strip():
+            out.append(ui.strip())
+            continue
+        # Compatibility path: an action object carrying user input answer.
+        action = h.get("action") if isinstance(h.get("action"), dict) else {}
+        at = str(action.get("type") or "").strip().lower()
+        if at in {"userinputresponseaction", "user_input_response", "user_input_response_action"}:
+            txt = str(action.get("text") or action.get("value") or action.get("answer") or "").strip()
+            if txt:
+                out.append(txt)
+    return out
+
+
+def _needs_user_input_action(task: str, history: List[Dict[str, Any]] | None) -> Dict[str, Any] | None:
+    task_l = str(task or "").lower()
+    needs_otp = any(
+        key in task_l
+        for key in {
+            "otp",
+            "2fa",
+            "two factor",
+            "two-factor",
+            "verification code",
+            "one-time code",
+            "one time code",
+            "sms code",
+            "authenticator code",
+        }
+    )
+    if not needs_otp:
+        return None
+
+    known_values = [x.lower().strip() for x in (_typed_values_from_history(history) + _user_inputs_from_history(history))]
+    has_code = any(
+        (
+            v.isdigit() and 4 <= len(v) <= 8
+        )
+        or "code" in v
+        or "otp" in v
+        for v in known_values
+    )
+    if has_code:
+        return None
+
+    # Avoid spamming the same question repeatedly if it was just requested.
+    tail = _history_tail(history, default_window=3)
+    for h in tail:
+        if not isinstance(h, dict):
+            continue
+        action = h.get("action") if isinstance(h.get("action"), dict) else {}
+        if _is_request_user_input_action_type(action.get("type")):
+            return None
+
+    return {
+        "type": "RequestUserInputAction",
+        "prompt": "I need your verification code (OTP/2FA) to continue this flow.",
+        "question_id": "otp_code",
+        "options": ["Use SMS code", "Use authenticator app"],
+        "allow_free_form": True,
+        "required": True,
+    }
+
+
 def _history_has_click_overlay_intercept(history: List[Dict[str, Any]] | None) -> bool:
     for h in _history_tail(history, default_window=8):
         if not isinstance(h, dict):
@@ -1814,21 +3017,21 @@ def _resolve_url(url: str, base_url: str) -> str:
         return str(url or "").strip()
 
 
-def _path_query(url: str, base_url: str = "") -> tuple[str, str]:
+def _host_path_query(url: str, base_url: str = "") -> tuple[str, str, str]:
     try:
         from urllib.parse import urlparse
         resolved = _resolve_url(url, base_url)
         pu = urlparse(resolved or "")
-        return (pu.path or ""), (pu.query or "")
+        return str(pu.hostname or "").lower(), (pu.path or ""), (pu.query or "")
     except Exception:
         s = (url or "").strip()
-        return s, ""
+        return "", s, ""
 
 
 def _same_path_query(a: str, b: str, *, base_a: str = "", base_b: str = "") -> bool:
-    """Compare (path,query) for URLs, resolving relatives against provided bases."""
+    """Compare (host,path,query) for URLs, resolving relatives against provided bases."""
     try:
-        return _path_query(a, base_a) == _path_query(b, base_b)
+        return _host_path_query(a, base_a) == _host_path_query(b, base_b)
     except Exception:
         return (a or "").strip() == (b or "").strip()
 
@@ -2735,8 +3938,11 @@ class ApifiedWebAgent(IWebAgent):
         return_metrics = os.getenv("AGENT_RETURN_METRICS", "0").lower() in {"1", "true", "yes"}
         include_reasoning = str(payload.get("include_reasoning") or payload.get("return_reasoning") or "").strip().lower() in {"1", "true", "yes"}
         completion_only = str(payload.get("completion_only") or "").strip().lower() in {"1", "true", "yes"}
+        requested_execution_mode = str(payload.get("execution_mode") or "").strip().lower()
+        execution_mode = requested_execution_mode if requested_execution_mode in {"single_step", "batch"} else _DEFAULT_EXECUTION_MODE
         html = payload.get("snapshot_html") or ""
         history = payload.get("history") if isinstance(payload.get("history"), list) else None
+        _merge_state_in(task_id, payload.get("state_in"))
         page_summary = _summarize_html(html)
         dom_digest = _dom_digest(html)
         task = str(task or "")
@@ -2750,6 +3956,8 @@ class ApifiedWebAgent(IWebAgent):
             if actions and isinstance(actions[0], dict):
                 first_type = str(actions[0].get("type") or "")
             decision = str((metrics or {}).get("decision") or "").strip().lower() if isinstance(metrics, dict) else ""
+            if _is_report_result_action_type(first_type) or decision in {"report_result", "done_report"}:
+                return "Returning the final task output."
             if first_type == "DoneAction" or decision == "done":
                 return "Task appears complete from current page state."
             if first_type == "NavigateAction" or decision == "navigate":
@@ -2772,6 +3980,8 @@ class ApifiedWebAgent(IWebAgent):
                 mr = metrics.get("reasoning")
                 if isinstance(mr, str) and mr.strip():
                     return " ".join(mr.strip().split())[:200]
+            if _is_report_result_action_type(action_type):
+                return "Provide final user-facing output for this task."
             if action_type == "DoneAction":
                 return "No further useful action was detected from current state."
             if action_type == "NavigateAction":
@@ -2826,7 +4036,30 @@ class ApifiedWebAgent(IWebAgent):
                 else:
                     sanitized_actions.append({})
 
-            out: Dict[str, Any] = {"actions": sanitized_actions}
+            done = any(
+                _is_done_action_type(a.get("type")) or _is_report_result_action_type(a.get("type"))
+                for a in sanitized_actions
+                if isinstance(a, dict)
+            )
+            final_result_text = None
+            for a in sanitized_actions:
+                if not isinstance(a, dict):
+                    continue
+                if _is_report_result_action_type(a.get("type")):
+                    final_result_text = _extract_result_text_from_action(a)
+                    if final_result_text:
+                        break
+            out: Dict[str, Any] = {
+                "protocol_version": IWA_ACT_PROTOCOL_VERSION,
+                "execution_mode": execution_mode,
+                "actions": sanitized_actions[:1] if execution_mode == "single_step" and sanitized_actions else sanitized_actions,
+                "done": bool(done),
+                "state_out": _build_state_out(task_id),
+            }
+            if isinstance(final_result_text, str) and final_result_text:
+                out["content"] = final_result_text
+                out["result"] = final_result_text
+                out["final_text"] = final_result_text
             if return_metrics and metrics is not None:
                 out["metrics"] = metrics
             usage, est_cost, model = _usage_cost_from_metrics(metrics)
@@ -2838,11 +4071,71 @@ class ApifiedWebAgent(IWebAgent):
             if model:
                 out["model"] = model
             if include_reasoning:
-                out["reasoning"] = _build_reasoning(sanitized_actions, metrics)
+                out["reasoning"] = _build_reasoning(out["actions"], metrics)
                 out["action_rationales"] = [
-                    _build_action_rationale(a, metrics) for a in sanitized_actions
+                    _build_action_rationale(a, metrics) for a in out["actions"]
                 ]
             return out
+
+        def _completion_actions(result_text: str | None) -> list[dict[str, Any]]:
+            def _is_generic_completion_text(text_value: str) -> bool:
+                value = str(text_value or "").strip().lower()
+                if not value:
+                    return True
+                generic_exact = {
+                    "task complete",
+                    "all subgoals completed",
+                    "no further progress detected",
+                    "objective satisfied",
+                    "completed",
+                    "done",
+                }
+                if value in generic_exact:
+                    return True
+                return value.startswith("task complete") or value.startswith("objective")
+
+            def _is_noisy_result_text(text_value: str) -> bool:
+                value = str(text_value or "").strip()
+                if not value:
+                    return True
+                value_l = value.lower()
+                # Guardrail: reject synthetic dump-like outputs.
+                if "visible content:" in value_l or "current page:" in value_l:
+                    return True
+                if len(value) > 1200:
+                    return True
+                tokens = [tok for tok in value.split() if tok]
+                if len(tokens) >= 180:
+                    return True
+                if value.count("|") >= 4:
+                    return True
+                if _text_quality_score(value) < -0.7:
+                    return True
+                digits = sum(ch.isdigit() for ch in value)
+                alpha = sum(ch.isalpha() for ch in value)
+                if digits >= 16 and digits > alpha:
+                    return True
+                wordish = re.findall(r"[A-Za-z0-9_.%-]+", value)
+                if wordish:
+                    numeric_like = sum(
+                        1
+                        for tok in wordish
+                        if tok.replace(",", "").replace(".", "", 1).isdigit()
+                    )
+                    if numeric_like >= 8 and (numeric_like / max(1, len(wordish))) >= 0.3:
+                        return True
+                    lowered = [w.lower() for w in wordish if w]
+                    if lowered:
+                        unique_ratio = len(set(lowered)) / max(1, len(lowered))
+                        if len(lowered) >= 20 and unique_ratio < 0.35:
+                            return True
+                return False
+
+            text = str(result_text or "").strip()
+            if _is_generic_completion_text(text) or _is_noisy_result_text(text):
+                # Do not fabricate final output; rely on reasoning/rationales to explain stop.
+                return [{"type": "DoneAction", "reason": "completed"}]
+            return [{"type": "ReportResultAction", "content": text, "success": True}, {"type": "DoneAction", "reason": "completed"}]
 
         extract_max_candidates = 80
         llm_max_candidates = 50
@@ -2854,16 +4147,57 @@ class ApifiedWebAgent(IWebAgent):
         candidates = _select_candidates_for_llm(task, candidates_all, current_url=str(url), max_total=llm_max_candidates)
         page_ir = _extract_page_ir(html=html, url=str(url), candidates=candidates)
         page_ir_text = _render_page_ir(page_ir, max_chars=int(os.getenv("AGENT_PAGE_IR_MAX_CHARS", "2200")))
+        _remember_page_observation(task_id=task_id, url=str(url), page_ir=page_ir, page_summary=page_summary)
         completion_done = False
         completion_reason = ""
         completion_model = ""
         completion_usage_list: list[dict[str, Any]] = []
         completion_meta: dict[str, Any] = {}
 
+        if (
+            (not completion_only)
+            and int(step_index) >= 1
+            and _task_is_product_catalog(task)
+            and (not _task_requires_link_visits(task))
+        ):
+            try:
+                quick_result = _quick_product_result_from_page_ir(
+                    task=task,
+                    page_ir=page_ir,
+                    current_url=str(url),
+                )
+                if quick_result:
+                    task_hosts = _extract_host_hints(task)
+                    current_host = _host_of_url(str(url))
+                    host_ok = True
+                    if task_hosts:
+                        host_ok = any(
+                            current_host == str(h or "").lower()
+                            or current_host.endswith(f".{str(h or '').lower()}")
+                            or str(h or "").lower().endswith(f".{current_host}")
+                            for h in task_hosts
+                            if str(h or "").strip()
+                        )
+                    if host_ok:
+                        _update_task_state(task_id, str(url), "done_product_quick")
+                        return _resp(
+                            _completion_actions(quick_result),
+                            {"decision": "done_product_quick", "reasoning": "Current page already exposes product catalog signals."},
+                        )
+            except Exception:
+                pass
+
         if task_id == "check":
             if candidates:
                 return _resp([{"type": "ClickAction", "selector": candidates[0].click_selector()}], {"decision": "check_click", "candidate_id": 0})
             return _resp([{"type": "WaitAction", "time_seconds": 0.1}], {"decision": "check_wait"})
+
+        # Human-in-the-loop trigger for OTP/2FA style tasks when no user input
+        # has been captured yet in action history.
+        if not completion_only:
+            user_input_action = _needs_user_input_action(task, history)
+            if user_input_action is not None:
+                return _resp([user_input_action], {"decision": "request_user_input"})
 
         # Deterministic recovery: if prior sign-in clicks failed due overlay interception
         # and task asks for retry password flow, force retyping password once.
@@ -2875,7 +4209,19 @@ class ApifiedWebAgent(IWebAgent):
                 has_wrong = any(v == "wrongpass" for v in typed_vals)
                 has_right = any(v == "password" for v in typed_vals)
                 blocked_click = _history_has_click_overlay_intercept(history)
-                if asked_retry and has_wrong and (not has_right) and blocked_click:
+                attempted_submit = False
+                for hh in _history_tail(history, default_window=6):
+                    if not isinstance(hh, dict):
+                        continue
+                    act_h = hh.get("action") if isinstance(hh.get("action"), dict) else {}
+                    if str(act_h.get("type") or "") != "ClickAction":
+                        continue
+                    sel_h = act_h.get("selector") if isinstance(act_h.get("selector"), dict) else {}
+                    blob_h = str(sel_h.get("value") or "").lower()
+                    if any(k in blob_h for k in {"sign in", "signin", "login", "submit"}):
+                        attempted_submit = True
+                        break
+                if asked_retry and has_wrong and (not has_right) and (blocked_click or attempted_submit or int(step_index) >= 4):
                     pw_cid = None
                     for i, c in enumerate(candidates):
                         attrs = c.attrs or {}
@@ -2930,7 +4276,7 @@ class ApifiedWebAgent(IWebAgent):
                 if completion_only:
                     if completion_done:
                         return _resp(
-                            [{"type": "DoneAction", "reason": completion_reason or "Task complete"}],
+                            _completion_actions(completion_reason or "Task complete"),
                             {
                                 "decision": "done_completion_check",
                                 "reasoning": completion_reason or "Task complete",
@@ -2981,6 +4327,174 @@ class ApifiedWebAgent(IWebAgent):
                     prev_sig_set = set(str(x) for x in prev)
         except Exception:
             prev_sig_set = None
+
+        # Recover from known transient error pages by switching host when possible.
+        if not completion_only:
+            try:
+                if _looks_like_error_page(page_summary=page_summary, page_ir_text=page_ir_text, url=effective_url):
+                    if task_id and isinstance(_TASK_STATE.get(task_id), dict):
+                        st_cur = _TASK_STATE[task_id]
+                        blocked_hosts = st_cur.get("blocked_hosts")
+                        if not isinstance(blocked_hosts, list):
+                            blocked_hosts = []
+                        try:
+                            host_now = str(urlsplit(effective_url).hostname or "").lower()
+                        except Exception:
+                            host_now = ""
+                        if host_now and host_now not in blocked_hosts:
+                            blocked_hosts.append(host_now)
+                        # Cloudflare error pages often include the failing host in query params.
+                        try:
+                            qs = parse_qs(urlsplit(effective_url).query or "")
+                            raw_campaign = str((qs.get("utm_campaign") or [""])[0] or "").strip().lower()
+                            if raw_campaign and re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", raw_campaign):
+                                if raw_campaign not in blocked_hosts:
+                                    blocked_hosts.append(raw_campaign)
+                        except Exception:
+                            pass
+                        st_cur["blocked_hosts"] = blocked_hosts[-24:]
+                    recovery_url = _pick_host_recovery_url(
+                        task=task,
+                        current_url=effective_url,
+                        task_state=st if isinstance(st, dict) else None,
+                    )
+                    if recovery_url:
+                        _update_task_state(task_id, str(url), f"navigate_error_recovery:{recovery_url}")
+                        if task_id and isinstance(_TASK_STATE.get(task_id), dict):
+                            _TASK_STATE[task_id]["effective_url"] = str(recovery_url)
+                        return _resp(
+                            [{"type": "NavigateAction", "url": recovery_url, "go_back": False, "go_forward": False}],
+                            {"decision": "navigate_error_recovery", "url": recovery_url},
+                        )
+            except Exception:
+                pass
+
+        # Deterministic research heuristic: when the task is information seeking,
+        # prefer unvisited high-signal links before random scrolling/clicking.
+        if not completion_only and int(step_index) <= 10:
+            try:
+                if _task_is_info_seeking(task) and (not _task_requires_link_visits(task)):
+                    if _should_auto_complete_info_task(
+                        task=task,
+                        task_id=task_id,
+                        step_index=int(step_index),
+                        history=history,
+                    ):
+                        auto_result = _render_observation_result(task=task, task_id=task_id)
+                        if isinstance(auto_result, str) and auto_result.strip():
+                            _update_task_state(task_id, str(url), "done_info_auto_early")
+                            return _resp(
+                                _completion_actions(auto_result.strip()),
+                                {"decision": "done_info_auto_early", "reasoning": "Collected enough evidence across visited pages."},
+                            )
+
+                if _task_is_info_seeking(task) and _task_requires_link_visits(task) and task_id:
+                    st_cur = _TASK_STATE.get(task_id)
+                    if not isinstance(st_cur, dict):
+                        st_cur = {}
+                        _TASK_STATE[task_id] = st_cur
+                    queue = st_cur.get("research_queue")
+                    if not isinstance(queue, list) or not queue:
+                        queue = _build_research_queue_from_page_ir(
+                            task=task,
+                            page_ir=page_ir,
+                            current_url=effective_url,
+                        )
+                        st_cur["research_queue"] = queue[:8]
+                        st_cur["research_cursor"] = 0
+                    blocked_hosts_now = set(
+                        str(x).lower() for x in (st_cur.get("blocked_hosts") or []) if isinstance(x, str)
+                    )
+                    visited_now = set(
+                        str(x) for x in (st_cur.get("visited_urls") or []) if isinstance(x, str)
+                    )
+                    cursor = 0
+                    try:
+                        cursor = int(st_cur.get("research_cursor") or 0)
+                    except Exception:
+                        cursor = 0
+                    while isinstance(queue, list) and cursor < len(queue):
+                        cand_url = str(queue[cursor] or "").strip()
+                        if (
+                            (not cand_url)
+                            or (cand_url in visited_now)
+                            or (_host_of_url(cand_url) in blocked_hosts_now)
+                            or _same_path_query(cand_url, effective_url, base_a=effective_url, base_b="")
+                        ):
+                            cursor += 1
+                            continue
+                        break
+                    st_cur["research_cursor"] = cursor
+                    if isinstance(queue, list) and queue and cursor >= len(queue):
+                        queue_result = _render_observation_result(task=task, task_id=task_id)
+                        if isinstance(queue_result, str) and queue_result.strip():
+                            if queue_result.count("\n") < 2:
+                                queue_result = _render_queue_visit_result(task=task, task_id=task_id) or queue_result
+                        else:
+                            queue_result = _render_queue_visit_result(task=task, task_id=task_id)
+                        if isinstance(queue_result, str) and queue_result.strip():
+                            _update_task_state(task_id, str(url), "done_research_queue")
+                            return _resp(
+                                _completion_actions(queue_result.strip()),
+                                {"decision": "done_research_queue", "reasoning": "Visited queued links and synthesized findings."},
+                            )
+                    if isinstance(queue, list) and cursor < len(queue):
+                        next_url = str(queue[cursor] or "").strip()
+                        if next_url:
+                            st_cur["research_cursor"] = cursor + 1
+                            _update_task_state(task_id, str(url), f"navigate_research_queue:{next_url}")
+                            st_cur["effective_url"] = str(next_url)
+                            return _resp(
+                                [{"type": "NavigateAction", "url": next_url, "go_back": False, "go_forward": False}],
+                                {"decision": "navigate_research_queue", "url": next_url},
+                            )
+                if _task_is_info_seeking(task) and (not _task_is_auth_flow(task)) and _url_looks_auth(effective_url):
+                    task_hosts = _extract_host_hints(task)
+                    root_host = str(task_hosts[0] or "").strip().lower() if task_hosts else ""
+                    if root_host:
+                        root_url = f"https://{root_host}/"
+                        if not _same_path_query(root_url, effective_url, base_a=effective_url, base_b=""):
+                            _update_task_state(task_id, str(url), f"navigate_auth_escape:{root_url}")
+                            if task_id and isinstance(_TASK_STATE.get(task_id), dict):
+                                _TASK_STATE[task_id]["effective_url"] = str(root_url)
+                            return _resp(
+                                [{"type": "NavigateAction", "url": root_url, "go_back": False, "go_forward": False}],
+                                {"decision": "navigate_auth_escape", "url": root_url},
+                            )
+                heuristic_url = _pick_research_navigation_url(
+                    task=task,
+                    current_url=effective_url,
+                    page_ir=page_ir,
+                    task_state=st if isinstance(st, dict) else None,
+                )
+                if heuristic_url:
+                    _update_task_state(task_id, str(url), f"navigate_heuristic:{heuristic_url}")
+                    if task_id and isinstance(_TASK_STATE.get(task_id), dict):
+                        _TASK_STATE[task_id]["effective_url"] = str(heuristic_url)
+                    return _resp(
+                        [{"type": "NavigateAction", "url": heuristic_url, "go_back": False, "go_forward": False}],
+                        {"decision": "navigate_research_heuristic", "url": heuristic_url},
+                    )
+            except Exception:
+                pass
+
+        if not completion_only:
+            try:
+                if _task_requires_link_visits(task) and _should_auto_complete_info_task(
+                    task=task,
+                    task_id=task_id,
+                    step_index=int(step_index),
+                    history=history,
+                ):
+                    auto_result = _render_observation_result(task=task, task_id=task_id)
+                    if isinstance(auto_result, str) and auto_result.strip():
+                        _update_task_state(task_id, str(url), "done_info_auto")
+                        return _resp(
+                            _completion_actions(auto_result.strip()),
+                            {"decision": "done_info_auto", "reasoning": "Collected enough evidence across visited pages."},
+                        )
+            except Exception:
+                pass
 
         # RAM subgoal memory (per task_id) to maintain multi-step intent.
         subgoal_mem = _ensure_subgoal_memory(task_id=task_id, task=task)
@@ -3135,7 +4649,58 @@ class ApifiedWebAgent(IWebAgent):
                 out = _resp([{"type": "WaitAction", "time_seconds": 1.0}], {"decision": "navigate_missing_url"})
             else:
                 nav_url = _resolve_url(nav_url_raw, effective_url or str(url))
-                if _same_path_query(nav_url, effective_url, base_a=effective_url, base_b=""):
+                if not _is_http_url(nav_url):
+                    recovery_url = _pick_host_recovery_url(
+                        task=task,
+                        current_url=effective_url,
+                        task_state=st if isinstance(st, dict) else None,
+                    )
+                    if recovery_url and _is_http_url(recovery_url):
+                        nav_url = recovery_url
+                    else:
+                        out = _resp([{ "type": "ScrollAction", "down": True, "up": False}], {"decision": "navigate_non_http_scroll"})
+                        _update_task_state(task_id, str(url), "navigate_non_http_scroll")
+                        nav_url = ""
+                if not nav_url:
+                    pass
+                else:
+                    blocked_hosts_now = set(str(x).lower() for x in ((st or {}).get("blocked_hosts") or []) if isinstance(x, str)) if isinstance(st, dict) else set()
+                    nav_host = _host_of_url(nav_url)
+                    if _task_requires_link_visits(task) and isinstance(st, dict):
+                        q = st.get("research_queue")
+                        if isinstance(q, list) and q:
+                            allowed_hosts = {
+                                _host_of_url(str(u))
+                                for u in q
+                                if isinstance(u, str) and _is_http_url(str(u))
+                            }
+                            allowed_hosts = {h for h in allowed_hosts if h}
+                            if allowed_hosts and nav_host and nav_host not in allowed_hosts:
+                                q_cursor = 0
+                                try:
+                                    q_cursor = int(st.get("research_cursor") or 0)
+                                except Exception:
+                                    q_cursor = 0
+                                visited_now = set(str(x) for x in (st.get("visited_urls") or []) if isinstance(x, str))
+                                while q_cursor < len(q):
+                                    cand = str(q[q_cursor] or "").strip()
+                                    if cand and _is_http_url(cand) and cand not in visited_now:
+                                        nav_url = cand
+                                        st["research_cursor"] = q_cursor + 1
+                                        nav_host = _host_of_url(nav_url)
+                                        break
+                                    q_cursor += 1
+                    if nav_host in blocked_hosts_now or _url_looks_troubleshooting(nav_url):
+                        recovery_url = _pick_host_recovery_url(
+                            task=task,
+                            current_url=effective_url,
+                            task_state=st if isinstance(st, dict) else None,
+                        )
+                        if recovery_url and _is_http_url(recovery_url):
+                            nav_url = recovery_url
+                if not nav_url:
+                    pass
+                elif _same_path_query(nav_url, effective_url, base_a=effective_url, base_b=""):
                     _update_task_state(task_id, str(url), "navigate_same_url_scroll")
                     out = _resp([{ "type": "ScrollAction", "down": True, "up": False}], {"decision": "scroll_override"})
                 else:
@@ -3152,7 +4717,7 @@ class ApifiedWebAgent(IWebAgent):
         elif action == "done":
             _update_task_state(task_id, str(url), "done")
             out = _resp(
-                [{"type": "DoneAction", "reason": str(decision.get("reason") or "Task complete")}],
+                _completion_actions(str(decision.get("reason") or "Task complete")),
                 {
                     "decision": "done",
                     "candidate_id": int(cid) if isinstance(cid, int) else None,
@@ -3182,8 +4747,28 @@ class ApifiedWebAgent(IWebAgent):
                                     pass
                                 out = _resp([{ "type": "NavigateAction", "url": fixed_abs, "go_back": False, "go_forward": False}], {"decision": "navigate", "url": fixed_abs, "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
                         else:
-                            _update_task_state(task_id, str(url), f"click:{_selector_repr(selector)}")
-                            out = _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
+                            target_url = _resolve_url(href, effective_url or str(url))
+                            if not _is_http_url(target_url):
+                                _update_task_state(task_id, str(url), "click_non_http_scroll")
+                                out = _resp([{ "type": "ScrollAction", "down": True, "up": False}], {"decision": "scroll_override"})
+                                target_url = ""
+                            blocked_hosts_now = set(str(x).lower() for x in ((st or {}).get("blocked_hosts") or []) if isinstance(x, str)) if isinstance(st, dict) else set()
+                            if target_url and (_host_of_url(target_url) in blocked_hosts_now or _url_looks_troubleshooting(target_url)):
+                                heuristic_url = _pick_research_navigation_url(
+                                    task=task,
+                                    current_url=effective_url,
+                                    page_ir=page_ir,
+                                    task_state=st if isinstance(st, dict) else None,
+                                )
+                                if heuristic_url and not _same_path_query(heuristic_url, effective_url, base_a=effective_url, base_b=""):
+                                    _update_task_state(task_id, str(url), f"navigate_blocked_recovery:{heuristic_url}")
+                                    out = _resp([{ "type": "NavigateAction", "url": heuristic_url, "go_back": False, "go_forward": False}], {"decision": "navigate_blocked_recovery", "url": heuristic_url})
+                                else:
+                                    _update_task_state(task_id, str(url), "blocked_target_scroll")
+                                    out = _resp([{ "type": "ScrollAction", "down": True, "up": False}], {"decision": "scroll_override"})
+                            else:
+                                _update_task_state(task_id, str(url), f"click:{_selector_repr(selector)}")
+                                out = _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
                     else:
                         _update_task_state(task_id, str(url), f"click:{_selector_repr(selector)}")
                         out = _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": int(cid) if isinstance(cid,int) else None, "model": decision.get("_meta", {}).get("model"), "llm": decision.get("_meta", {})})
@@ -3217,7 +4802,7 @@ class ApifiedWebAgent(IWebAgent):
             repeat_after = int((st_after or {}).get("repeat") or 0) if isinstance(st_after, dict) else 0
             if threshold > 0 and repeat_after >= threshold:
                 out = _resp(
-                    [{"type": "DoneAction", "reason": "No further progress detected"}],
+                    _completion_actions("No further progress detected"),
                     {
                         "decision": "done_stuck",
                         "repeat": repeat_after,
@@ -3234,9 +4819,16 @@ class ApifiedWebAgent(IWebAgent):
             mem_after = st_after.get("subgoal_memory") if isinstance(st_after, dict) else None
             if _all_subgoals_done(mem_after):
                 actions_out = out.get("actions") if isinstance(out, dict) and isinstance(out.get("actions"), list) else []
-                has_done = any(isinstance(a, dict) and str(a.get("type") or "") in {"DoneAction", "FinishAction"} for a in actions_out)
+                has_done = any(
+                    isinstance(a, dict)
+                    and (
+                        _is_done_action_type(a.get("type"))
+                        or _is_report_result_action_type(a.get("type"))
+                    )
+                    for a in actions_out
+                )
                 if not has_done:
-                    actions_out.append({"type": "DoneAction", "reason": "All subgoals completed"})
+                    actions_out.extend(_completion_actions("All subgoals completed"))
                     out["actions"] = actions_out
                 if isinstance(out.get("metrics"), dict):
                     m = dict(out.get("metrics") or {})
@@ -3263,11 +4855,15 @@ class ApifiedWebAgent(IWebAgent):
             if completion_done and isinstance(out, dict):
                 actions_out = out.get("actions") if isinstance(out.get("actions"), list) else []
                 has_done = any(
-                    isinstance(a, dict) and str(a.get("type") or "") in {"DoneAction", "FinishAction"}
+                    isinstance(a, dict)
+                    and (
+                        _is_done_action_type(a.get("type"))
+                        or _is_report_result_action_type(a.get("type"))
+                    )
                     for a in actions_out
                 )
                 if not has_done:
-                    actions_out.append({"type": "DoneAction", "reason": completion_reason or "Task complete"})
+                    actions_out.extend(_completion_actions(completion_reason or "Task complete"))
                     out["actions"] = actions_out
                 if isinstance(out.get("metrics"), dict):
                     m = dict(out.get("metrics") or {})
@@ -3282,6 +4878,31 @@ class ApifiedWebAgent(IWebAgent):
                         llm["completion_model"] = completion_model
                     m["llm"] = llm
                     out["metrics"] = m
+        except Exception:
+            pass
+
+        # Ensure info-seeking tasks end with meaningful result content.
+        try:
+            if isinstance(out, dict):
+                actions_out = out.get("actions") if isinstance(out.get("actions"), list) else []
+                done_like = any(
+                    isinstance(a, dict)
+                    and (
+                        _is_done_action_type(a.get("type"))
+                        or _is_report_result_action_type(a.get("type"))
+                    )
+                    for a in actions_out
+                )
+                has_report = any(
+                    isinstance(a, dict) and _is_report_result_action_type(a.get("type"))
+                    for a in actions_out
+                )
+                if done_like and not has_report:
+                    fallback_result = _render_observation_result(task=task, task_id=task_id)
+                    if isinstance(fallback_result, str) and fallback_result.strip():
+                        actions_out.insert(0, {"type": "ReportResultAction", "content": fallback_result.strip(), "success": True})
+                        out["actions"] = actions_out
+                        out["content"] = fallback_result.strip()
         except Exception:
             pass
 
@@ -3328,6 +4949,129 @@ def _task_from_payload(payload: Dict[str, Any]) -> Task:
     return SimpleNamespace(**task_payload)
 
 
+def _collect_supported_tool_definitions() -> list[dict[str, Any]]:
+    defs_fn = getattr(BaseAction, "all_function_definitions", None)
+    if callable(defs_fn):
+        try:
+            defs = defs_fn()
+            if isinstance(defs, list):
+                out: list[dict[str, Any]] = []
+                for item in defs:
+                    if not isinstance(item, dict):
+                        continue
+                    fn = item.get("function") if isinstance(item.get("function"), dict) else {}
+                    raw_name = str(fn.get("name") or "").strip()
+                    if not raw_name:
+                        continue
+                    if raw_name in {"done", "report_result"}:
+                        continue
+                    namespaced = "user.request_input" if raw_name == "request_user_input" else f"browser.{raw_name}"
+                    out.append(
+                        {
+                            "name": namespaced,
+                            "description": str(fn.get("description") or ""),
+                            "parameters": fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {},
+                        }
+                    )
+                return out
+        except Exception:
+            pass
+    return []
+
+
+def _normalize_allowed_tool_names(allowed_tools: Any) -> set[str]:
+    if not isinstance(allowed_tools, list):
+        return set()
+    out: set[str] = set()
+    for item in allowed_tools:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            out.add(name)
+    return out
+
+
+def _act_http_response(
+    raw_resp: Dict[str, Any],
+    actions: list[dict[str, Any]],
+    *,
+    task_id: str,
+    allowed_tool_names: set[str] | None = None,
+) -> Dict[str, Any]:
+    allowed = set(allowed_tool_names or [])
+    done_from_actions = False
+    content = _candidate_text(raw_resp.get("content"))
+    tool_calls: list[dict[str, Any]] = []
+
+    raw_tool_calls = raw_resp.get("tool_calls")
+    if isinstance(raw_tool_calls, list):
+        for raw_call in raw_tool_calls:
+            if not isinstance(raw_call, dict):
+                continue
+            name = str(raw_call.get("name") or "").strip()
+            if not name:
+                continue
+            if allowed and name not in allowed:
+                continue
+            args = raw_call.get("arguments") if isinstance(raw_call.get("arguments"), dict) else {}
+            tool_calls.append({"name": name, "arguments": args})
+    else:
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            action_type = action.get("type")
+            if _is_done_action_type(action_type):
+                done_from_actions = True
+                continue
+            if _is_report_result_action_type(action_type):
+                done_from_actions = True
+                if not content:
+                    content = _extract_result_text_from_action(action)
+                continue
+            call = _action_to_tool_call(action)
+            if not isinstance(call, dict):
+                continue
+            name = str(call.get("name") or "").strip()
+            if allowed and name not in allowed:
+                continue
+            args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+            tool_calls.append({"name": name, "arguments": args})
+
+    done_flag = bool(raw_resp.get("done")) or done_from_actions
+    state_out = raw_resp.get("state_out") if isinstance(raw_resp.get("state_out"), dict) else _build_state_out(task_id)
+
+    out: Dict[str, Any] = {
+        "protocol_version": str(raw_resp.get("protocol_version") or IWA_ACT_PROTOCOL_VERSION),
+        "tool_calls": tool_calls,
+        "content": content if isinstance(content, str) and content.strip() else None,
+        "reasoning": (
+            str(raw_resp.get("reasoning")).strip()[:200]
+            if isinstance(raw_resp.get("reasoning"), str) and str(raw_resp.get("reasoning")).strip()
+            else None
+        ),
+        "state_out": state_out if isinstance(state_out, dict) else {},
+        "done": bool(done_flag),
+    }
+    if isinstance(raw_resp.get("error"), str) and str(raw_resp.get("error")).strip():
+        out["error"] = str(raw_resp.get("error")).strip()[:400]
+    return out
+
+
+@app.get("/capabilities", summary="Operator capabilities and protocol metadata")
+async def capabilities() -> Dict[str, Any]:
+    return {
+        "name": "AutoppiaOperator",
+        "protocol_version": IWA_ACT_PROTOCOL_VERSION,
+        "act_endpoint": "/act",
+        "step_endpoint": "/step",
+        "supported_response_formats": ["tool_calls"],
+        "supports_request_user_input": True,
+        "supports_state_roundtrip": True,
+        "tool_definitions": _collect_supported_tool_definitions(),
+    }
+
+
 @app.post("/act", summary="Decide next agent actions")
 async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     task_id = str(payload.get("task_id") or "")
@@ -3360,26 +5104,10 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         f"raw_count={len(actions) if isinstance(actions, list) else 0} out_count={len(normalized)} "
         f"types={[str(a.get('type') or '') for a in normalized if isinstance(a, dict)]}"
     )
-    out: Dict[str, Any] = {"actions": normalized}
-    if isinstance(raw_resp, dict) and "metrics" in raw_resp:
-        out["metrics"] = raw_resp.get("metrics")
-    if isinstance(raw_resp, dict) and isinstance(raw_resp.get("reasoning"), str):
-        out["reasoning"] = str(raw_resp.get("reasoning")).strip()[:200]
-    if isinstance(raw_resp, dict) and isinstance(raw_resp.get("action_rationales"), list):
-        vals: list[str] = []
-        for x in raw_resp.get("action_rationales", []):
-            if isinstance(x, str) and x.strip():
-                vals.append(" ".join(x.strip().split())[:200])
-        if vals:
-            out["action_rationales"] = vals
-    if isinstance(raw_resp, dict) and isinstance(raw_resp.get("usage"), dict):
-        out["usage"] = raw_resp.get("usage")
-    if isinstance(raw_resp, dict) and raw_resp.get("total_tokens") is not None:
-        out["total_tokens"] = raw_resp.get("total_tokens")
-    if isinstance(raw_resp, dict) and raw_resp.get("estimated_cost_usd") is not None:
-        out["estimated_cost_usd"] = raw_resp.get("estimated_cost_usd")
-    if isinstance(raw_resp, dict) and isinstance(raw_resp.get("model"), str):
-        out["model"] = str(raw_resp.get("model"))
+    if not isinstance(raw_resp, dict):
+        raw_resp = {}
+    allowed_tool_names = _normalize_allowed_tool_names(payload.get("allowed_tools"))
+    out = _act_http_response(raw_resp, normalized, task_id=task_id, allowed_tool_names=allowed_tool_names)
     return out
 
 
