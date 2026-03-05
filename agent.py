@@ -141,11 +141,6 @@ def _is_done_action_type(action_type: Any) -> bool:
     return value in {"doneaction", "finishaction", "done", "finish"}
 
 
-def _is_report_result_action_type(action_type: Any) -> bool:
-    value = str(action_type or "").strip().lower().replace("-", "_")
-    return value in {"reportresultaction", "report_result", "report_result_action"}
-
-
 def _is_request_user_input_action_type(action_type: Any) -> bool:
     value = str(action_type or "").strip().lower().replace("-", "_")
     return value in {"requestuserinputaction", "request_user_input", "request_user_input_action"}
@@ -1206,7 +1201,7 @@ def _action_to_tool_call(action: dict[str, Any]) -> dict[str, Any] | None:
     action_type = str(action.get("type") or "").strip()
     if not action_type:
         return None
-    if _is_done_action_type(action_type) or _is_report_result_action_type(action_type):
+    if _is_done_action_type(action_type):
         return None
     args = {k: v for k, v in action.items() if k != "type"}
     t = action_type.lower()
@@ -3881,6 +3876,7 @@ class ApifiedWebAgent(IWebAgent):
         url: str,
         step_index: int,
         history: list[dict[str, Any]] | None = None,
+        state: dict[str, Any] | None = None,
     ) -> list[BaseAction]:
         task_id = str(getattr(task, "id", "") or "")
         prompt = str(getattr(task, "prompt", "") or "")
@@ -3900,8 +3896,13 @@ class ApifiedWebAgent(IWebAgent):
             "step_index": int(step_index),
             "history": history or [],
         }
-        resp = await self.act_from_payload(payload)
-        actions = resp.get("actions") if isinstance(resp, dict) else []
+        if isinstance(state, dict):
+            payload["state_in"] = dict(state)
+        actions = self._normalize_actions(
+            await self.act_from_payload(payload),
+            task_id=task_id,
+            step_index=int(step_index),
+        )
         _log_trace(
             f"act() raw actions task_id={task_id} step_index={int(step_index)} "
             f"count={len(actions) if isinstance(actions, list) else 0}"
@@ -3928,6 +3929,89 @@ class ApifiedWebAgent(IWebAgent):
                 f"raw_types={[str(x.get('type') or '') for x in actions if isinstance(x, dict)]}"
             )
         return out
+
+    async def step(
+        self,
+        *,
+        task: Task,
+        snapshot_html: str,
+        screenshot: str | bytes | None = None,
+        url: str,
+        step_index: int,
+        history: list[dict[str, Any]] | None = None,
+        state: dict[str, Any] | None = None,
+    ) -> list[BaseAction]:
+        """Alias of act() for step-oriented runtimes."""
+        return await self.act(
+            task=task,
+            snapshot_html=snapshot_html,
+            screenshot=screenshot,
+            url=url,
+            step_index=step_index,
+            history=history,
+            state=state,
+        )
+
+    async def step_from_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Alias of act_from_payload() for API compatibility."""
+        return await self.act_from_payload(payload)
+
+    @staticmethod
+    def supported_tool_definitions() -> list[dict[str, Any]]:
+        return _collect_supported_tool_definitions()
+
+    def capabilities_payload(self) -> Dict[str, Any]:
+        return {
+            "name": str(self.name or "AutoppiaOperator"),
+            "protocol_version": IWA_ACT_PROTOCOL_VERSION,
+            "act_endpoint": "/act",
+            "step_endpoint": "/step",
+            "supported_response_formats": ["tool_calls"],
+            "supports_request_user_input": True,
+            "supports_state_roundtrip": True,
+            "tool_definitions": self.supported_tool_definitions(),
+        }
+
+    def _normalize_actions(self, raw_resp: Any, *, task_id: str, step_index: int) -> list[dict[str, Any]]:
+        actions = raw_resp.get("actions") if isinstance(raw_resp, dict) else []
+        normalized: list[dict[str, Any]] = []
+        for action in actions if isinstance(actions, list) else []:
+            try:
+                if isinstance(action, dict):
+                    normalized.append(_sanitize_action_payload(action))
+                    continue
+                action_payload = action.model_dump(exclude_none=True)
+                normalized.append(_sanitize_action_payload(action_payload))
+            except Exception as exc:
+                logger.error(
+                    f"[AGENT_TRACE] /act action normalization failed task_id={task_id} "
+                    f"step_index={step_index} err={str(exc)} raw={str(action)[:500]}"
+                )
+                continue
+        return normalized
+
+    async def respond_from_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        task_id = str(payload.get("task_id") or "")
+        step_index = int(payload.get("step_index") or 0)
+        url = _normalize_demo_url(str(payload.get("url") or ""))
+        _log_trace(
+            f"/act start task_id={task_id} step_index={step_index} url={url} "
+            f"prompt_len={len(str(payload.get('prompt') or payload.get('task_prompt') or ''))} "
+            f"html_len={len(str(payload.get('snapshot_html') or ''))} "
+            f"history_len={len(payload.get('history') or []) if isinstance(payload.get('history'), list) else 0}"
+        )
+        raw_resp = await self.step_from_payload(payload)
+        normalized = self._normalize_actions(raw_resp, task_id=task_id, step_index=step_index)
+        _log_trace(
+            f"/act end task_id={task_id} step_index={step_index} "
+            f"raw_count={len(raw_resp.get('actions')) if isinstance(raw_resp, dict) and isinstance(raw_resp.get('actions'), list) else 0} "
+            f"out_count={len(normalized)} "
+            f"types={[str(a.get('type') or '') for a in normalized if isinstance(a, dict)]}"
+        )
+        if not isinstance(raw_resp, dict):
+            raw_resp = {}
+        allowed_tool_names = _normalize_allowed_tool_names(payload.get("allowed_tools"))
+        return _act_http_response(raw_resp, normalized, task_id=task_id, allowed_tool_names=allowed_tool_names)
 
     async def act_from_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         task_id = str(payload.get("task_id") or "")
@@ -3956,8 +4040,6 @@ class ApifiedWebAgent(IWebAgent):
             if actions and isinstance(actions[0], dict):
                 first_type = str(actions[0].get("type") or "")
             decision = str((metrics or {}).get("decision") or "").strip().lower() if isinstance(metrics, dict) else ""
-            if _is_report_result_action_type(first_type) or decision in {"report_result", "done_report"}:
-                return "Returning the final task output."
             if first_type == "DoneAction" or decision == "done":
                 return "Task appears complete from current page state."
             if first_type == "NavigateAction" or decision == "navigate":
@@ -3980,8 +4062,6 @@ class ApifiedWebAgent(IWebAgent):
                 mr = metrics.get("reasoning")
                 if isinstance(mr, str) and mr.strip():
                     return " ".join(mr.strip().split())[:200]
-            if _is_report_result_action_type(action_type):
-                return "Provide final user-facing output for this task."
             if action_type == "DoneAction":
                 return "No further useful action was detected from current state."
             if action_type == "NavigateAction":
@@ -4037,15 +4117,15 @@ class ApifiedWebAgent(IWebAgent):
                     sanitized_actions.append({})
 
             done = any(
-                _is_done_action_type(a.get("type")) or _is_report_result_action_type(a.get("type"))
+                _is_done_action_type(a.get("type"))
                 for a in sanitized_actions
                 if isinstance(a, dict)
             )
-            final_result_text = None
+            final_result_text = _candidate_text(metrics.get("content")) if isinstance(metrics, dict) else None
             for a in sanitized_actions:
                 if not isinstance(a, dict):
                     continue
-                if _is_report_result_action_type(a.get("type")):
+                if _is_done_action_type(a.get("type")):
                     final_result_text = _extract_result_text_from_action(a)
                     if final_result_text:
                         break
@@ -4135,7 +4215,7 @@ class ApifiedWebAgent(IWebAgent):
             if _is_generic_completion_text(text) or _is_noisy_result_text(text):
                 # Do not fabricate final output; rely on reasoning/rationales to explain stop.
                 return [{"type": "DoneAction", "reason": "completed"}]
-            return [{"type": "ReportResultAction", "content": text, "success": True}, {"type": "DoneAction", "reason": "completed"}]
+            return [{"type": "DoneAction", "reason": "completed", "content": text}]
 
         extract_max_candidates = 80
         llm_max_candidates = 50
@@ -4823,7 +4903,6 @@ class ApifiedWebAgent(IWebAgent):
                     isinstance(a, dict)
                     and (
                         _is_done_action_type(a.get("type"))
-                        or _is_report_result_action_type(a.get("type"))
                     )
                     for a in actions_out
                 )
@@ -4858,7 +4937,6 @@ class ApifiedWebAgent(IWebAgent):
                     isinstance(a, dict)
                     and (
                         _is_done_action_type(a.get("type"))
-                        or _is_report_result_action_type(a.get("type"))
                     )
                     for a in actions_out
                 )
@@ -4887,21 +4965,12 @@ class ApifiedWebAgent(IWebAgent):
                 actions_out = out.get("actions") if isinstance(out.get("actions"), list) else []
                 done_like = any(
                     isinstance(a, dict)
-                    and (
-                        _is_done_action_type(a.get("type"))
-                        or _is_report_result_action_type(a.get("type"))
-                    )
+                    and _is_done_action_type(a.get("type"))
                     for a in actions_out
                 )
-                has_report = any(
-                    isinstance(a, dict) and _is_report_result_action_type(a.get("type"))
-                    for a in actions_out
-                )
-                if done_like and not has_report:
+                if done_like and not _candidate_text(out.get("content")):
                     fallback_result = _render_observation_result(task=task, task_id=task_id)
                     if isinstance(fallback_result, str) and fallback_result.strip():
-                        actions_out.insert(0, {"type": "ReportResultAction", "content": fallback_result.strip(), "success": True})
-                        out["actions"] = actions_out
                         out["content"] = fallback_result.strip()
         except Exception:
             pass
@@ -4963,7 +5032,7 @@ def _collect_supported_tool_definitions() -> list[dict[str, Any]]:
                     raw_name = str(fn.get("name") or "").strip()
                     if not raw_name:
                         continue
-                    if raw_name in {"done", "report_result"}:
+                    if raw_name in {"done"}:
                         continue
                     namespaced = "user.request_input" if raw_name == "request_user_input" else f"browser.{raw_name}"
                     out.append(
@@ -5023,9 +5092,6 @@ def _act_http_response(
             action_type = action.get("type")
             if _is_done_action_type(action_type):
                 done_from_actions = True
-                continue
-            if _is_report_result_action_type(action_type):
-                done_from_actions = True
                 if not content:
                     content = _extract_result_text_from_action(action)
                 continue
@@ -5060,60 +5126,17 @@ def _act_http_response(
 
 @app.get("/capabilities", summary="Operator capabilities and protocol metadata")
 async def capabilities() -> Dict[str, Any]:
-    return {
-        "name": "AutoppiaOperator",
-        "protocol_version": IWA_ACT_PROTOCOL_VERSION,
-        "act_endpoint": "/act",
-        "step_endpoint": "/step",
-        "supported_response_formats": ["tool_calls"],
-        "supports_request_user_input": True,
-        "supports_state_roundtrip": True,
-        "tool_definitions": _collect_supported_tool_definitions(),
-    }
+    return OPERATOR.capabilities_payload()
 
 
 @app.post("/act", summary="Decide next agent actions")
 async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    task_id = str(payload.get("task_id") or "")
-    step_index = int(payload.get("step_index") or 0)
-    url = _normalize_demo_url(str(payload.get("url") or ""))
-    _log_trace(
-        f"/act start task_id={task_id} step_index={step_index} url={url} "
-        f"prompt_len={len(str(payload.get('prompt') or payload.get('task_prompt') or ''))} "
-        f"html_len={len(str(payload.get('snapshot_html') or ''))} "
-        f"history_len={len(payload.get('history') or []) if isinstance(payload.get('history'), list) else 0}"
-    )
-    raw_resp = await OPERATOR.act_from_payload(payload)
-    actions = raw_resp.get("actions") if isinstance(raw_resp, dict) else []
-    normalized = []
-    for action in actions if isinstance(actions, list) else []:
-        try:
-            if isinstance(action, dict):
-                normalized.append(_sanitize_action_payload(action))
-                continue
-            action_payload = action.model_dump(exclude_none=True)
-            normalized.append(_sanitize_action_payload(action_payload))
-        except Exception as exc:
-            logger.error(
-                f"[AGENT_TRACE] /act action normalization failed task_id={task_id} "
-                f"step_index={step_index} err={str(exc)} raw={str(action)[:500]}"
-            )
-            continue
-    _log_trace(
-        f"/act end task_id={task_id} step_index={step_index} "
-        f"raw_count={len(actions) if isinstance(actions, list) else 0} out_count={len(normalized)} "
-        f"types={[str(a.get('type') or '') for a in normalized if isinstance(a, dict)]}"
-    )
-    if not isinstance(raw_resp, dict):
-        raw_resp = {}
-    allowed_tool_names = _normalize_allowed_tool_names(payload.get("allowed_tools"))
-    out = _act_http_response(raw_resp, normalized, task_id=task_id, allowed_tool_names=allowed_tool_names)
-    return out
+    return await OPERATOR.respond_from_payload(payload)
 
 
 @app.post("/step", summary="Alias for /act")
 async def step(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    return await act(payload)
+    return await OPERATOR.respond_from_payload(payload)
 
 
 if __name__ == "__main__":

@@ -68,10 +68,10 @@ def test_act_http_response_sets_done_from_done_action(monkeypatch) -> None:
     assert body["tool_calls"] == []
 
 
-def test_act_http_response_sets_done_and_result_from_report_result_action(monkeypatch) -> None:
+def test_act_http_response_sets_done_and_result_from_done_action_content(monkeypatch) -> None:
     async def _fake_act_from_payload(payload):
         return {
-            "actions": [{"type": "ReportResultAction", "content": "Portfolio value is $120"}],
+            "actions": [{"type": "DoneAction", "content": "Portfolio value is $120"}],
         }
 
     monkeypatch.setattr(agent.OPERATOR, "act_from_payload", _fake_act_from_payload)
@@ -145,3 +145,68 @@ def test_capabilities_exposes_protocol_and_tools() -> None:
     assert isinstance(body.get("tool_definitions"), list)
     assert body.get("supports_request_user_input") is True
     assert body.get("supports_state_roundtrip") is True
+
+
+def test_step_endpoint_aliases_act_behavior(monkeypatch) -> None:
+    async def _fake_step_from_payload(payload):
+        return {
+            "protocol_version": "1.0",
+            "tool_calls": [{"name": "browser.navigate", "arguments": {"url": "https://example.com"}}],
+            "content": "navigating",
+            "done": False,
+            "state_out": {"phase": "nav"},
+        }
+
+    monkeypatch.setattr(agent.OPERATOR, "step_from_payload", _fake_step_from_payload)
+    client = TestClient(agent.app)
+
+    payload = {
+        "task_id": "t-step",
+        "prompt": "go",
+        "url": "https://start.example",
+        "snapshot_html": "<html></html>",
+        "step_index": 0,
+        "history": [],
+    }
+    body_act = client.post("/act", json=payload).json()
+    body_step = client.post("/step", json=payload).json()
+
+    assert body_step == body_act
+    assert body_step["tool_calls"] == [{"name": "browser.navigate", "arguments": {"url": "https://example.com"}}]
+
+
+def test_agent_step_method_aliases_act(monkeypatch) -> None:
+    captured = {}
+
+    async def _fake_act(*, task, snapshot_html, screenshot=None, url, step_index, history=None, state=None):
+        captured["task"] = task
+        captured["snapshot_html"] = snapshot_html
+        captured["screenshot"] = screenshot
+        captured["url"] = url
+        captured["step_index"] = step_index
+        captured["history"] = history
+        captured["state"] = state
+        return ["ok"]
+
+    monkeypatch.setattr(agent.OPERATOR, "act", _fake_act)
+
+    import asyncio
+    from types import SimpleNamespace
+
+    out = asyncio.run(
+        agent.OPERATOR.step(
+            task=SimpleNamespace(id="t", prompt="p"),
+            snapshot_html="<html></html>",
+            screenshot=None,
+            url="https://example.com",
+            step_index=3,
+            history=[{"type": "NavigateAction"}],
+            state={"phase": "x"},
+        )
+    )
+
+    assert out == ["ok"]
+    assert captured["url"] == "https://example.com"
+    assert captured["step_index"] == 3
+    assert captured["history"] == [{"type": "NavigateAction"}]
+    assert captured["state"] == {"phase": "x"}
