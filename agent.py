@@ -248,6 +248,20 @@ def _normalize_tool_call_payload(tool_call: dict[str, Any]) -> dict[str, Any] | 
     return {"name": name, "arguments": arguments}
 
 
+def _serialize_use_case(raw: Any) -> dict[str, str]:
+    if isinstance(raw, dict):
+        out = {
+            "name": str(raw.get("name") or "").strip()[:80],
+            "description": str(raw.get("description") or "").strip()[:400],
+        }
+        return {k: v for k, v in out.items() if v}
+    out = {
+        "name": str(getattr(raw, "name", "") or "").strip()[:80],
+        "description": str(getattr(raw, "description", "") or "").strip()[:400],
+    }
+    return {k: v for k, v in out.items() if v}
+
+
 @app.get("/health", summary="Health check")
 async def health() -> dict[str, str]:
     return {"status": "healthy"}
@@ -277,6 +291,8 @@ class ApifiedWebAgent(IWebAgent):
             "snapshot_html": snapshot_html,
             "screenshot": screenshot,
             "url": url,
+            "web_project_id": str(getattr(task, "web_project_id", "") or ""),
+            "use_case": _serialize_use_case(getattr(task, "use_case", None)),
             "step_index": int(step_index),
             "history": history or [],
         }
@@ -394,6 +410,8 @@ class ApifiedWebAgent(IWebAgent):
             "task_id": task_id,
             "prompt": prompt,
             "url": url,
+            "web_project_id": str(payload.get("web_project_id") or ""),
+            "use_case": payload.get("use_case") if isinstance(payload.get("use_case"), dict) else {},
             "step_index": step_index,
             "snapshot_html": str(payload.get("snapshot_html") or ""),
             "screenshot": payload.get("screenshot"),

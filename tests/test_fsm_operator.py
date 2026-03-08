@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict
+import pytest
 
 from fsm_operator import (
     FSMOperator,
@@ -32,6 +33,42 @@ def _dummy_llm_final(**_: Any) -> Dict[str, Any]:
         "choices": [{"message": {"content": '{"type":"final","done":true,"content":"Treasury value found: T 399,29"}'}}],
         "usage": {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9},
         "model": "gpt-4o-mini",
+    }
+
+
+def _dummy_llm_reasoning_trace_click(**_: Any) -> Dict[str, Any]:
+    return {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "type": "browser",
+                            "reasoning_trace": {
+                                "task_interpretation": "Open the visible pricing entry point.",
+                                "success_state": "The pricing information is visible on the current page.",
+                                "current_subgoal": "Follow the visible pricing control.",
+                                "next_expected_proof": "A pricing page or visible pricing values appear.",
+                                "drift_risks": "Using unrelated navigation items.",
+                            },
+                            "working_state": {
+                                "current_page_kind": "landing page",
+                                "active_region": "primary navigation",
+                                "active_workflow": "open pricing",
+                                "completed_fields": [],
+                                "pending_fields": ["pricing link"],
+                                "completion_evidence_missing": ["pricing values visible"],
+                                "next_milestone": "Open the visible pricing page.",
+                                "completion_state": "in_progress",
+                            },
+                            "tool_call": {"name": "browser.click", "arguments": {"index": 0}},
+                        }
+                    )
+                }
+            }
+        ],
+        "usage": {"prompt_tokens": 8, "completion_tokens": 9, "total_tokens": 17},
+        "model": "gpt-5.2",
     }
 
 
@@ -163,6 +200,27 @@ def test_done_and_content_emitted_without_report_result_action() -> None:
     assert out.get("done") is True
     assert isinstance(out.get("content"), str) and out.get("content")
     assert out.get("actions") == []
+
+
+def test_reasoning_trace_is_persisted_in_state_and_response() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_reasoning_trace_click)
+    payload = _base_payload()
+    payload["snapshot_html"] = "<html><body><a id='pricing-link' href='/pricing'>Pricing</a></body></html>"
+    payload["include_reasoning"] = True
+    out = engine.run(payload=payload)
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert actions and actions[0].get("type") == "ClickAction"
+    trace = out.get("reasoning_trace") if isinstance(out.get("reasoning_trace"), dict) else {}
+    assert trace.get("task_interpretation") == "Open the visible pricing entry point."
+    assert "Next proof:" in str(out.get("reasoning") or "")
+    working_state = out.get("working_state") if isinstance(out.get("working_state"), dict) else {}
+    assert working_state.get("active_workflow") == "open pricing"
+    state_out = out.get("state_out") if isinstance(out.get("state_out"), dict) else {}
+    memory = state_out.get("memory") if isinstance(state_out.get("memory"), dict) else {}
+    stored_trace = memory.get("reasoning_trace") if isinstance(memory.get("reasoning_trace"), dict) else {}
+    stored_working_state = memory.get("working_state") if isinstance(memory.get("working_state"), dict) else {}
+    assert stored_trace.get("current_subgoal") == "Follow the visible pricing control."
+    assert stored_working_state.get("next_milestone") == "Open the visible pricing page."
 
 
 def test_early_final_is_blocked_on_first_step_without_facts(monkeypatch: Any) -> None:
@@ -2751,6 +2809,91 @@ def test_fallback_prefers_local_escape_candidate_before_global_back() -> None:
     assert out["tool_call"]["arguments"]["element_id"] == "save-btn"
 
 
+def test_fallback_prefers_dropdown_options_over_generic_select_value() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    policy_obs = {
+        "candidates": [
+            {
+                "id": "genre-select",
+                "index": 0,
+                "role": "select",
+                "text": "Genre",
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre", "case_sensitive": False},
+            }
+        ],
+        "candidate_partitions": {"local": [], "escape": [], "global": [], "suppressed_global_count": 0},
+        "memory": {"typed_candidate_ids": [], "visual_element_hints": []},
+        "flags": {},
+        "counters": {"stall_count": 0, "repeat_action_count": 0},
+    }
+    out = engine.policy._fallback(
+        prompt="Choose the correct genre",
+        mode="PLAN",
+        policy_obs=policy_obs,
+        allowed_tools={"browser.dropdown_options", "browser.select_dropdown"},
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.dropdown_options"
+    assert out["tool_call"]["arguments"]["index"] == 0
+
+
+def test_normalize_decision_rejects_generic_browser_input_text() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    with pytest.raises(ValueError):
+        engine.policy._normalize_decision(
+            {
+                "type": "browser",
+                "tool_call": {"name": "browser.input", "arguments": {"index": 0, "text": "<text>"}},
+            },
+            {"browser.input"},
+        )
+
+
+def test_normalize_decision_downgrades_generic_select_to_dropdown_options() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.policy._normalize_decision(
+        {
+            "type": "browser",
+            "tool_call": {"name": "browser.select_dropdown", "arguments": {"index": 1, "text": "Option"}},
+        },
+        {"browser.select_dropdown", "browser.dropdown_options"},
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.dropdown_options"
+    assert out["tool_call"]["arguments"]["index"] == 1
+
+
+def test_normalize_decision_preserves_structured_reasoning_trace() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.policy._normalize_decision(
+        {
+            "type": "browser",
+            "reasoning_trace": {
+                "task_interpretation": "Use the visible control to open pricing.",
+                "success_state": "Pricing is visible.",
+                "current_subgoal": "Click Pricing.",
+                "next_expected_proof": "A pricing page appears.",
+                "drift_risks": "Opening unrelated links.",
+            },
+            "working_state": {
+                "current_page_kind": "home page",
+                "active_region": "header nav",
+                "active_workflow": "open pricing",
+                "pending_fields": ["pricing link"],
+                "completion_evidence_missing": ["pricing page visible"],
+                "next_milestone": "Click Pricing.",
+                "completion_state": "in_progress",
+            },
+            "tool_call": {"name": "browser.click", "arguments": {"index": 0}},
+        },
+        {"browser.click"},
+    )
+    assert out["type"] == "browser"
+    assert out["reasoning_trace"]["task_interpretation"] == "Use the visible control to open pricing."
+    assert out["working_state"]["active_region"] == "header nav"
+    assert "Success: Pricing is visible." in str(out.get("reasoning") or "")
+
+
 def test_ranker_demotes_local_pager_when_submit_is_available() -> None:
     ranker = CandidateRanker()
     state = AgentState()
@@ -3043,7 +3186,12 @@ def test_build_policy_obs_exposes_short_action_list_not_large_candidate_dump() -
         screenshot_available=False,
     )
     assert len(policy_obs["candidates"]) <= 24
-    assert "ACTION SHORTLIST (JSON):" in policy_obs["policy_input_text"]
+    assert "INTERACTIVE ELEMENT SHORTLIST (JSON):" in policy_obs["policy_input_text"]
+    assert "UNAVAILABLE TOOLS:" in policy_obs["policy_input_text"]
+    assert "ACTIVE OBJECTIVE (JSON):" in policy_obs["policy_input_text"]
+    assert "WORKING STATE (JSON):" in policy_obs["policy_input_text"]
+    assert "AVOID REPEATING (JSON):" in policy_obs["policy_input_text"]
+    assert policy_obs["candidates"][0]["index"] == 0
 
 
 def test_store_expected_effect_for_submit_click() -> None:
@@ -3064,6 +3212,300 @@ def test_store_expected_effect_for_submit_click() -> None:
     engine._store_expected_effect(action=action, ranked_candidates=[submit], state=state)
     assert state.progress.pending_expected_effect == "submit_effect"
     assert state.progress.pending_expected_target_id == "save"
+
+
+def test_policy_obs_includes_site_knowledge_when_enabled(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_USE_SITE_KNOWLEDGE", "1")
+    builder = ObsBuilder()
+    state = AgentState(mode="NAV")
+    candidates = [
+        Candidate(
+            id="movie-link",
+            role="link",
+            type="a",
+            text="Movie details",
+            href="/movies/123",
+            context="Movie grid",
+            selector={"type": "attributeValueSelector", "attribute": "href", "value": "/movies/123", "case_sensitive": False},
+            dom_path="html/body/a[1]",
+        )
+    ]
+    policy_obs = builder.build_policy_obs(
+        task_id="site-knowledge",
+        prompt="Post a comment to a movie",
+        web_project_id="autocinema",
+        use_case={"name": "ADD_COMMENT", "description": "The user posts a comment on a movie detail page."},
+        step_index=1,
+        url="https://example.com",
+        mode="NAV",
+        flags={},
+        state=state,
+        text_ir={"title": "Cinema", "visible_text": "Movies", "headings": []},
+        candidates=candidates,
+        history=[],
+        screenshot_available=False,
+    )
+    assert "KNOWN SITE MAP (JSON):" in policy_obs["policy_input_text"]
+    site_knowledge = policy_obs.get("site_knowledge") if isinstance(policy_obs.get("site_knowledge"), dict) else {}
+    assert site_knowledge.get("project_id") == "autocinema"
+    current = site_knowledge.get("current_task_routing") if isinstance(site_knowledge.get("current_task_routing"), dict) else {}
+    assert current.get("likely_best_section") == "detail"
+
+
+def test_policy_obs_exposes_local_workflow_closure_when_ready_to_commit() -> None:
+    builder = ObsBuilder()
+    state = AgentState(
+        mode="NAV",
+        focus_region={
+            "region_id": "comment-form",
+            "region_kind": "form",
+            "region_label": "Comment form",
+            "region_context": "Comment form",
+            "candidate_ids": ["name-input", "message-area", "post-comment"],
+        },
+        form_progress={
+            "typed_candidate_ids": ["name-input", "message-area"],
+        },
+    )
+    candidates = [
+        Candidate(
+            id="name-input",
+            role="input",
+            type="text",
+            text="",
+            href="",
+            context="Comment form",
+            field_kind="name",
+            selector={"type": "attributeValueSelector", "attribute": "id", "value": "name-input", "case_sensitive": False},
+            dom_path="html/body/form/input[1]",
+        ),
+        Candidate(
+            id="message-area",
+            role="textarea",
+            type="textarea",
+            text="",
+            href="",
+            context="Comment form",
+            field_kind="text",
+            selector={"type": "attributeValueSelector", "attribute": "id", "value": "message-area", "case_sensitive": False},
+            dom_path="html/body/form/textarea[1]",
+        ),
+        Candidate(
+            id="post-comment",
+            role="button",
+            type="button",
+            text="Post Comment",
+            href="",
+            context="Comment form",
+            field_kind="submit",
+            selector={"type": "attributeValueSelector", "attribute": "id", "value": "post-comment", "case_sensitive": False},
+            dom_path="html/body/form/button[1]",
+        ),
+    ]
+    policy_obs = builder.build_policy_obs(
+        task_id="commit-ready",
+        prompt="Post a comment to the movie",
+        web_project_id="autocinema",
+        use_case={"name": "ADD_COMMENT", "description": "The user posts a comment on a movie detail page."},
+        step_index=2,
+        url="https://example.com/movies/123",
+        mode="NAV",
+        flags={},
+        state=state,
+        text_ir={"title": "Movie", "visible_text": "Comment form", "headings": []},
+        candidates=candidates,
+        history=[],
+        screenshot_available=False,
+    )
+    closure = policy_obs.get("local_workflow_closure") if isinstance(policy_obs.get("local_workflow_closure"), dict) else {}
+    assert closure.get("ready_to_commit") is True
+    commit_controls = closure.get("commit_controls") if isinstance(closure.get("commit_controls"), list) else []
+    assert commit_controls and commit_controls[0].get("id") == "post-comment"
+    assert "LOCAL WORKFLOW CLOSURE (JSON):" in policy_obs["policy_input_text"]
+
+
+def test_policy_obs_includes_local_html_context_for_active_form(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_USE_LOCAL_HTML_CONTEXT", "1")
+    builder = ObsBuilder()
+    state = AgentState(
+        mode="NAV",
+        focus_region={
+            "region_id": "comment-form",
+            "region_kind": "form",
+            "region_label": "Comment form",
+            "region_context": "Comment form",
+            "candidate_ids": ["name-input", "message-area", "post-comment"],
+        },
+    )
+    state.last_action_element_id = "message-area"
+    candidates = [
+        Candidate(
+            id="name-input",
+            role="input",
+            type="text",
+            text="Name",
+            href="",
+            context="Comment form",
+            field_kind="name",
+            selector={"type": "attributeValueSelector", "attribute": "id", "value": "name-input", "case_sensitive": False},
+            dom_path="html/body/form/input[1]",
+            region_id="comment-form",
+            region_kind="form",
+            region_label="Comment form",
+        ),
+        Candidate(
+            id="message-area",
+            role="textarea",
+            type="textarea",
+            text="Comment",
+            href="",
+            context="Comment form",
+            field_kind="text",
+            selector={"type": "attributeValueSelector", "attribute": "id", "value": "message-area", "case_sensitive": False},
+            dom_path="html/body/form/textarea[1]",
+            region_id="comment-form",
+            region_kind="form",
+            region_label="Comment form",
+        ),
+        Candidate(
+            id="post-comment",
+            role="button",
+            type="button",
+            text="Post Comment",
+            href="",
+            context="Comment form",
+            field_kind="submit",
+            selector={"type": "attributeValueSelector", "attribute": "id", "value": "post-comment", "case_sensitive": False},
+            dom_path="html/body/form/button[1]",
+            region_id="comment-form",
+            region_kind="form",
+            region_label="Comment form",
+        ),
+    ]
+    policy_obs = builder.build_policy_obs(
+        task_id="local-html",
+        prompt="Post a comment to the movie",
+        web_project_id="autocinema",
+        use_case={"name": "ADD_COMMENT", "description": "The user posts a comment on a movie detail page."},
+        snapshot_html="""
+        <html><body>
+          <form id="comment-form">
+            <label for="name-input">Name</label>
+            <input id="name-input" type="text" />
+            <label for="message-area">Comment</label>
+            <textarea id="message-area"></textarea>
+            <button id="post-comment" type="submit">Post Comment</button>
+          </form>
+          <aside>
+            <button id="share-widget">Share</button>
+          </aside>
+        </body></html>
+        """,
+        step_index=2,
+        url="https://example.com/movies/123",
+        mode="NAV",
+        flags={},
+        state=state,
+        text_ir={"title": "Movie", "visible_text": "Comment form", "headings": []},
+        candidates=candidates,
+        history=[],
+        screenshot_available=False,
+    )
+    local_html = policy_obs.get("local_html_context") if isinstance(policy_obs.get("local_html_context"), dict) else {}
+    assert "<form" in str(local_html.get("active_form_html") or "")
+    assert "post-comment" in str(local_html.get("active_form_html") or "")
+    assert "message-area" in str(local_html.get("last_used_element_html") or "")
+    commit_htmls = local_html.get("commit_candidate_htmls") if isinstance(local_html.get("commit_candidate_htmls"), list) else []
+    assert commit_htmls and "Post Comment" in str(commit_htmls[0])
+    assert "LOCAL HTML CONTEXT (JSON):" in policy_obs["policy_input_text"]
+
+
+def test_policy_obs_exposes_active_objective_and_avoid_repeating_signals() -> None:
+    builder = ObsBuilder()
+    state = AgentState(
+        mode="NAV",
+        plan={"active_id": "sg-login", "subgoals": [{"id": "sg-login", "text": "Complete the login form", "status": "active"}]},
+        focus_region={
+            "region_id": "region-form",
+            "region_kind": "form",
+            "region_label": "Login form",
+            "region_context": "Login form Email Password Sign in",
+            "candidate_ids": ["email", "submit"],
+            "recent_region_ids": ["region-form"],
+        },
+        counters={"repeat_action_count": 1, "stall_count": 2},
+        progress={
+            "pending_expected_effect": "submit_effect",
+            "pending_expected_action_type": "ClickAction",
+            "no_progress_score": 4,
+            "consecutive_no_effect_steps": 2,
+            "blocked_regions": ["region-form"],
+            "failed_patterns": ["clickaction_no_effect"],
+            "recent_effects": [
+                {
+                    "step_index": 2,
+                    "label": "NO_VISIBLE_CHANGE",
+                    "action_type": "ClickAction",
+                    "target_id": "submit",
+                    "region_id": "region-form",
+                    "repeated_target": True,
+                    "exec_ok": True,
+                }
+            ],
+        },
+    )
+    candidates = [
+        Candidate(
+            id="email",
+            role="input",
+            type="input",
+            text="Email",
+            href="",
+            context="Login form Email Password Sign in",
+            selector={"type": "attributeValueSelector", "attribute": "id", "value": "email", "case_sensitive": False},
+            dom_path="html/body/main/form/input[1]",
+            field_kind="email",
+            region_id="region-form",
+            region_kind="form",
+            region_label="Login form",
+        ),
+        Candidate(
+            id="submit",
+            role="button",
+            type="button",
+            text="Sign in",
+            href="",
+            context="Login form Email Password Sign in",
+            selector={"type": "xpathSelector", "value": "//button[contains(normalize-space(.), \"Sign in\")]", "case_sensitive": False},
+            dom_path="html/body/main/form/button[1]",
+            field_kind="submit",
+            region_id="region-form",
+            region_kind="form",
+            region_label="Login form",
+        ),
+    ]
+    policy_obs = builder.build_policy_obs(
+        task_id="objective-avoid",
+        prompt="Log in with email and password",
+        step_index=3,
+        url="https://example.com/login",
+        mode="NAV",
+        flags={"url_changed": False, "dom_changed": False, "no_visual_progress": True},
+        state=state,
+        text_ir={"title": "Login", "visible_text": "Login form", "headings": ["Login"], "forms": [], "control_groups": [], "cards": []},
+        candidates=candidates,
+        history=[],
+        screenshot_available=False,
+    )
+    active_objective = policy_obs.get("active_objective") if isinstance(policy_obs.get("active_objective"), dict) else {}
+    avoid_repeating = policy_obs.get("avoid_repeating") if isinstance(policy_obs.get("avoid_repeating"), dict) else {}
+    assert active_objective.get("goal") == "change_region_or_strategy"
+    assert active_objective.get("expected_effect") == "submit_effect"
+    assert active_objective.get("focused_region", {}).get("region_id") == "region-form"
+    assert bool(avoid_repeating.get("should_change_approach")) is True
+    discouraged = avoid_repeating.get("discouraged_targets") if isinstance(avoid_repeating.get("discouraged_targets"), list) else []
+    assert discouraged and discouraged[0].get("id") == "submit"
+    assert discouraged[0].get("index") == 1
 
 
 def test_record_progress_effect_marks_expected_effect_miss() -> None:

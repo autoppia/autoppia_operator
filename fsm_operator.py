@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+from functools import lru_cache
 from typing import Any, Callable, Dict, List, Literal
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from pathlib import Path
@@ -73,6 +74,17 @@ SUPPORTED_BROWSER_TOOL_NAMES = {
     "browser.evaluate",
     "browser.extract",
 }
+
+UNAVAILABLE_BROWSER_TOOLS = (
+    "switch_tab",
+    "close_tab",
+    "upload_file",
+    "read_file",
+    "write_file",
+    "replace_file",
+)
+
+SITE_KNOWLEDGE_TASK_CACHE = Path(__file__).resolve().parent / "autoppia_rl" / "data" / "task_cache" / "autoppia_cinema_tasks.json"
 
 MAX_INTERNAL_META_STEPS = 3
 MAX_FACTS = 32
@@ -249,6 +261,287 @@ def _value_line_text(text: str) -> bool:
     return False
 
 
+def _is_generic_tool_placeholder(value: Any, *, kind: str) -> bool:
+    text = _norm_ws(str(value or "")).strip().lower()
+    if not text:
+        return True
+    generic_common = {
+        "text",
+        "value",
+        "input",
+        "field",
+        "enter text",
+        "type here",
+        "your text",
+        "<text>",
+        "<value>",
+        "<input>",
+    }
+    generic_select = {
+        "option",
+        "select option",
+        "choose option",
+        "<option>",
+        "dropdown option",
+    }
+    valid_placeholders = {"<username>", "<password>", "<signup_email>", "<email>"}
+    if text in valid_placeholders:
+        return False
+    if kind == "select":
+        return text in (generic_common | generic_select)
+    return text in generic_common
+
+
+def _normalize_reasoning_trace(raw: Any) -> Dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    allowed = (
+        "task_interpretation",
+        "success_state",
+        "current_subgoal",
+        "next_expected_proof",
+        "drift_risks",
+        "where_am_i",
+        "state_assessment",
+        "plan",
+    )
+    out: Dict[str, str] = {}
+    for key in allowed:
+        text = _norm_ws(str(raw.get(key) or ""))
+        if text:
+            out[key] = text[:280]
+    return out
+
+
+def _normalize_working_state(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in (
+        "current_page_kind",
+        "active_region",
+        "active_workflow",
+        "next_milestone",
+        "completion_state",
+    ):
+        text = _candidate_text(raw.get(key))
+        if text:
+            out[key] = text[:160]
+    for key in (
+        "completed_fields",
+        "pending_fields",
+        "completion_evidence_missing",
+    ):
+        values: List[str] = []
+        for item in list(raw.get(key) or []):
+            text = _candidate_text(item)
+            if text:
+                values.append(text[:120])
+        if values:
+            out[key] = _dedupe_keep_order(values, 8)
+    return out
+
+
+def _reasoning_trace_summary(trace: Dict[str, str]) -> str:
+    if not isinstance(trace, dict) or not trace:
+        return ""
+    parts: List[str] = []
+    if trace.get("task_interpretation"):
+        parts.append(f"Task means: {trace['task_interpretation']}")
+    if trace.get("success_state"):
+        parts.append(f"Success: {trace['success_state']}")
+    if trace.get("current_subgoal"):
+        parts.append(f"Now: {trace['current_subgoal']}")
+    if trace.get("next_expected_proof"):
+        parts.append(f"Next proof: {trace['next_expected_proof']}")
+    if trace.get("drift_risks"):
+        parts.append(f"Avoid: {trace['drift_risks']}")
+    if trace.get("where_am_i"):
+        parts.append(f"Where: {trace['where_am_i']}")
+    if trace.get("state_assessment"):
+        parts.append(f"State: {trace['state_assessment']}")
+    if trace.get("plan"):
+        parts.append(f"Plan: {trace['plan']}")
+    return " | ".join(parts)[:900]
+
+
+def _working_state_summary(ws: Dict[str, Any]) -> str:
+    if not isinstance(ws, dict) or not ws:
+        return ""
+    parts: List[str] = []
+    if ws.get("current_page_kind"):
+        parts.append(f"Page: {ws['current_page_kind']}")
+    if ws.get("active_region"):
+        parts.append(f"Region: {ws['active_region']}")
+    if ws.get("active_workflow"):
+        parts.append(f"Workflow: {ws['active_workflow']}")
+    completed = ws.get("completed_fields") if isinstance(ws.get("completed_fields"), list) else []
+    if completed:
+        parts.append("Done: " + ", ".join(str(x) for x in completed[:4]))
+    pending = ws.get("pending_fields") if isinstance(ws.get("pending_fields"), list) else []
+    if pending:
+        parts.append("Pending: " + ", ".join(str(x) for x in pending[:4]))
+    missing = ws.get("completion_evidence_missing") if isinstance(ws.get("completion_evidence_missing"), list) else []
+    if missing:
+        parts.append("Missing proof: " + ", ".join(str(x) for x in missing[:3]))
+    if ws.get("next_milestone"):
+        parts.append(f"Next: {ws['next_milestone']}")
+    if ws.get("completion_state"):
+        parts.append(f"Status: {ws['completion_state']}")
+    return " | ".join(parts)[:900]
+
+
+def _normalize_use_case_info(raw: Any) -> Dict[str, str]:
+    if isinstance(raw, dict):
+        return {
+            "name": _candidate_text(raw.get("name"))[:80],
+            "description": _candidate_text(raw.get("description"))[:400],
+        }
+    name = _candidate_text(getattr(raw, "name", None), raw)
+    description = _candidate_text(getattr(raw, "description", None))
+    out = {"name": name[:80], "description": description[:400]}
+    return {k: v for k, v in out.items() if v}
+
+
+def _site_section_templates() -> Dict[str, Dict[str, str]]:
+    return {
+        "home": {
+            "label": "home / landing",
+            "when_useful": "starting navigation, broad discovery, finding main flows",
+            "unlikely_for": "completing deep item-specific workflows by itself",
+        },
+        "auth": {
+            "label": "auth / account access",
+            "when_useful": "login, registration, logout, account access",
+            "unlikely_for": "item detail tasks unless authentication is explicitly required",
+        },
+        "catalog": {
+            "label": "search / browse / filters",
+            "when_useful": "searching, filtering, browsing lists before opening an item",
+            "unlikely_for": "submitting item-specific forms once the correct item is already open",
+        },
+        "detail": {
+            "label": "item detail pages",
+            "when_useful": "details, comments, share, trailer, item-specific actions",
+            "unlikely_for": "global auth and generic site info",
+        },
+        "form": {
+            "label": "mutation forms",
+            "when_useful": "create, edit, delete, submit, contact, checkout-like flows",
+            "unlikely_for": "broad exploration after the correct form is already visible",
+        },
+        "account": {
+            "label": "profile / saved items",
+            "when_useful": "profile edits, watchlists, wishlists, user-specific actions",
+            "unlikely_for": "anonymous discovery tasks",
+        },
+        "info": {
+            "label": "informational pages",
+            "when_useful": "about, contact, static information, policies",
+            "unlikely_for": "most transactional or item-specific tasks",
+        },
+    }
+
+
+def _section_keys_for_use_case(name: str, description: str) -> List[str]:
+    text = f"{name} {description}".lower()
+    keys = ["home"]
+    if any(tok in text for tok in ("login", "sign in", "sign up", "register", "logout", "auth")):
+        keys.append("auth")
+    if any(tok in text for tok in ("search", "filter", "browse", "find", "list")):
+        keys.append("catalog")
+    if any(tok in text for tok in ("detail", "movie", "book", "product", "profile", "comment", "review", "share", "trailer", "view")):
+        keys.append("detail")
+    if any(tok in text for tok in ("add", "create", "edit", "delete", "contact", "submit", "form", "message")):
+        keys.append("form")
+    if any(tok in text for tok in ("watchlist", "wishlist", "profile", "account", "saved")):
+        keys.append("account")
+    if any(tok in text for tok in ("about", "contact", "policy", "info", "help", "support")):
+        keys.append("info")
+    return _dedupe_keep_order(keys, 6)
+
+
+@lru_cache(maxsize=1)
+def _load_task_cache_site_index() -> Dict[str, Dict[str, Any]]:
+    path = SITE_KNOWLEDGE_TASK_CACHE
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    raw_tasks = data.get("tasks") if isinstance(data, dict) else data
+    out: Dict[str, Dict[str, Any]] = {}
+    for item in raw_tasks if isinstance(raw_tasks, list) else []:
+        if not isinstance(item, dict):
+            continue
+        project_id = _candidate_text(item.get("web_project_id"))
+        if not project_id:
+            continue
+        project = out.setdefault(project_id, {"use_cases": {}, "examples": []})
+        uc = _normalize_use_case_info(item.get("use_case"))
+        uc_name = uc.get("name") or ""
+        if uc_name and uc_name not in project["use_cases"]:
+            project["use_cases"][uc_name] = uc
+        prompt = _candidate_text(item.get("prompt"))
+        if prompt:
+            project["examples"] = _dedupe_keep_order(list(project["examples"]) + [prompt[:180]], 12)
+    return out
+
+
+def _build_site_knowledge(project_id: str, use_case: Dict[str, str], prompt: str) -> Dict[str, Any]:
+    project_id = _candidate_text(project_id)
+    uc = _normalize_use_case_info(use_case)
+    cache_index = _load_task_cache_site_index()
+    cached = cache_index.get(project_id, {}) if project_id else {}
+    known_use_cases = list((cached.get("use_cases") or {}).values()) if isinstance(cached, dict) else []
+    all_use_cases = list(known_use_cases)
+    if uc.get("name") and not any(str(item.get("name") or "") == uc["name"] for item in all_use_cases if isinstance(item, dict)):
+        all_use_cases.append(uc)
+    templates = _site_section_templates()
+    section_sources: Dict[str, List[str]] = {}
+    for item in all_use_cases:
+        if not isinstance(item, dict):
+            continue
+        name = _candidate_text(item.get("name"))
+        desc = _candidate_text(item.get("description"))
+        for key in _section_keys_for_use_case(name, desc):
+            section_sources.setdefault(key, []).append(name or desc or "unknown")
+    known_sections: List[Dict[str, Any]] = []
+    for key in ("home", "auth", "catalog", "detail", "form", "account", "info"):
+        if key not in section_sources:
+            continue
+        tpl = templates[key]
+        known_sections.append(
+            {
+                "section_id": key,
+                "label": tpl["label"],
+                "when_useful": tpl["when_useful"],
+                "unlikely_for": tpl["unlikely_for"],
+                "supported_by_use_cases": _dedupe_keep_order(section_sources.get(key, []), 6),
+            }
+        )
+    current_name = _candidate_text(uc.get("name"))
+    current_desc = _candidate_text(uc.get("description"), prompt)
+    current_keys = _section_keys_for_use_case(current_name, current_desc)
+    best_key = next((key for key in current_keys if key != "home"), "home")
+    unlikely_keys = [key for key in ("info", "auth", "home") if key != best_key and key in section_sources]
+    return {
+        "project_id": project_id,
+        "available": bool(known_sections),
+        "known_sections": known_sections[:6],
+        "current_use_case": current_name,
+        "current_task_routing": {
+            "likely_best_section": best_key,
+            "section_label": templates.get(best_key, {}).get("label", best_key),
+            "why": templates.get(best_key, {}).get("when_useful", ""),
+            "unlikely_sections_for_this_task": unlikely_keys[:3],
+        },
+        "example_task_prompts": list((cached.get("examples") or [])[:5]) if isinstance(cached, dict) else [],
+    }
+
+
 def _fact_overlap_score(prompt: str, fact: str) -> int:
     p_terms = _focus_terms(prompt, max_terms=16)
     if not p_terms:
@@ -421,6 +714,16 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return bool(default)
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return int(default)
+    try:
+        return int(str(raw).strip())
+    except Exception:
+        return int(default)
 
 
 def _normalize_screenshot_data_url(value: Any) -> str:
@@ -694,6 +997,8 @@ class AgentMemory(BaseModel):
     obs_extract_dom_hash: str = ""
     obs_extract_payload: Dict[str, Any] = Field(default_factory=dict)
     obs_candidate_hints: List[str] = Field(default_factory=list)
+    reasoning_trace: Dict[str, str] = Field(default_factory=dict)
+    working_state: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentFormProgress(BaseModel):
@@ -825,6 +1130,12 @@ class AgentState(BaseModel):
         self.memory.last_vision_signature = str(self.memory.last_vision_signature or "")[:64]
         self.memory.history_summary = _norm_ws(self.memory.history_summary)[:MAX_HISTORY_SUMMARY_CHARS]
         self.memory.strategy_summary = _norm_ws(self.memory.strategy_summary)[:320]
+        self.memory.reasoning_trace = {
+            str(k)[:40]: _norm_ws(v)[:280]
+            for k, v in self.memory.reasoning_trace.items()
+            if str(k).strip() and _norm_ws(v)
+        }
+        self.memory.working_state = _normalize_working_state(self.memory.working_state)
         self.memory.prev_page_summary = _norm_ws(self.memory.prev_page_summary)[:800]
         self.memory.prev_page_ir_text = _norm_ws(self.memory.prev_page_ir_text)[:2000]
         self.memory.prev_candidate_sigs = _dedupe_keep_order(
@@ -1168,7 +1479,7 @@ class Candidate:
     disabled: bool = False
     bbox: Dict[str, float] | None = None
 
-    def as_obs(self) -> Dict[str, Any]:
+    def as_obs(self, *, index: int | None = None) -> Dict[str, Any]:
         out = {
             "id": self.id,
             "role": self.role,
@@ -1192,6 +1503,8 @@ class Candidate:
             "disabled": bool(self.disabled),
             "bbox": self.bbox,
         }
+        if index is not None:
+            out["index"] = int(index)
         return out
 
 
@@ -3225,6 +3538,256 @@ class ObsBuilder:
             parts.append("satisfied_constraints=" + ",".join(state.progress.satisfied_constraints[-8:]))
         return " ; ".join([p for p in parts if p])[:800]
 
+    def _active_objective_summary(
+        self,
+        *,
+        prompt: str,
+        state: AgentState,
+        page_observations: Dict[str, Any],
+        active_subgoal: Dict[str, Any],
+        active_region: Dict[str, Any],
+        active_group: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        expected_effect = _candidate_text(state.progress.pending_expected_effect)
+        expected_action_type = _candidate_text(state.progress.pending_expected_action_type)
+        no_progress_score = int(state.progress.no_progress_score or 0)
+        consecutive_no_effect = int(state.progress.consecutive_no_effect_steps or 0)
+        local_candidate_count = int(page_observations.get("local_candidate_count") or 0) if isinstance(page_observations, dict) else 0
+        blocked_regions = set(state.progress.blocked_regions or [])
+        region_id = str(active_region.get("region_id") or "") if isinstance(active_region, dict) else ""
+        visible_answer_signals = bool(
+            isinstance(page_observations, dict)
+            and (
+                (page_observations.get("likely_answers") if isinstance(page_observations.get("likely_answers"), list) else [])
+                or (page_observations.get("relevant_lines") if isinstance(page_observations.get("relevant_lines"), list) else [])
+            )
+        )
+        focus = {
+            "mode": str(state.mode or "")[:40],
+            "goal": "best_visible_next_step",
+            "reason": "",
+            "active_subgoal": active_subgoal if isinstance(active_subgoal, dict) else {},
+            "focused_region": active_region if isinstance(active_region, dict) else {},
+            "active_group": active_group if isinstance(active_group, dict) else {},
+            "expected_effect": expected_effect,
+            "expected_action_type": expected_action_type,
+            "local_candidate_count": local_candidate_count,
+            "frontier_url_count": len(state.frontier.pending_urls),
+            "frontier_element_count": len(state.frontier.pending_elements),
+            "no_progress_score": no_progress_score,
+            "consecutive_no_effect_steps": consecutive_no_effect,
+            "visible_answer_signals": visible_answer_signals,
+        }
+        if visible_answer_signals:
+            focus["goal"] = "verify_or_finish_from_visible_page"
+            focus["reason"] = "The current page already exposes likely answer evidence."
+        elif region_id and region_id in blocked_regions:
+            focus["goal"] = "change_region_or_strategy"
+            focus["reason"] = "The current focused region is blocked or repeatedly unproductive."
+        elif no_progress_score >= 4 or consecutive_no_effect >= 2:
+            focus["goal"] = "change_target_without_repeating"
+            focus["reason"] = "Recent actions did not produce visible progress."
+        elif expected_effect:
+            focus["goal"] = "confirm_expected_effect"
+            focus["reason"] = "A previous action implied an expected next effect that should be verified or advanced."
+        elif local_candidate_count > 0 and active_region:
+            focus["goal"] = "advance_current_region"
+            focus["reason"] = "There is an active region with local candidates still available."
+        elif active_subgoal:
+            focus["goal"] = "advance_active_subgoal"
+            focus["reason"] = "There is an explicit active subgoal to satisfy."
+        elif state.frontier.pending_elements or state.frontier.pending_urls:
+            focus["goal"] = "use_frontier_before_random_exploration"
+            focus["reason"] = "Previously discovered frontier items exist."
+        else:
+            focus["reason"] = "Choose the best visible next step from the current page."
+        focus["task_excerpt"] = _candidate_text(prompt)[:220]
+        return focus
+
+    def _working_state_summary(
+        self,
+        *,
+        prompt: str,
+        state: AgentState,
+        text_ir: Dict[str, Any],
+        page_observations: Dict[str, Any],
+        active_region: Dict[str, Any],
+        active_group: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        previous = state.memory.working_state if isinstance(state.memory.working_state, dict) else {}
+        page_kind = _candidate_text(
+            page_observations.get("page_kind") if isinstance(page_observations, dict) else None,
+            text_ir.get("page_kind") if isinstance(text_ir, dict) else None,
+            text_ir.get("title") if isinstance(text_ir, dict) else None,
+        )
+        region_label = _candidate_text(
+            active_region.get("label") if isinstance(active_region, dict) else None,
+            active_group.get("label") if isinstance(active_group, dict) else None,
+            state.focus_region.region_label,
+            state.focus_region.region_kind,
+        )
+        workflow = _candidate_text(
+            state.plan.subgoals[0].text if state.plan.subgoals else "",
+            state.plan.active_id,
+            prompt,
+        )
+        completed_fields = []
+        typed_by_candidate = state.form_progress.typed_values_by_candidate if isinstance(state.form_progress.typed_values_by_candidate, dict) else {}
+        typed_by_selector = state.form_progress.typed_values_by_selector if isinstance(state.form_progress.typed_values_by_selector, dict) else {}
+        for key in list(typed_by_candidate.keys())[-6:]:
+            completed_fields.append(str(key))
+        if not completed_fields:
+            for key in list(typed_by_selector.keys())[-6:]:
+                completed_fields.append(str(key))
+        pending_fields: List[str] = []
+        field_labels: List[str] = []
+        for item in list(active_region.get("items") or [])[:8] if isinstance(active_region, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            item_kind = str(item.get("kind") or "").lower()
+            if item_kind not in {"input", "textarea", "select"}:
+                continue
+            label = _candidate_text(item.get("label"), item.get("text"), item.get("id"))
+            if label:
+                field_labels.append(label)
+        for label in field_labels:
+            lower = label.lower()
+            if not any(lower in str(done).lower() or str(done).lower() in lower for done in completed_fields):
+                pending_fields.append(label)
+        completion_missing: List[str] = []
+        expected_effect = _candidate_text(state.progress.pending_expected_effect)
+        if expected_effect:
+            completion_missing.append(expected_effect)
+        likely_answers = (page_observations.get("likely_answers") if isinstance(page_observations, dict) else []) or []
+        relevant_lines = (page_observations.get("relevant_lines") if isinstance(page_observations, dict) else []) or []
+        if not likely_answers and not relevant_lines:
+            completion_missing.append("Visible completion evidence")
+        completion_state = "in_progress"
+        if likely_answers or relevant_lines:
+            completion_state = "answer_visible_or_checkable"
+        if pending_fields:
+            completion_state = "awaiting_local_completion"
+        return _normalize_working_state(
+            {
+                "current_page_kind": page_kind or previous.get("current_page_kind"),
+                "active_region": region_label or previous.get("active_region"),
+                "active_workflow": workflow or previous.get("active_workflow"),
+                "completed_fields": completed_fields or previous.get("completed_fields"),
+                "pending_fields": pending_fields or previous.get("pending_fields"),
+                "completion_evidence_missing": completion_missing or previous.get("completion_evidence_missing"),
+                "next_milestone": expected_effect or previous.get("next_milestone") or "Advance the active workflow with visible controls.",
+                "completion_state": completion_state,
+            }
+        )
+
+    def _local_workflow_closure_summary(
+        self,
+        *,
+        state: AgentState,
+        active_region: Dict[str, Any],
+        candidates: List[Candidate],
+    ) -> Dict[str, Any]:
+        if not isinstance(active_region, dict) or not active_region:
+            return {}
+        typed_ids = set(state.form_progress.typed_candidate_ids or [])
+        indexed = {
+            cand.id: idx
+            for idx, cand in enumerate(candidates[:24])
+            if isinstance(cand, Candidate) and cand.id
+        }
+        commit_controls: List[Dict[str, Any]] = []
+        for item in list(active_region.get("items") or [])[:12]:
+            if not isinstance(item, dict):
+                continue
+            field_kind = str(item.get("field_kind") or "").strip().lower()
+            role = str(item.get("role") or "").strip().lower()
+            label = _candidate_text(item.get("text"), item.get("id"))
+            blob = f"{field_kind} {role} {label or ''}".lower()
+            if field_kind in {"submit", "account_create", "auth_entry"} or re.search(r"\b(save|submit|post|publish|apply|create|send|confirm)\b", blob):
+                item_id = str(item.get("id") or "")
+                commit_controls.append(
+                    {
+                        "id": item_id,
+                        "index": indexed.get(item_id),
+                        "label": label or item_id,
+                        "field_kind": field_kind,
+                        "role": role,
+                    }
+                )
+        input_ids = {
+            str(item.get("id") or "")
+            for item in list(active_region.get("items") or [])[:12]
+            if isinstance(item, dict) and str(item.get("role") or "").strip().lower() in {"input", "textarea", "select"}
+        }
+        completed_ids = [item_id for item_id in input_ids if item_id and item_id in typed_ids]
+        pending_ids = [item_id for item_id in input_ids if item_id and item_id not in typed_ids]
+        ready_to_commit = bool(commit_controls) and (not input_ids or len(completed_ids) >= max(1, len(input_ids)))
+        return {
+            "active_region_label": _candidate_text(active_region.get("label"), active_region.get("region_id")),
+            "commit_controls": commit_controls[:4],
+            "completed_input_ids": completed_ids[:8],
+            "pending_input_ids": pending_ids[:8],
+            "ready_to_commit": ready_to_commit,
+        }
+
+    def _avoid_repeating_summary(self, *, state: AgentState, candidates: List[Candidate]) -> Dict[str, Any]:
+        indexed_candidates = self._indexed_candidate_obs(candidates, limit=24)
+        current_by_id = {
+            str(item.get("id") or ""): {
+                "index": item.get("index"),
+                "id": item.get("id"),
+                "role": item.get("role"),
+                "text": item.get("text"),
+                "context": item.get("context"),
+            }
+            for item in indexed_candidates
+            if isinstance(item, dict) and str(item.get("id") or "")
+        }
+        discouraged_targets: List[Dict[str, Any]] = []
+        seen_target_ids: set[str] = set()
+        for effect in reversed(state.progress.recent_effects[-8:]):
+            if not isinstance(effect, ProgressEffect):
+                continue
+            target_id = str(effect.target_id or "").strip()
+            if not target_id or target_id in seen_target_ids:
+                continue
+            if not (effect.repeated_target or effect.label in {"NO_VISIBLE_CHANGE", "BLOCKED"} or not effect.exec_ok):
+                continue
+            candidate_info = current_by_id.get(target_id)
+            if not candidate_info:
+                continue
+            reason = "repeated_target" if effect.repeated_target else "no_visible_change" if effect.label == "NO_VISIBLE_CHANGE" else "blocked"
+            discouraged_targets.append(
+                {
+                    **candidate_info,
+                    "reason": reason,
+                    "action_type": str(effect.action_type or "")[:80],
+                }
+            )
+            seen_target_ids.add(target_id)
+        repeated_regions = []
+        blocked_region_ids = list(state.progress.blocked_regions[-6:])
+        focus_recent = list(state.focus_region.recent_region_ids[-6:])
+        for region_id in _dedupe_keep_order(blocked_region_ids + focus_recent, 8):
+            if not region_id:
+                continue
+            repeated_regions.append(region_id)
+        return {
+            "should_change_approach": bool(
+                discouraged_targets
+                or repeated_regions
+                or int(state.counters.repeat_action_count or 0) >= 1
+                or int(state.counters.stall_count or 0) >= 2
+                or int(state.progress.no_progress_score or 0) >= 4
+            ),
+            "repeat_action_count": int(state.counters.repeat_action_count or 0),
+            "stall_count": int(state.counters.stall_count or 0),
+            "failed_patterns": list(state.progress.failed_patterns[-6:]),
+            "blocked_regions": blocked_region_ids,
+            "recent_region_ids": focus_recent,
+            "discouraged_targets": discouraged_targets[:6],
+        }
+
     def _candidate_sig(self, cand: Candidate) -> str:
         selector = cand.selector if isinstance(cand.selector, dict) else {}
         selector_bits = [
@@ -3468,8 +4031,8 @@ class ObsBuilder:
 
     def _candidate_lines(self, candidates: List[Candidate], *, limit: int = 12) -> str:
         lines: List[str] = []
-        for cand in candidates[:limit]:
-            bits = [f"[{cand.id}]", f"<{cand.role}>"]
+        for idx, cand in enumerate(candidates[:limit]):
+            bits = [f"[index={idx}] [{cand.id}]", f"<{cand.role}>"]
             label = _candidate_text(cand.text, cand.field_hint, cand.href, cand.group_label)
             if label:
                 bits.append(label[:140])
@@ -3481,6 +4044,9 @@ class ObsBuilder:
                 bits.append(f"state={cand.ui_state[:16]}")
             lines.append(" ".join(bits))
         return "\n".join(lines)
+
+    def _indexed_candidate_obs(self, candidates: List[Candidate], *, limit: int) -> List[Dict[str, Any]]:
+        return [cand.as_obs(index=idx) for idx, cand in enumerate(candidates[:limit])]
 
     def _browser_state_snapshot(
         self,
@@ -3552,7 +4118,8 @@ class ObsBuilder:
                 lines.append(f"{indent}{child_name}")
                 for cand in child.items[:12]:
                     label = _candidate_text(cand.text, cand.field_hint, cand.href, cand.id)
-                    bits = [f"[{cand.id}] <{cand.role}/>"]
+                    candidate_index = chosen.index(cand) if cand in chosen else -1
+                    bits = [f"[index={candidate_index}] [{cand.id}] <{cand.role}/>"]
                     if label:
                         bits.append(label[:140])
                     if cand.field_kind:
@@ -3665,6 +4232,35 @@ class ObsBuilder:
             parts.append(f"recent_urls={urls_line}")
         return " ; ".join(parts)[:MAX_HISTORY_SUMMARY_CHARS]
 
+    def _recent_failures(self, history: List[Dict[str, Any]], *, limit: int = 6) -> List[Dict[str, Any]]:
+        if not isinstance(history, list) or not history:
+            return []
+        out: List[Dict[str, Any]] = []
+        for item in reversed(history[-40:]):
+            if not isinstance(item, dict):
+                continue
+            error = _candidate_text(item.get("error"))
+            if not error and bool(item.get("exec_ok", True)):
+                continue
+            action_raw = item.get("action")
+            action = action_raw if isinstance(action_raw, dict) else {}
+            out.append(
+                {
+                    "step": int(item.get("step") or 0),
+                    "action_type": _candidate_text(
+                        action.get("type"),
+                        action.get("name"),
+                        action_raw if isinstance(action_raw, str) else "",
+                        "unknown",
+                    )[:80],
+                    "url": _candidate_text(item.get("url"))[:220],
+                    "error": error[:220] if error else "execution_failed",
+                }
+            )
+            if len(out) >= max(1, int(limit)):
+                break
+        return list(reversed(out))
+
     def _previous_step_verdict(self, history: List[Dict[str, Any]], flags: Dict[str, Any]) -> Dict[str, str]:
         if not isinstance(history, list) or not history:
             return {"status": "n/a", "summary": "No previous step to evaluate."}
@@ -3705,6 +4301,9 @@ class ObsBuilder:
         self,
         *,
         prompt: str,
+        web_project_id: str = "",
+        use_case: Dict[str, str] | None = None,
+        snapshot_html: str = "",
         task_constraints: Dict[str, str],
         step_index: int,
         mode: str,
@@ -3739,8 +4338,44 @@ class ObsBuilder:
         text_ir["capability_gap"] = page_observations.get("capability_gap") if isinstance(page_observations, dict) else {}
         page_ir_text = self._page_ir_text(prompt=prompt, text_ir=text_ir, candidates=candidates)
         browser_state_text = self._browser_state_text(candidates, limit=24)
+        indexed_candidates = self._indexed_candidate_obs(candidates, limit=24)
         candidate_partitions = self._partition_candidates(candidates=candidates, state=state)
+        recent_failures = self._recent_failures(history_recent, limit=4)
         progress_brief = self._progress_brief(state=state)
+        site_knowledge = (
+            _build_site_knowledge(_candidate_text(web_project_id), _normalize_use_case_info(use_case), prompt)
+            if _env_bool("FSM_USE_SITE_KNOWLEDGE", False)
+            else {}
+        )
+        active_subgoal = {}
+        if state.plan.active_id:
+            for sg in state.plan.subgoals:
+                if sg.id == state.plan.active_id:
+                    active_subgoal = {"id": sg.id, "text": sg.text, "status": sg.status}
+                    break
+        active_objective = self._active_objective_summary(
+            prompt=prompt,
+            state=state,
+            page_observations=page_observations,
+            active_subgoal=active_subgoal,
+            active_region=active_region,
+            active_group=active_group,
+        )
+        avoid_repeating = self._avoid_repeating_summary(state=state, candidates=candidates)
+        reasoning_trace = state.memory.reasoning_trace if isinstance(state.memory.reasoning_trace, dict) else {}
+        working_state = self._working_state_summary(
+            prompt=prompt,
+            state=state,
+            text_ir=text_ir,
+            page_observations=page_observations,
+            active_region=active_region,
+            active_group=active_group,
+        )
+        local_workflow_closure = self._local_workflow_closure_summary(
+            state=state,
+            active_region=active_region,
+            candidates=candidates,
+        )
         typed_recent = [
             str(item.get("text") or "")
             for item in history_recent
@@ -3752,25 +4387,92 @@ class ObsBuilder:
         if task_constraints:
             parts.append("TASK CONSTRAINTS:\n" + json.dumps(task_constraints, ensure_ascii=False))
         parts.append(
-            "STEP INFO:\n"
+            "RUNTIME:\n"
+            + "browser-use-like operator runtime\n"
+            + f"max_actions_per_step={max(1, min(_env_int('FSM_MAX_ACTIONS_PER_STEP', 3), 5))}\n"
+            + "tabs_supported=false\n"
+            + "file_tools_supported=false"
+        )
+        parts.append(
+            "CURRENT STATE:\n"
             + f"step_index={int(step_index)}\n"
             + f"mode={str(mode)}\n"
             + f"url={_candidate_text(url)}"
         )
-        if progress_brief:
-            parts.append("PROGRESS LEDGER:\n" + progress_brief)
-        if active_region:
-            parts.append("FOCUSED REGION SUMMARY (JSON):\n" + json.dumps(active_region, ensure_ascii=False))
-        if candidate_partitions.get("local"):
-            parts.append("LOCAL CANDIDATES:\n" + self._candidate_lines(candidate_partitions.get("local") or [], limit=16))
-        if candidate_partitions.get("escape"):
-            parts.append("ESCAPE / COMMIT CANDIDATES:\n" + self._candidate_lines(candidate_partitions.get("escape") or [], limit=8))
-        if state_delta:
-            parts.append("STATE DELTA:\n" + state_delta)
-        if ir_delta:
-            parts.append("PAGE IR DELTA:\n" + ir_delta)
-        parts.append("PAGE IR (PRIMARY STRUCTURED STATE):\n" + page_ir_text)
-        parts.append("PAGE OBSERVATIONS (GENERIC JSON):\n" + json.dumps(page_observations, ensure_ascii=False))
+        parts.append(
+            "AVAILABLE TOOLS:\n"
+            + ", ".join(sorted(SUPPORTED_BROWSER_TOOL_NAMES))
+        )
+        parts.append(
+            "UNAVAILABLE TOOLS:\n"
+            + ", ".join(UNAVAILABLE_BROWSER_TOOLS)
+            + "\nNever emit unavailable tools."
+        )
+        parts.append(
+            "TOOL USAGE GUIDE:\n"
+            + "- Use browser.click for buttons, links, toggles, tabs, checkboxes, radios, and submit controls.\n"
+            + "- Use browser.input only for text-entry fields.\n"
+            + "- Use browser.select_dropdown only when a concrete option text is known.\n"
+            + "- Use browser.dropdown_options before browser.select_dropdown if the correct option is unclear.\n"
+            + "- Use browser.extract when the answer is visible but needs deterministic text extraction.\n"
+            + "- Use browser.evaluate only when DOM/JS state is required and normal actions are insufficient.\n"
+            + "- Use browser.search only to start a web search, not for in-page site search boxes.\n"
+            + "- Prefer browser.done when the page already contains the final answer."
+        )
+        parts.append("ACTIVE OBJECTIVE (JSON):\n" + json.dumps(active_objective, ensure_ascii=False))
+        parts.append("WORKING STATE (JSON):\n" + json.dumps(working_state, ensure_ascii=False))
+        if local_workflow_closure:
+            parts.append("LOCAL WORKFLOW CLOSURE (JSON):\n" + json.dumps(local_workflow_closure, ensure_ascii=False))
+        local_html_context = (
+            self._local_html_context(
+                snapshot_html=snapshot_html,
+                state=state,
+                candidates=candidates,
+                active_region=active_region,
+            )
+            if _env_bool("FSM_USE_LOCAL_HTML_CONTEXT", False)
+            else {}
+        )
+        if local_html_context:
+            parts.append("LOCAL HTML CONTEXT (JSON):\n" + json.dumps(local_html_context, ensure_ascii=False))
+        if site_knowledge:
+            parts.append("KNOWN SITE MAP (JSON):\n" + json.dumps(site_knowledge, ensure_ascii=False))
+        parts.append("AVOID REPEATING (JSON):\n" + json.dumps(avoid_repeating, ensure_ascii=False))
+        if reasoning_trace:
+            parts.append("PREVIOUS REASONING TRACE (JSON):\n" + json.dumps(reasoning_trace, ensure_ascii=False))
+        if working_state:
+            parts.append("WORKING STATE SUMMARY:\n" + _working_state_summary(working_state))
+        parts.append("BROWSER SNAPSHOT:\n" + str(self._browser_state_snapshot(
+            url=url,
+            text_ir=text_ir,
+            page_observations=page_observations,
+            screenshot_available=screenshot_available,
+        )))
+        parts.append(
+            "ELEMENT TARGETING GUIDE:\n"
+            + "- Each shortlist item has index, role, text, and context.\n"
+            + "- Prefer targeting by index.\n"
+            + "- Use text and context together; do not rely on index alone if multiple items look similar.\n"
+            + "- Avoid reusing the same target after repeated failures unless the page materially changed."
+        )
+        parts.append("VISIBLE TEXT / PAGE SUMMARY:\n" + page_ir_text)
+        parts.append(
+            "VISIBLE EVIDENCE (JSON):\n"
+            + json.dumps(
+                {
+                    "likely_answers": (page_observations.get("likely_answers") if isinstance(page_observations.get("likely_answers"), list) else [])[:6],
+                    "relevant_lines": (page_observations.get("relevant_lines") if isinstance(page_observations.get("relevant_lines"), list) else [])[:10],
+                    "page_stats": page_observations.get("page_stats") if isinstance(page_observations.get("page_stats"), dict) else {},
+                },
+                ensure_ascii=False,
+            )
+        )
+        parts.append("INTERACTIVE ELEMENTS (indexed):\n" + browser_state_text)
+        parts.append("INTERACTIVE ELEMENT SHORTLIST (JSON):\n" + json.dumps(indexed_candidates, ensure_ascii=False))
+        parts.append("RECENT ACTIONS AND RESULTS (JSON):\n" + json.dumps(history_recent[-HISTORY_RECENT_LIMIT:], ensure_ascii=False))
+        if recent_failures:
+            parts.append("RECENT FAILURES (JSON):\n" + json.dumps(recent_failures, ensure_ascii=False))
+        parts.append("PAGE OBSERVATIONS (JSON):\n" + json.dumps(page_observations, ensure_ascii=False))
         parts.append(
             "PAGE GROUPS (JSON):\n"
             + json.dumps(
@@ -3784,15 +4486,29 @@ class ObsBuilder:
                 ensure_ascii=False,
             )
         )
-        parts.append(f"SCREENSHOT AVAILABLE: {bool(screenshot_available)}")
+        if progress_brief:
+            parts.append("PROGRESS LEDGER:\n" + progress_brief)
         parts.append(
             "PREVIOUS STEP VERDICT:\n"
             + f"status={_candidate_text(verdict.get('status'))}\n"
             + f"summary={_candidate_text(verdict.get('summary'))}\n"
         )
+        if active_region:
+            parts.append("FOCUSED REGION SUMMARY (JSON):\n" + json.dumps(active_region, ensure_ascii=False))
         if history_summary:
             parts.append(f"HISTORY SUMMARY:\n{history_summary}")
-        parts.append("HISTORY RECENT (JSON):\n" + json.dumps(history_recent[-HISTORY_RECENT_LIMIT:], ensure_ascii=False))
+        parts.append(
+            "FORM STATE (JSON):\n"
+            + json.dumps(
+                {
+                    "typed_values_recent": typed_recent[:8],
+                    "typed_candidate_ids": state.form_progress.typed_candidate_ids[-12:],
+                    "active_group_label": state.form_progress.active_group_label,
+                    "active_group_candidate_ids": state.form_progress.active_group_candidate_ids[-12:],
+                },
+                ensure_ascii=False,
+            )
+        )
         parts.append(
             "PLAN AND MEMORY (JSON):\n"
             + json.dumps(
@@ -3825,14 +4541,12 @@ class ObsBuilder:
         )
         if loop_nudges:
             parts.append("LOOP NUDGES:\n" + "\n".join(f"- {x}" for x in loop_nudges))
-        parts.append("BROWSER_STATE (interactive elements):\n" + browser_state_text)
         if candidate_partitions.get("global"):
             global_summary = {
                 "suppressed_global_count": int(candidate_partitions.get("suppressed_global_count") or 0),
-                "global_candidates": [cand.as_obs() for cand in (candidate_partitions.get("global") or [])[:8]],
+                "global_candidates": self._indexed_candidate_obs(candidate_partitions.get("global") or [], limit=8),
             }
             parts.append("GLOBAL CANDIDATE SUMMARY (JSON):\n" + json.dumps(global_summary, ensure_ascii=False))
-        parts.append("ACTION SHORTLIST (JSON):\n" + json.dumps([cand.as_obs() for cand in candidates[:24]], ensure_ascii=False))
         return "\n\n".join(parts)
 
     def _augment_text_ir(self, *, text_ir: Dict[str, Any], candidates: List[Candidate]) -> Dict[str, Any]:
@@ -3936,11 +4650,117 @@ class ObsBuilder:
             "recent_region_ids": state.focus_region.recent_region_ids[-8:],
         }
 
+    def _candidate_node(self, *, soup: Any, candidate: Candidate | None) -> Any | None:
+        if soup is None or candidate is None or not isinstance(candidate, Candidate):
+            return None
+        selector = candidate.selector if isinstance(candidate.selector, dict) else {}
+        sel_type = str(selector.get("type") or "").strip()
+        value = str(selector.get("value") or "").strip()
+        attr = str(selector.get("attribute") or "").strip()
+        try:
+            if sel_type == "attributeValueSelector" and attr and value:
+                return soup.find(attrs={attr: value})
+            if sel_type == "xpathSelector" and value:
+                m = re.search(r'//([a-zA-Z0-9]+)\[contains\(normalize-space\(\.\), "([^"]+)"\)\]', value)
+                if m:
+                    tag = m.group(1).lower()
+                    text = _norm_ws(m.group(2))
+                    for node in soup.find_all(tag, limit=80):
+                        if text and text in _norm_ws(node.get_text(" ", strip=True)):
+                            return node
+        except Exception:
+            return None
+        return None
+
+    def _nearest_region_container(self, node: Any) -> Any | None:
+        cur = node
+        for _ in range(8):
+            if cur is None:
+                return None
+            tag = str(getattr(cur, "name", "") or "").lower()
+            if tag in {"form", "section", "article", "main", "aside"}:
+                return cur
+            attrs = cur.attrs if isinstance(getattr(cur, "attrs", None), dict) else {}
+            classes = " ".join(str(x) for x in list(attrs.get("class") or []))
+            blob = f"{_norm_ws(attrs.get('id'))} {classes}".lower()
+            if any(token in blob for token in ("form", "comment", "reply", "review", "contact", "checkout", "register", "login")):
+                return cur
+            cur = getattr(cur, "parent", None)
+        return node
+
+    def _local_html_context(
+        self,
+        *,
+        snapshot_html: str,
+        state: AgentState,
+        candidates: List[Candidate],
+        active_region: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not _env_bool("FSM_USE_LOCAL_HTML_CONTEXT", False):
+            return {}
+        html = str(snapshot_html or "")
+        if not html or BeautifulSoup is None:
+            return {}
+        try:
+            soup = BeautifulSoup(html, "lxml")
+        except Exception:
+            return {}
+        by_id = {cand.id: cand for cand in candidates if isinstance(cand, Candidate) and cand.id}
+        region_item_ids = [str(item.get("id") or "") for item in list(active_region.get("items") or []) if isinstance(item, dict)]
+        target_candidates: List[Candidate] = []
+        for cand_id in region_item_ids + list(state.form_progress.typed_candidate_ids or []):
+            cand = by_id.get(str(cand_id))
+            if cand is not None and cand not in target_candidates:
+                target_candidates.append(cand)
+        active_form = None
+        for cand in target_candidates:
+            node = self._candidate_node(soup=soup, candidate=cand)
+            if node is None:
+                continue
+            form = node.find_parent("form") if hasattr(node, "find_parent") else None
+            if form is not None:
+                active_form = form
+                break
+            if active_form is None:
+                active_form = self._nearest_region_container(node)
+        last_used_html = ""
+        last_cand = by_id.get(str(state.last_action_element_id or ""))
+        last_node = self._candidate_node(soup=soup, candidate=last_cand) if last_cand is not None else None
+        if last_node is not None:
+            last_used_html = str(last_node)[:2000]
+        commit_htmls: List[str] = []
+        search_root = active_form or soup
+        try:
+            for node in search_root.find_all(["button", "input", "a"], limit=24):
+                attrs = node.attrs if isinstance(getattr(node, "attrs", None), dict) else {}
+                blob = " ".join(
+                    [
+                        str(getattr(node, "name", "") or ""),
+                        str(attrs.get("type") or ""),
+                        _norm_ws(attrs.get("aria-label")),
+                        _norm_ws(attrs.get("value")),
+                        _norm_ws(node.get_text(" ", strip=True)),
+                    ]
+                ).lower()
+                if re.search(r"\b(save|submit|post|publish|apply|create|send|confirm)\b", blob):
+                    commit_htmls.append(str(node)[:1200])
+        except Exception:
+            pass
+        active_form_html = str(active_form)[:6000] if active_form is not None else ""
+        return {
+            "active_form_html": active_form_html,
+            "last_used_element_html": last_used_html,
+            "commit_candidate_htmls": _dedupe_keep_order(commit_htmls, 3),
+        }
+
     def build_policy_obs(
         self,
         *,
         task_id: str,
         prompt: str,
+        web_project_id: str = "",
+        use_case: Dict[str, str] | None = None,
+        snapshot_html: str = "",
         step_index: int,
         url: str,
         mode: str,
@@ -4005,8 +4825,41 @@ class ObsBuilder:
             {"id": sg.id, "text": sg.text, "status": sg.status}
             for sg in state.plan.subgoals
         ]
+        active_objective = self._active_objective_summary(
+            prompt=prompt,
+            state=state,
+            page_observations=page_observations,
+            active_subgoal=active,
+            active_region=active_region,
+            active_group=active_group,
+        )
+        avoid_repeating = self._avoid_repeating_summary(state=state, candidates=policy_candidates)
+        reasoning_trace = state.memory.reasoning_trace if isinstance(state.memory.reasoning_trace, dict) else {}
+        working_state = self._working_state_summary(
+            prompt=prompt,
+            state=state,
+            text_ir=text_ir,
+            page_observations=page_observations,
+            active_region=active_region,
+            active_group=active_group,
+        )
+        local_workflow_closure = self._local_workflow_closure_summary(
+            state=state,
+            active_region=active_region,
+            candidates=policy_candidates,
+        )
+        local_html_context = self._local_html_context(
+            snapshot_html=snapshot_html,
+            state=state,
+            candidates=policy_candidates,
+            active_region=active_region,
+        )
+        state.memory.working_state = working_state
         tagged_input = self._tagged_policy_input(
             prompt=prompt,
+            web_project_id=web_project_id,
+            use_case=use_case,
+            snapshot_html=snapshot_html,
             task_constraints=task_constraints,
             step_index=step_index,
             mode=mode,
@@ -4023,8 +4876,16 @@ class ObsBuilder:
             ir_delta=ir_delta,
             screenshot_available=screenshot_available,
         )
+        indexed_policy_candidates = self._indexed_candidate_obs(policy_candidates, limit=24)
+        site_knowledge = (
+            _build_site_knowledge(_candidate_text(web_project_id), _normalize_use_case_info(use_case), prompt)
+            if _env_bool("FSM_USE_SITE_KNOWLEDGE", False)
+            else {}
+        )
         return {
             "task_id": str(task_id or ""),
+            "web_project_id": _candidate_text(web_project_id),
+            "use_case": _normalize_use_case_info(use_case),
             "prompt": str(prompt or "")[:1200],
             "task_constraints": task_constraints,
             "step_index": int(step_index),
@@ -4037,10 +4898,19 @@ class ObsBuilder:
             },
             "mode": mode,
             "screenshot_available": bool(screenshot_available),
+            "available_browser_tools": sorted(SUPPORTED_BROWSER_TOOL_NAMES),
+            "unavailable_browser_tools": list(UNAVAILABLE_BROWSER_TOOLS),
             "flags": flags,
             "page_observations": page_observations,
             "previous_step_verdict": verdict,
             "loop_nudges": loop_nudges,
+            "active_objective": active_objective,
+            "working_state": working_state,
+            "local_workflow_closure": local_workflow_closure,
+            "local_html_context": local_html_context,
+            "site_knowledge": site_knowledge,
+            "avoid_repeating": avoid_repeating,
+            "reasoning_trace": reasoning_trace,
             "active_subgoal": active,
             "plan": {
                 "active_id": state.plan.active_id,
@@ -4059,6 +4929,8 @@ class ObsBuilder:
                     "visual_element_hints": state.memory.visual_element_hints[-12:],
                     "obs_candidate_hints": state.memory.obs_candidate_hints[-12:],
                     "strategy_summary": state.memory.strategy_summary,
+                    "reasoning_trace": reasoning_trace,
+                    "working_state": working_state,
                     "typed_values_recent": typed_values_recent,
                     "typed_candidate_ids": state.form_progress.typed_candidate_ids[-20:],
                     "typed_selector_sigs": state.form_progress.typed_selector_sigs[-20:],
@@ -4089,11 +4961,11 @@ class ObsBuilder:
                 "llm_extract": text_ir.get("llm_extract") if isinstance(text_ir.get("llm_extract"), dict) else {},
                 "html_excerpt": str(text_ir.get("html_excerpt") or "")[:12000],
             },
-            "candidates": [cand.as_obs() for cand in policy_candidates[:24]],
+            "candidates": indexed_policy_candidates,
             "candidate_partitions": {
-                "local": [cand.as_obs() for cand in (candidate_partitions.get("local") or [])[:10]],
-                "escape": [cand.as_obs() for cand in (candidate_partitions.get("escape") or [])[:6]],
-                "global": [cand.as_obs() for cand in (candidate_partitions.get("global") or [])[:8]],
+                "local": self._indexed_candidate_obs(candidate_partitions.get("local") or [], limit=10),
+                "escape": self._indexed_candidate_obs(candidate_partitions.get("escape") or [], limit=6),
+                "global": self._indexed_candidate_obs(candidate_partitions.get("global") or [], limit=8),
                 "suppressed_global_count": int(candidate_partitions.get("suppressed_global_count") or 0),
             },
             "policy_input_text": tagged_input,
@@ -4625,6 +5497,7 @@ class Policy:
         model_name: str,
         plan_model_name: str,
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        max_actions_per_step = max(1, min(_env_int("FSM_MAX_ACTIONS_PER_STEP", 3), 5))
         if mode == "POPUP":
             return {"type": "meta", "name": "META.SOLVE_POPUPS", "arguments": {}}, {"source": "deterministic"}
         if mode == "REPORT":
@@ -4637,57 +5510,58 @@ class Policy:
         direct_mode = mode == "DIRECT"
         if direct_mode:
             system = (
-                "You are a web operator.\n"
-                "You have the user task, the current page snapshot, the interactive elements, and the allowed browser tools.\n"
-                "Choose exactly ONE next step.\n"
+                "You are a browser-use-style web operator.\n"
+                "You have the user task, the current browser state, the indexed interactive elements, the allowed browser tools, and the unavailable tools.\n"
+                "Choose the next browser step sequence.\n"
                 "Return ONE JSON object only. No markdown. No prose.\n"
                 "Valid outputs:\n"
                 '1) {"type":"browser","tool_call":{...}}\n'
-                '2) {"type":"final","done":true,"content":"..."}\n'
+                '2) {"type":"browser","tool_calls":[{...},{...}]}\n'
+                '3) {"type":"final","done":true,"content":"..."}\n'
                 "Rules:\n"
+                f"- This runtime allows up to {max_actions_per_step} browser actions per step.\n"
                 "- First decide whether the current page already satisfies the task. If yes, finish immediately with final or browser.done.\n"
                 "- content must be the actual user-facing answer, result, or extracted value.\n"
-                "- Do not keep exploring when CURRENT PAGE ANSWERS, PAGE FACTS, RELEVANT VISIBLE TEXT, or visible text already satisfy the task.\n"
-                "- Never return more than one browser action.\n"
-                "- Use only element_id values that appear in ACTION SHORTLIST.\n"
-                "- For click/type/select, prefer arguments.element_id from the shortlist.\n"
+                "- Do not keep exploring when the current page already satisfies the task.\n"
+                f"- Never return more than {max_actions_per_step} browser actions.\n"
+                "- If you return multiple actions, they must belong to the same local workflow and be safe to execute consecutively without re-observing.\n"
+                "- Prefer arguments.index that refers to INTERACTIVE ELEMENT SHORTLIST.\n"
                 "- For browser.select_dropdown, include a non-empty arguments.text.\n"
                 "- browser.done is the standard way to finish once the page already satisfies the task.\n"
+                "- Never emit unavailable tools.\n"
                 "- If the task includes filters or explicit constraints, use visible controls first before opening result items.\n"
-                "- After typing into a field, if the page now shows a better submit, suggestion, or next control, use that instead of restarting.\n"
-                "- If a visible local form has multiple relevant empty fields, fill the remaining relevant fields before using submit.\n"
-                "- Prefer the current visible form or control group over navigation links when that form already covers the task constraints.\n"
-                "- Do not type into the same field again if FORM PROGRESS already shows that field/value as filled unless the value is clearly wrong.\n"
-                "- Do not navigate to the current page URL again. If the needed form or answer is already visible, act on the current page.\n"
                 "- Preserve placeholders such as <username>, <password>, <signup_email> exactly when typing.\n"
             )
         else:
             system = (
-            "You are a web automation policy.\n"
-            "Given the task and the current page state, choose ONE next step.\n"
+            "You are a browser-use-style web automation policy.\n"
+            "Given the task and the current browser state, choose the next browser step sequence.\n"
             "Return ONE JSON object only. No markdown. No prose. No chain-of-thought.\n"
             "You must choose exactly one of:\n"
-            "1) browser tool_call\n"
+            "1) browser tool_call or browser tool_calls\n"
             + ("2) meta_tool\n" if meta_enabled else "")
             + f"{'3' if meta_enabled else '2'}) final (done=true + content)\n\n"
             "Rules:\n"
+            f"- This runtime allows up to {max_actions_per_step} browser actions per step.\n"
             "- Prefer a concrete browser action when there is a reasonable actionable target.\n"
             + ("- Use a meta_tool only when inspection/disambiguation materially improves the next browser action.\n" if meta_enabled else "")
-            + "- Never return more than one browser action.\n"
+            + f"- Never return more than {max_actions_per_step} browser actions.\n"
+            + "- If you return multiple browser actions, they must stay within the same local workflow and should usually be a short form-filling or commit sequence.\n"
             "- If the current page already contains the answer, return final immediately.\n"
             "- For question-answering and data-extraction tasks, DONE is the correct action once the answer is visible on the current page.\n"
-            "- Do NOT keep exploring once CURRENT PAGE FACTS or CURRENT PAGE ANSWERS already answer the task.\n"
+            "- Do NOT keep exploring once the current page already answers the task.\n"
             "- Use final/done or browser.done with a concrete content string when the task is satisfied.\n"
             "- content must be the actual answer for the user, not a status message.\n"
             "- Avoid repeating low-value actions when the page did not materially change.\n"
-            "- For click/type/select, prefer arguments.element_id from candidates.\n"
+            "- Prefer arguments.index that refers to INTERACTIVE ELEMENT SHORTLIST.\n"
             "- For browser.select_dropdown, provide arguments.text with the option text/value to choose.\n"
+            "- Never emit unavailable tools.\n"
             "- Preserve placeholders such as <username>, <password>, <signup_email> exactly when typing.\n"
-            "- For informational tasks, use CURRENT PAGE FACTS and CURRENT PAGE ANSWERS before navigating more.\n"
+            "- For informational tasks, use the current visible content before navigating more.\n"
             )
         if direct_mode:
             user_parts = [
-                "Choose the next single step.",
+                "Choose the next browser step sequence.",
                 f"TASK: {str(policy_obs.get('prompt') or '')[:1600]}",
                 "TASK CONSTRAINTS:",
                 json.dumps(
@@ -4701,21 +5575,74 @@ class Policy:
                 f"STEP: {int(policy_obs.get('step_index') or 0)}",
                 f"URL: {str(policy_obs.get('url') or '')[:1000]}",
                 "",
+                "RUNTIME:",
+                "browser-use-like operator runtime",
+                f"max_actions_per_step={max_actions_per_step}",
+                "tabs_supported=false",
+                "file_tools_supported=false",
+                "",
+                "UNAVAILABLE TOOLS:",
+                ", ".join(policy_obs.get("unavailable_browser_tools") if isinstance(policy_obs.get("unavailable_browser_tools"), list) else list(UNAVAILABLE_BROWSER_TOOLS)),
+                "",
+                "TOOL USAGE GUIDE:",
+                "- browser.click: buttons, links, toggles, tabs, submit controls, checkboxes, radios.",
+                "- browser.input: text-entry fields only.",
+                "- browser.select_dropdown: only when a concrete option text is known.",
+                "- browser.dropdown_options: inspect a select before choosing if the option is unclear.",
+                "- browser.extract: deterministic extraction from visible page content.",
+                "- browser.evaluate: JS/DOM inspection when normal tools are insufficient.",
+                "- browser.search: external web search, not in-page site search boxes.",
+                "",
+                "REASONING TRACE CONTRACT:",
+                "- You may include reasoning_trace as a short JSON object with keys task_interpretation, success_state, current_subgoal, next_expected_proof, drift_risks, where_am_i, state_assessment, plan.",
+                "- Keep each field short and concrete.",
+                "- reasoning_trace must describe task meaning and success, not hidden chain-of-thought.",
+                "",
+                "WORKING STATE CONTRACT:",
+                "- You should include working_state as a short JSON object with keys current_page_kind, active_region, active_workflow, completed_fields, pending_fields, completion_evidence_missing, next_milestone, completion_state.",
+                "- working_state should describe the current operational state, not hidden reasoning.",
+                "",
+                "ACTIVE OBJECTIVE (JSON):",
+                json.dumps(policy_obs.get("active_objective") if isinstance(policy_obs.get("active_objective"), dict) else {}, ensure_ascii=False),
+                "",
+                "WORKING STATE (JSON):",
+                json.dumps(policy_obs.get("working_state") if isinstance(policy_obs.get("working_state"), dict) else {}, ensure_ascii=False),
+                "",
+                "LOCAL WORKFLOW CLOSURE (JSON):",
+                json.dumps(policy_obs.get("local_workflow_closure") if isinstance(policy_obs.get("local_workflow_closure"), dict) else {}, ensure_ascii=False),
+                "",
+                "LOCAL HTML CONTEXT (JSON):",
+                json.dumps(policy_obs.get("local_html_context") if isinstance(policy_obs.get("local_html_context"), dict) else {}, ensure_ascii=False),
+                "",
+                "KNOWN SITE MAP (JSON):",
+                json.dumps(policy_obs.get("site_knowledge") if isinstance(policy_obs.get("site_knowledge"), dict) else {}, ensure_ascii=False),
+                "",
+                "AVOID REPEATING (JSON):",
+                json.dumps(policy_obs.get("avoid_repeating") if isinstance(policy_obs.get("avoid_repeating"), dict) else {}, ensure_ascii=False),
+                "",
+                "PREVIOUS REASONING TRACE (JSON):",
+                json.dumps(policy_obs.get("reasoning_trace") if isinstance(policy_obs.get("reasoning_trace"), dict) else {}, ensure_ascii=False),
+                "",
                 "DONE / CONTENT CONTRACT:",
                 "- If the answer or completed result is already visible on the current page, return final now.",
                 "- final.content or browser.done.arguments.content must be the concrete answer for the user.",
                 "- Do not return generic status text like 'task complete' or 'done'.",
-                "- Before taking another action, check CURRENT PAGE SNAPSHOT, CURRENT PAGE ANSWERS, and CURRENT PAGE.",
+                "- Before taking another action, check BROWSER SNAPSHOT, VISIBLE TEXT / PAGE SUMMARY, and INTERACTIVE ELEMENT SHORTLIST.",
                 "- If a select already shows the target value, do not select the same value again.",
-                "- If the current page shows grouped controls or filters, use their current values before choosing another action.",
-                "- If the task includes explicit constraints such as search terms, genre, year, date, or sort values, satisfy those constraints with visible controls before opening result items.",
-                "- If a visible local form already contains relevant fields for the task, complete the remaining relevant fields before clicking submit.",
-                "- Prefer the current visible form or control group over navigation links when the needed fields are already on the page.",
+                "- Prefer arguments.index when targeting an interactive element.",
+                "- Follow ACTIVE OBJECTIVE unless visible evidence proves the answer is already on the page.",
+                "- Respect AVOID REPEATING unless the page materially changed.",
+                "- If LOCAL WORKFLOW CLOSURE shows ready_to_commit=true and a visible commit control exists, strongly prefer finishing that local workflow before exploring unrelated controls.",
+                "- Use LOCAL HTML CONTEXT to understand which inputs and commit controls belong to the same active form or region.",
+                "- If multiple actions are returned, explain the local workflow in reasoning_trace.plan.",
                 "",
-                "CURRENT PAGE SNAPSHOT:",
+                "BROWSER SNAPSHOT:",
                 str(policy_obs.get("browser_state_snapshot") or "")[:3000],
                 "",
-                "CURRENT PAGE ANSWERS:",
+                "VISIBLE TEXT / PAGE SUMMARY:",
+                str(policy_obs.get("page_ir_text") or "")[:14000],
+                "",
+                "VISIBLE EVIDENCE (JSON):",
                 json.dumps(
                     {
                         "likely_answers": (
@@ -4724,80 +5651,26 @@ class Policy:
                             and isinstance(policy_obs.get("page_observations", {}).get("likely_answers"), list)
                             else []
                         )[:6],
-                        "informational_task": (
-                            policy_obs.get("page_observations", {}).get("informational_task")
-                            if isinstance(policy_obs.get("page_observations"), dict)
-                            else False
-                        ),
                         "relevant_lines": (
                             policy_obs.get("page_observations", {}).get("relevant_lines")
                             if isinstance(policy_obs.get("page_observations"), dict)
                             and isinstance(policy_obs.get("page_observations", {}).get("relevant_lines"), list)
                             else []
                         )[:10],
-                        "page_stats": (
-                            policy_obs.get("page_observations", {}).get("page_stats")
-                            if isinstance(policy_obs.get("page_observations"), dict)
-                            and isinstance(policy_obs.get("page_observations", {}).get("page_stats"), dict)
-                            else {}
-                        ),
                     },
                     ensure_ascii=False,
                 ),
                 "",
-                "FORM PROGRESS (JSON):",
-                json.dumps(
-                    {
-                        "typed_values_recent": (
-                            policy_obs.get("memory", {}).get("typed_values_recent")
-                            if isinstance(policy_obs.get("memory"), dict)
-                            and isinstance(policy_obs.get("memory", {}).get("typed_values_recent"), list)
-                            else []
-                        )[:8],
-                        "typed_candidate_ids": (
-                            policy_obs.get("memory", {}).get("typed_candidate_ids")
-                            if isinstance(policy_obs.get("memory"), dict)
-                            and isinstance(policy_obs.get("memory", {}).get("typed_candidate_ids"), list)
-                            else []
-                        )[:12],
-                        "active_group_label": (
-                            policy_obs.get("memory", {}).get("active_group_label")
-                            if isinstance(policy_obs.get("memory"), dict)
-                            else ""
-                        ),
-                    },
-                    ensure_ascii=False,
-                ),
+                "RECENT ACTIONS AND RESULTS (JSON):",
+                json.dumps(policy_obs.get("history_recent") if isinstance(policy_obs.get("history_recent"), list) else [], ensure_ascii=False),
                 "",
-                "CONTROL GROUPS (JSON):",
-                json.dumps(
-                    (
-                        policy_obs.get("text_ir", {}).get("control_groups")
-                        if isinstance(policy_obs.get("text_ir"), dict)
-                        and isinstance(policy_obs.get("text_ir", {}).get("control_groups"), list)
-                        else []
-                    )[:8],
-                    ensure_ascii=False,
-                ),
+                "PAGE OBSERVATIONS (JSON):",
+                json.dumps(policy_obs.get("page_observations") if isinstance(policy_obs.get("page_observations"), dict) else {}, ensure_ascii=False),
                 "",
-                "VISIBLE FORMS (JSON):",
-                json.dumps(
-                    (
-                        policy_obs.get("text_ir", {}).get("forms")
-                        if isinstance(policy_obs.get("text_ir"), dict)
-                        and isinstance(policy_obs.get("text_ir", {}).get("forms"), list)
-                        else []
-                    )[:6],
-                    ensure_ascii=False,
-                ),
-                "",
-                "CURRENT PAGE:",
-                str(policy_obs.get("page_ir_text") or "")[:14000],
-                "",
-                "INTERACTIVE ELEMENTS (tree-style):",
+                "INTERACTIVE ELEMENTS (indexed tree-style):",
                 str(policy_obs.get("browser_state_text") or "")[:9000],
                 "",
-                "ACTION SHORTLIST (JSON):",
+                "INTERACTIVE ELEMENT SHORTLIST (JSON):",
                 json.dumps(
                     (policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else [])[:14],
                     ensure_ascii=False,
@@ -4806,29 +5679,83 @@ class Policy:
                 "ALLOWED BROWSER TOOLS: " + ", ".join(sorted([t for t in list(allowed_tools) if str(t).startswith("browser.")]) if allowed_tools else []),
                 "",
                 "Output schema examples:",
-                '{"type":"browser","tool_call":{"name":"browser.click","arguments":{"element_id":"el_123"}}}',
+                '{"type":"browser","tool_call":{"name":"browser.click","arguments":{"index":0}}}',
+                '{"type":"browser","reasoning_trace":{"task_interpretation":"Open the correct movie and submit a valid comment.","success_state":"A new comment is visibly posted on the target movie.","current_subgoal":"Finish the visible comment form.","next_expected_proof":"A post/submit action or the new comment appears.","drift_risks":"Opening related movies or share widgets.","where_am_i":"A movie detail page with a visible comment form.","state_assessment":"The form is ready and only needs local completion.","plan":"Fill the visible fields and submit without leaving this page."},"working_state":{"current_page_kind":"movie detail page","active_region":"comment form","active_workflow":"submit a valid movie comment","completed_fields":["name"],"pending_fields":["comment"],"completion_evidence_missing":["posted comment visible"],"next_milestone":"Submit the visible comment form.","completion_state":"awaiting_local_completion"},"tool_calls":[{"name":"browser.input","arguments":{"index":0,"text":"Jordan"}},{"name":"browser.input","arguments":{"index":1,"text":"Great pacing and atmosphere."}},{"name":"browser.click","arguments":{"index":2}}]}',
                 '{"type":"browser","tool_call":{"name":"browser.done","arguments":{"content":"The total value is 2844."}}}',
                 '{"type":"final","done":true,"content":"The total value is 2844."}',
             ]
         else:
             user_parts = [
-            "You have a task and must choose the next single browser step.",
+            "You have a task and must choose the next browser step sequence.",
             f"TASK: {str(policy_obs.get('prompt') or '')[:1600]}",
             f"STEP: {int(policy_obs.get('step_index') or 0)}",
             f"MODE: {mode}",
             f"URL: {str(policy_obs.get('url') or '')[:1000]}",
             f"SCREENSHOT_AVAILABLE: {bool(policy_obs.get('screenshot_available'))}",
             "",
+            "RUNTIME:",
+            "browser-use-like operator runtime",
+            f"max_actions_per_step={max_actions_per_step}",
+            "tabs_supported=false",
+            "file_tools_supported=false",
+            "",
+            "TOOL USAGE GUIDE:",
+            "- browser.click: buttons, links, toggles, tabs, submit controls, checkboxes, radios.",
+            "- browser.input: text-entry fields only.",
+            "- browser.select_dropdown: only when a concrete option text is known.",
+            "- browser.dropdown_options: inspect a select before choosing if the option is unclear.",
+            "- browser.extract: deterministic extraction from visible page content.",
+            "- browser.evaluate: JS/DOM inspection when normal tools are insufficient.",
+            "- browser.search: external web search, not in-page site search boxes.",
+            "",
+            "REASONING TRACE CONTRACT:",
+            "- You may include reasoning_trace as a short JSON object with keys task_interpretation, success_state, current_subgoal, next_expected_proof, drift_risks, where_am_i, state_assessment, plan.",
+            "- Keep each field short and concrete.",
+            "- reasoning_trace must describe task meaning and success, not hidden chain-of-thought.",
+            "",
+            "WORKING STATE CONTRACT:",
+            "- You should include working_state as a short JSON object with keys current_page_kind, active_region, active_workflow, completed_fields, pending_fields, completion_evidence_missing, next_milestone, completion_state.",
+            "- working_state should describe the current operational state, not hidden reasoning.",
+            "",
+            "ACTIVE OBJECTIVE (JSON):",
+            json.dumps(policy_obs.get("active_objective") if isinstance(policy_obs.get("active_objective"), dict) else {}, ensure_ascii=False),
+            "",
+            "WORKING STATE (JSON):",
+            json.dumps(policy_obs.get("working_state") if isinstance(policy_obs.get("working_state"), dict) else {}, ensure_ascii=False),
+            "",
+            "LOCAL WORKFLOW CLOSURE (JSON):",
+            json.dumps(policy_obs.get("local_workflow_closure") if isinstance(policy_obs.get("local_workflow_closure"), dict) else {}, ensure_ascii=False),
+            "",
+            "LOCAL HTML CONTEXT (JSON):",
+            json.dumps(policy_obs.get("local_html_context") if isinstance(policy_obs.get("local_html_context"), dict) else {}, ensure_ascii=False),
+            "",
+            "KNOWN SITE MAP (JSON):",
+            json.dumps(policy_obs.get("site_knowledge") if isinstance(policy_obs.get("site_knowledge"), dict) else {}, ensure_ascii=False),
+            "",
+            "AVOID REPEATING (JSON):",
+            json.dumps(policy_obs.get("avoid_repeating") if isinstance(policy_obs.get("avoid_repeating"), dict) else {}, ensure_ascii=False),
+            "",
+            "PREVIOUS REASONING TRACE (JSON):",
+            json.dumps(policy_obs.get("reasoning_trace") if isinstance(policy_obs.get("reasoning_trace"), dict) else {}, ensure_ascii=False),
+            "",
             "DONE / CONTENT CONTRACT:",
             "- If the task is already answered by the current page, return final now.",
             "- final.content must contain the user-facing answer.",
             "- Do not output a browser action when the answer is already visible.",
             "- Prefer quoting the visible metric / value directly in content.",
+            "- Follow ACTIVE OBJECTIVE unless visible evidence already satisfies the task.",
+            "- Respect AVOID REPEATING unless the page materially changed.",
+            "- If LOCAL WORKFLOW CLOSURE shows ready_to_commit=true and a visible commit control exists, strongly prefer finishing that local workflow before exploring unrelated controls.",
+            "- Use LOCAL HTML CONTEXT to understand which inputs and commit controls belong to the same active form or region.",
+            "- If multiple actions are returned, they must form one short local workflow and reasoning_trace.plan must say why.",
             "",
-            "PAGE IR (PRIMARY STRUCTURED STATE):",
+            "BROWSER SNAPSHOT:",
+            str(policy_obs.get("browser_state_snapshot") or "")[:3000],
+            "",
+            "VISIBLE TEXT / PAGE SUMMARY:",
             str(policy_obs.get("page_ir_text") or "")[:14000],
             "",
-            "CURRENT PAGE ANSWERS:",
+            "VISIBLE EVIDENCE (JSON):",
             json.dumps(
                 {
                     "likely_answers": (
@@ -4837,16 +5764,6 @@ class Policy:
                         and isinstance(policy_obs.get("page_observations", {}).get("likely_answers"), list)
                         else []
                     )[:6],
-                    "page_fact_count": (
-                        policy_obs.get("page_observations", {}).get("page_fact_count")
-                        if isinstance(policy_obs.get("page_observations"), dict)
-                        else 0
-                    ),
-                    "informational_task": (
-                        policy_obs.get("page_observations", {}).get("informational_task")
-                        if isinstance(policy_obs.get("page_observations"), dict)
-                        else False
-                    ),
                     "relevant_lines": (
                         policy_obs.get("page_observations", {}).get("relevant_lines")
                         if isinstance(policy_obs.get("page_observations"), dict)
@@ -4857,16 +5774,22 @@ class Policy:
                 ensure_ascii=False,
             ),
             "",
-            "STATE DELTA:",
-            str(policy_obs.get("state_delta") or "")[:600],
-            "",
-            "PAGE IR DELTA:",
-            str(policy_obs.get("ir_delta") or "")[:600],
-            "",
-            "BROWSER_STATE (interactive elements):",
+            "INTERACTIVE ELEMENTS (indexed tree-style):",
             str(policy_obs.get("browser_state_text") or "")[:14000],
             "",
-            "PAGE OBSERVATIONS (GENERIC JSON):",
+            "INTERACTIVE ELEMENT SHORTLIST (JSON):",
+            json.dumps(
+                (policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else [])[:24],
+                ensure_ascii=False,
+            ),
+            "",
+            "RECENT ACTIONS AND RESULTS (JSON):",
+            json.dumps(
+                (policy_obs.get("history_recent") if isinstance(policy_obs.get("history_recent"), list) else [])[:10],
+                ensure_ascii=False,
+            ),
+            "",
+            "PAGE OBSERVATIONS (JSON):",
             json.dumps(policy_obs.get("page_observations") if isinstance(policy_obs.get("page_observations"), dict) else {}, ensure_ascii=False),
             "",
             "PAGE GROUPS (FORMS / CONTROL GROUPS / ITEM GROUPS JSON):",
@@ -4892,6 +5815,9 @@ class Policy:
                 ensure_ascii=False,
             ),
             "",
+            "UNAVAILABLE TOOLS:",
+            ", ".join(policy_obs.get("unavailable_browser_tools") if isinstance(policy_obs.get("unavailable_browser_tools"), list) else list(UNAVAILABLE_BROWSER_TOOLS)),
+            "",
             "PREVIOUS STEP VERDICT:",
             json.dumps(policy_obs.get("previous_step_verdict") if isinstance(policy_obs.get("previous_step_verdict"), dict) else {}, ensure_ascii=False),
             ]
@@ -4901,6 +5827,13 @@ class Policy:
             history_recent = policy_obs.get("history_recent") if isinstance(policy_obs.get("history_recent"), list) else []
             if history_recent:
                 user_parts.extend(["", "HISTORY RECENT (JSON):", json.dumps(history_recent[:10], ensure_ascii=False)])
+            recent_failures = [
+                item
+                for item in history_recent[-8:]
+                if isinstance(item, dict) and (not bool(item.get("exec_ok", True)) or str(item.get("error") or "").strip())
+            ]
+            if recent_failures:
+                user_parts.extend(["", "RECENT FAILURES (JSON):", json.dumps(recent_failures[:4], ensure_ascii=False)])
             loop_nudges = policy_obs.get("loop_nudges") if isinstance(policy_obs.get("loop_nudges"), list) else []
             if loop_nudges:
                 user_parts.extend(["", "LOOP NUDGES:"] + [f"- {str(item)[:220]}" for item in loop_nudges[:8]])
@@ -4956,29 +5889,26 @@ class Policy:
                     },
                     ensure_ascii=False,
                 ),
-                "ACTION SHORTLIST (JSON):",
-                json.dumps(
-                    (policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else [])[:24],
-                    ensure_ascii=False,
-                ),
-                "",
                 "ALLOWED BROWSER TOOLS: " + ", ".join(sorted([t for t in list(allowed_tools) if str(t).startswith("browser.")]) if allowed_tools else []),
                 "",
                 "Output schema examples:",
-                '{"type":"browser","tool_call":{"name":"browser.click","arguments":{"element_id":"el_123"}}}',
-                '{"type":"browser","tool_call":{"name":"browser.select_dropdown","arguments":{"element_id":"el_456","text":"Comedy"}}}',
+                '{"type":"browser","tool_call":{"name":"browser.click","arguments":{"index":0}}}',
+                '{"type":"browser","reasoning_trace":{"task_interpretation":"Use the current page controls to narrow results.","success_state":"The required filtered result is visible.","current_subgoal":"Apply the current filter set.","next_expected_proof":"An apply/search result change is visible.","drift_risks":"Opening unrelated result cards too early.","where_am_i":"A filter panel with visible controls.","state_assessment":"The target controls are already visible.","plan":"Complete the filter sequence locally before opening any result cards."},"working_state":{"current_page_kind":"filter results page","active_region":"filter panel","active_workflow":"apply the current filter set","completed_fields":["genre"],"pending_fields":["apply filters"],"completion_evidence_missing":["updated result set"],"next_milestone":"Apply the visible filter controls.","completion_state":"awaiting_local_completion"},"tool_calls":[{"name":"browser.select_dropdown","arguments":{"index":1,"text":"Comedy"}},{"name":"browser.click","arguments":{"index":2}}]}',
+                '{"type":"browser","tool_call":{"name":"browser.select_dropdown","arguments":{"index":1,"text":"Comedy"}}}',
                 '{"type":"browser","tool_call":{"name":"browser.done","arguments":{"content":"The total value is 2844."}}}',
                 '{"type":"final","done":true,"content":"The total value is 2844."}',
                 "",
                 "Instructions:",
                 "- Output JSON only.",
-                "- Return ONE step only.",
+                f"- Return at most {max_actions_per_step} browser actions.",
                 "- Do not burn steps on the same no-op pattern if nothing changed.",
+                "- Prefer arguments.index over selector or element_id when targeting an interactive element.",
                 "- For browser.select_dropdown, include a non-empty arguments.text.",
                 "- If the task is about narrowing results, use current-page controls before opening result items.",
                 "- Preserve placeholders exactly when typing.",
                 "- For informational tasks, prefer answering from what is already visible on the current page before opening more pages.",
-                "- If CURRENT PAGE ANSWERS are sufficient, finish now.",
+                "- If the current page is sufficient, finish now.",
+                "- Never emit unavailable tools.",
                 "- Do not return content like 'task completed'; return the actual answer.",
                 ]
             )
@@ -5154,9 +6084,18 @@ class Policy:
         raise ValueError("invalid_json_policy_output")
 
     def _normalize_decision(self, obj: Dict[str, Any], allowed_tools: set[str]) -> Dict[str, Any]:
+        reasoning_trace = _normalize_reasoning_trace(obj.get("reasoning_trace"))
+        working_state = _normalize_working_state(obj.get("working_state"))
+        reasoning_summary = _candidate_text(_reasoning_trace_summary(reasoning_trace), obj.get("reasoning"))
+        working_state_summary = _working_state_summary(working_state)
+        if working_state_summary:
+            reasoning_summary = _candidate_text(reasoning_summary, working_state_summary)
+        max_actions_per_step = max(1, min(_env_int("FSM_MAX_ACTIONS_PER_STEP", 3), 5))
         t = str(obj.get("type") or "").strip().lower()
         if not t:
             if isinstance(obj.get("tool_call"), dict):
+                t = "browser"
+            elif isinstance(obj.get("tool_calls"), list):
                 t = "browser"
             elif isinstance(obj.get("meta_tool"), dict):
                 t = "meta"
@@ -5173,7 +6112,9 @@ class Policy:
                 "type": "final",
                 "done": True,
                 "content": _candidate_text(obj.get("content"), "Task complete."),
-                "reasoning": _candidate_text(obj.get("reasoning")),
+                "reasoning": reasoning_summary,
+                "reasoning_trace": reasoning_trace,
+                "working_state": working_state,
             }
         if t == "meta":
             mt = obj.get("meta_tool") if isinstance(obj.get("meta_tool"), dict) else {}
@@ -5187,34 +6128,84 @@ class Policy:
                         if isinstance(mt.get("arguments"), dict)
                         else (obj.get("arguments") if isinstance(obj.get("arguments"), dict) else {})
                     ),
-                    "reasoning": _candidate_text(obj.get("reasoning")),
+                    "reasoning": reasoning_summary,
+                    "reasoning_trace": reasoning_trace,
+                    "working_state": working_state,
                 }
         if t == "browser":
-            tc = obj.get("tool_call") if isinstance(obj.get("tool_call"), dict) else {}
-            if not tc:
-                tc = {
-                    "name": str(obj.get("name") or obj.get("tool") or "").strip(),
-                    "arguments": obj.get("arguments") if isinstance(obj.get("arguments"), dict) else {},
-                }
-            raw_name = str(tc.get("name") or "").strip()
-            name = _canonical_allowed_tool_name(raw_name)
-            if name == "browser.done":
+            raw_calls = obj.get("tool_calls") if isinstance(obj.get("tool_calls"), list) else None
+            normalized_calls: List[Dict[str, Any]] = []
+            if raw_calls:
+                for item in raw_calls[:max_actions_per_step]:
+                    if isinstance(item, dict):
+                        normalized_calls.append(item)
+            else:
+                tc = obj.get("tool_call") if isinstance(obj.get("tool_call"), dict) else {}
+                if not tc:
+                    tc = {
+                        "name": str(obj.get("name") or obj.get("tool") or "").strip(),
+                        "arguments": obj.get("arguments") if isinstance(obj.get("arguments"), dict) else {},
+                    }
+                normalized_calls = [tc]
+            cleaned_calls: List[Dict[str, Any]] = []
+            saw_done = False
+            for tc in normalized_calls:
+                raw_name = str(tc.get("name") or "").strip()
+                name = _canonical_allowed_tool_name(raw_name)
                 args = tc.get("arguments") if isinstance(tc.get("arguments"), dict) else {}
+                if name == "browser.done":
+                    saw_done = True
+                    continue
+                if name == "browser.input":
+                    if _is_generic_tool_placeholder(_candidate_text(args.get("text"), args.get("value")), kind="input"):
+                        raise ValueError("invalid_browser_input_text")
+                if name == "browser.select_dropdown":
+                    selected_text = _candidate_text(args.get("text"), args.get("value"))
+                    if _is_generic_tool_placeholder(selected_text, kind="select"):
+                        if (not allowed_tools) or ("browser.dropdown_options" in allowed_tools):
+                            tc = {
+                                "name": "browser.dropdown_options",
+                                "arguments": {
+                                    key: value
+                                    for key, value in args.items()
+                                    if key in {"index", "element_id", "_element_id", "selector"}
+                                },
+                            }
+                            name = "browser.dropdown_options"
+                        else:
+                            raise ValueError("invalid_browser_select_text")
+                if name.startswith("browser.") and (not allowed_tools or name in allowed_tools):
+                    cleaned_calls.append(
+                        {
+                            "name": name,
+                            "arguments": tc.get("arguments") if isinstance(tc.get("arguments"), dict) else {},
+                        }
+                    )
+            if saw_done and not cleaned_calls:
+                first_args = normalized_calls[0].get("arguments") if normalized_calls and isinstance(normalized_calls[0], dict) else {}
                 return {
                     "type": "final",
                     "done": True,
-                    "content": _candidate_text(args.get("content"), obj.get("content"), "Task complete."),
-                    "reasoning": _candidate_text(obj.get("reasoning")),
+                    "content": _candidate_text(
+                        (first_args.get("content") if isinstance(first_args, dict) else None),
+                        obj.get("content"),
+                        "Task complete.",
+                    ),
+                    "reasoning": reasoning_summary,
+                    "reasoning_trace": reasoning_trace,
+                    "working_state": working_state,
                 }
-            if name.startswith("browser.") and (not allowed_tools or name in allowed_tools):
-                return {
+            if cleaned_calls:
+                out: Dict[str, Any] = {
                     "type": "browser",
-                    "tool_call": {
-                        "name": name,
-                        "arguments": tc.get("arguments") if isinstance(tc.get("arguments"), dict) else {},
-                    },
-                    "reasoning": _candidate_text(obj.get("reasoning")),
+                    "reasoning": reasoning_summary,
+                    "reasoning_trace": reasoning_trace,
+                    "working_state": working_state,
                 }
+                if len(cleaned_calls) == 1:
+                    out["tool_call"] = cleaned_calls[0]
+                out["tool_calls"] = cleaned_calls
+                return out
         raise ValueError("invalid_policy_decision")
 
     def _attempt_repair(
@@ -5230,7 +6221,7 @@ class Policy:
             "You fix malformed agent policy outputs.\n"
             "Return exactly ONE valid JSON object and nothing else.\n"
             "Output must match one of:\n"
-            "1) {\"type\":\"browser\",\"tool_call\":{\"name\":\"browser.<tool>\",\"arguments\":{}}}\n"
+            "1) {\"type\":\"browser\",\"tool_call\":{\"name\":\"browser.<tool>\",\"arguments\":{\"index\":0}}}\n"
             "2) {\"type\":\"meta\",\"meta_tool\":{\"name\":\"META.<TOOL>\",\"arguments\":{}}}\n"
             "3) {\"type\":\"final\",\"done\":true,\"content\":\"...\"}"
         )
@@ -5305,12 +6296,30 @@ class Policy:
         def candidate_id(item: Dict[str, Any]) -> str:
             return str(item.get("id") or item.get("element_id") or item.get("_element_id") or "").strip()
 
+        def candidate_index(item: Dict[str, Any]) -> int | None:
+            try:
+                return int(item.get("index"))
+            except (TypeError, ValueError):
+                return None
+
         def browser_action_for_candidate(item: Dict[str, Any]) -> Dict[str, Any] | None:
             role = str(item.get("role") or "").strip().lower()
             selector = item.get("selector") if isinstance(item.get("selector"), dict) else None
             if not isinstance(selector, dict):
                 return None
             element_id = candidate_id(item)
+            index = candidate_index(item)
+
+            def target_args(extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
+                args: Dict[str, Any] = {}
+                if index is not None:
+                    args["index"] = index
+                elif element_id:
+                    args["element_id"] = element_id
+                if extra:
+                    args.update(extra)
+                return args
+
             if role in {"input", "textarea"} and element_id and element_id in typed_candidate_ids:
                 return None
             if role in {"button", "link"} and allow("browser.click"):
@@ -5318,34 +6327,23 @@ class Policy:
                     "type": "browser",
                     "tool_call": {
                         "name": "browser.click",
-                        "arguments": {
-                            "selector": selector,
-                            "element_id": element_id,
-                        },
+                        "arguments": target_args(),
                     },
                 }
-            if role in {"input", "textarea"} and allow("browser.input"):
+            if role in {"input", "textarea"} and allow("browser.click"):
                 return {
                     "type": "browser",
                     "tool_call": {
-                        "name": "browser.input",
-                        "arguments": {
-                            "selector": selector,
-                            "element_id": element_id,
-                            "text": "<text>",
-                        },
+                        "name": "browser.click",
+                        "arguments": target_args(),
                     },
                 }
-            if role == "select" and allow("browser.select_dropdown"):
+            if role == "select" and allow("browser.dropdown_options"):
                 return {
                     "type": "browser",
                     "tool_call": {
-                        "name": "browser.select_dropdown",
-                        "arguments": {
-                            "selector": selector,
-                            "element_id": element_id,
-                            "value": "Option",
-                        },
+                        "name": "browser.dropdown_options",
+                        "arguments": target_args(),
                     },
                 }
             if role == "input" and allow("browser.click"):
@@ -5353,10 +6351,7 @@ class Policy:
                     "type": "browser",
                     "tool_call": {
                         "name": "browser.click",
-                        "arguments": {
-                            "selector": selector,
-                            "element_id": element_id,
-                        },
+                        "arguments": target_args(),
                     },
                 }
             return None
@@ -5389,6 +6384,12 @@ class Policy:
             if action is not None:
                 return action
         if first and allow("browser.click"):
+            try:
+                first_index = int(first.get("index"))
+            except (TypeError, ValueError):
+                first_index = None
+            if first_index is not None:
+                return {"type": "browser", "tool_call": {"name": "browser.click", "arguments": {"index": first_index}}}
             sel = first.get("selector") if isinstance(first.get("selector"), dict) else None
             if sel:
                 return {"type": "browser", "tool_call": {"name": "browser.click", "arguments": {"selector": sel}}}
@@ -6068,8 +7069,8 @@ class FSMOperator:
         model_name: str,
         usage_payload: Dict[str, Any],
         policy_model_used: str,
-    ) -> tuple[Dict[str, Any] | None, bool, str, str, str]:
-        chosen_action: Dict[str, Any] | None = None
+    ) -> tuple[List[Dict[str, Any]], bool, str, str, str]:
+        chosen_actions: List[Dict[str, Any]] = []
         done = False
         content = ""
         policy_reasoning = ""
@@ -6090,6 +7091,8 @@ class FSMOperator:
             )
             if usage.get("model"):
                 policy_model_used = str(usage.get("model"))
+        self._remember_reasoning_trace(state=state, decision=decision)
+        self._remember_working_state(state=state, decision=decision)
         policy_reasoning = _candidate_text(decision.get("reasoning"), policy_reasoning)
         dtype = str(decision.get("type") or "").strip().lower()
         if dtype == "final":
@@ -6112,22 +7115,34 @@ class FSMOperator:
             ranked_ids = {cand.id for cand in ranked if cand.id}
             action_candidates = list(ranked)
             action_candidates.extend(cand for cand in candidates if cand.id not in ranked_ids)
-            chosen_action = self._browser_action_from_tool_call(
-                tool_call=decision.get("tool_call") if isinstance(decision.get("tool_call"), dict) else {},
-                ranked_candidates=action_candidates,
-                state=state,
-                prompt=prompt,
-                allowed=direct_browser_allowed,
-                current_url=url,
-            )
-        return chosen_action, done, content, policy_reasoning, policy_model_used
+            raw_calls = decision.get("tool_calls") if isinstance(decision.get("tool_calls"), list) else []
+            if not raw_calls and isinstance(decision.get("tool_call"), dict):
+                raw_calls = [decision.get("tool_call")]
+            max_actions_per_step = max(1, min(_env_int("FSM_MAX_ACTIONS_PER_STEP", 3), 5))
+            for raw_call in raw_calls[:max_actions_per_step]:
+                if not isinstance(raw_call, dict):
+                    continue
+                action = self._browser_action_from_tool_call(
+                    tool_call=raw_call,
+                    ranked_candidates=action_candidates,
+                    state=state,
+                    prompt=prompt,
+                    allowed=direct_browser_allowed,
+                    current_url=url,
+                )
+                if action is not None:
+                    chosen_actions.append(action)
+        return chosen_actions, done, content, policy_reasoning, policy_model_used
 
     def _run_legacy_loop(
         self,
         *,
         task_id: str,
         prompt: str,
+        web_project_id: str,
+        use_case: Dict[str, str],
         url: str,
+        html: str,
         step_index: int,
         history: List[Dict[str, Any]],
         screenshot: Any,
@@ -6143,8 +7158,8 @@ class FSMOperator:
         usage_payload: Dict[str, Any],
         policy_model_used: str,
         route_reason: str,
-    ) -> tuple[Dict[str, Any] | None, bool, str, str, str, List[str]]:
-        chosen_action: Dict[str, Any] | None = None
+    ) -> tuple[List[Dict[str, Any]], bool, str, str, str, List[str]]:
+        chosen_actions: List[Dict[str, Any]] = []
         done = False
         content = ""
         policy_reasoning = ""
@@ -6191,9 +7206,9 @@ class FSMOperator:
             else:
                 meta_exec_trace.append(f"BLOCK_DONE:{reason}")
         elif pre_action is not None:
-            chosen_action = pre_action
+            chosen_actions = [pre_action]
 
-        if not done and chosen_action is None:
+        if not done and not chosen_actions:
             auto_page_answer = ""
             if (
                 int(step_index) >= 1
@@ -6219,7 +7234,7 @@ class FSMOperator:
                 else:
                     meta_exec_trace.append(f"BLOCK_DONE:{reason}")
 
-        if not done and chosen_action is None:
+        if not done and not chosen_actions:
             auto_vision_question = self._default_vision_question(prompt=prompt, state=state, text_ir=text_ir)
             if self._should_auto_vision(
                 screenshot=screenshot,
@@ -6273,6 +7288,9 @@ class FSMOperator:
                 policy_obs = self.obs_builder.build_policy_obs(
                     task_id=task_id,
                     prompt=prompt,
+                    web_project_id=web_project_id,
+                    use_case=use_case,
+                    snapshot_html=html,
                     step_index=step_index,
                     url=url,
                     mode=state.mode,
@@ -6289,7 +7307,7 @@ class FSMOperator:
                     route_reason=route_reason,
                 )
 
-        if not done and chosen_action is None:
+        if not done and not chosen_actions:
             for _ in range(MAX_INTERNAL_META_STEPS + 1):
                 decision, usage = self.policy.decide(
                     task_id=task_id or "task",
@@ -6307,6 +7325,8 @@ class FSMOperator:
                     )
                     if usage.get("model"):
                         policy_model_used = str(usage.get("model"))
+                self._remember_reasoning_trace(state=state, decision=decision)
+                self._remember_working_state(state=state, decision=decision)
                 policy_reasoning = _candidate_text(decision.get("reasoning"), policy_reasoning)
                 dtype = str(decision.get("type") or "").strip().lower()
                 if dtype == "final":
@@ -6363,15 +7383,24 @@ class FSMOperator:
                         state.mode = "DONE"
                         break
                 if dtype == "browser":
-                    chosen_action = self._browser_action_from_tool_call(
-                        tool_call=decision.get("tool_call") if isinstance(decision.get("tool_call"), dict) else {},
-                        ranked_candidates=ranked,
-                        state=state,
-                        prompt=prompt,
-                        allowed=allowed,
-                        current_url=url,
-                    )
-                    if chosen_action is not None:
+                    raw_calls = decision.get("tool_calls") if isinstance(decision.get("tool_calls"), list) else []
+                    if not raw_calls and isinstance(decision.get("tool_call"), dict):
+                        raw_calls = [decision.get("tool_call")]
+                    max_actions_per_step = max(1, min(_env_int("FSM_MAX_ACTIONS_PER_STEP", 3), 5))
+                    for raw_call in raw_calls[:max_actions_per_step]:
+                        if not isinstance(raw_call, dict):
+                            continue
+                        action = self._browser_action_from_tool_call(
+                            tool_call=raw_call,
+                            ranked_candidates=ranked,
+                            state=state,
+                            prompt=prompt,
+                            allowed=allowed,
+                            current_url=url,
+                        )
+                        if action is not None:
+                            chosen_actions.append(action)
+                    if chosen_actions:
                         break
                 if dtype == "meta":
                     if state.counters.meta_steps_used >= MAX_INTERNAL_META_STEPS:
@@ -6453,6 +7482,9 @@ class FSMOperator:
                     policy_obs = self.obs_builder.build_policy_obs(
                         task_id=task_id,
                         prompt=prompt,
+                        web_project_id=web_project_id,
+                        use_case=use_case,
+                        snapshot_html=html,
                         step_index=step_index,
                         url=url,
                         mode=state.mode,
@@ -6473,36 +7505,39 @@ class FSMOperator:
                     continue
                 break
 
-        if not done and chosen_action is None:
-            chosen_action = self._fallback_from_ranked_candidates(
+        if not done and not chosen_actions:
+            fallback_action = self._fallback_from_ranked_candidates(
                 prompt=prompt,
                 ranked_candidates=ranked,
                 state=state,
                 allowed=allowed,
                 current_url=url,
             )
-            if chosen_action is not None:
+            if fallback_action is not None:
+                chosen_actions = [fallback_action]
                 meta_exec_trace.append("FALLBACK:top_ranked_candidate")
 
-        if not done and chosen_action is None:
-            chosen_action, done, content, stuck_note = self._stuck_recovery(
+        if not done and not chosen_actions:
+            stuck_action, done, content, stuck_note = self._stuck_recovery(
                 prompt=prompt,
                 url=url,
                 step_index=step_index,
                 state=state,
                 allowed=allowed,
             )
+            if stuck_action is not None:
+                chosen_actions = [stuck_action]
             if stuck_note:
                 meta_exec_trace.append(f"EMERGENCY_RECOVERY:{stuck_note}")
 
-        if not done and chosen_action is None:
+        if not done and not chosen_actions:
             fallback = self.policy._fallback(prompt=prompt, mode=state.mode, policy_obs=policy_obs, allowed_tools=allowed)
             if str(fallback.get("type") or "") == "final":
                 done = True
                 content = _candidate_text(fallback.get("content"), "Task complete.")
                 state.mode = "DONE"
             else:
-                chosen_action = self._browser_action_from_tool_call(
+                fallback_action = self._browser_action_from_tool_call(
                     tool_call=fallback.get("tool_call") if isinstance(fallback.get("tool_call"), dict) else {},
                     ranked_candidates=ranked,
                     state=state,
@@ -6510,15 +7545,17 @@ class FSMOperator:
                     allowed=allowed,
                     current_url=url,
                 )
+                if fallback_action is not None:
+                    chosen_actions = [fallback_action]
 
-        return chosen_action, done, content, policy_reasoning, policy_model_used, meta_exec_trace
+        return chosen_actions, done, content, policy_reasoning, policy_model_used, meta_exec_trace
 
     def _finalize_chosen_action(
         self,
         *,
         done: bool,
         direct_loop: bool,
-        chosen_action: Dict[str, Any] | None,
+        chosen_actions: List[Dict[str, Any]] | None,
         prompt: str,
         history: List[Dict[str, Any]],
         ranked: List[Candidate],
@@ -6527,61 +7564,66 @@ class FSMOperator:
     ) -> tuple[List[Dict[str, Any]], str, Dict[str, Any] | None]:
         actions: List[Dict[str, Any]] = []
         browser_tool_name = ""
-        if done or chosen_action is None:
+        chosen_actions = list(chosen_actions or [])
+        if done or not chosen_actions:
             state.last_action_sig = ""
             state.last_action_element_id = ""
-            return actions, browser_tool_name, chosen_action
+            return actions, browser_tool_name, None
 
-        if direct_loop:
-            # Keep the direct path close to: obs -> LLM -> browser action.
-            # Do not rewrite the model's action beyond structural normalization that already
-            # happened in _browser_action_from_tool_call.
-            pass
-        else:
-            chosen_action = self._guard_delete_task_against_unrelated_form_edits(
-                action=chosen_action,
-                prompt=prompt,
-                ranked_candidates=ranked,
-                state=state,
-            )
-            chosen_action = self._guard_missing_group_inputs(
-                action=chosen_action,
-                prompt=prompt,
-                history=history,
-                ranked_candidates=ranked,
-                state=state,
-            )
-            chosen_action = self._guard_submit_without_inputs(
-                action=chosen_action,
-                prompt=prompt,
-                history=history,
-                ranked_candidates=ranked,
-                state=state,
-            )
-            chosen_action = self._guard_redundant_type_action(
-                action=chosen_action,
-                prompt=prompt,
-                history=history,
-                ranked_candidates=ranked,
-                state=state,
-            )
-            chosen_action = self._guard_redundant_select_action(
-                action=chosen_action,
-                history=history,
-                ranked_candidates=ranked,
-                state=state,
-            )
-            chosen_action = self._promote_click_input_to_type(
-                action=chosen_action,
-                prompt=prompt,
-                ranked_candidates=ranked,
-                state=state,
-            )
-        actions = [chosen_action]
-        browser_tool_name = str(self._tool_name_for_action(chosen_action))
-        if not direct_loop:
-            self._remember_form_progress_from_action(prompt=prompt, action=chosen_action, ranked_candidates=ranked, state=state)
-            self._store_expected_effect(action=chosen_action, ranked_candidates=ranked, state=state)
+        simulated_history = list(history)
+        max_actions_per_step = max(1, min(_env_int("FSM_MAX_ACTIONS_PER_STEP", 3), 5))
+        for chosen_action in chosen_actions[:max_actions_per_step]:
+            if direct_loop:
+                pass
+            else:
+                chosen_action = self._guard_delete_task_against_unrelated_form_edits(
+                    action=chosen_action,
+                    prompt=prompt,
+                    ranked_candidates=ranked,
+                    state=state,
+                )
+                chosen_action = self._guard_missing_group_inputs(
+                    action=chosen_action,
+                    prompt=prompt,
+                    history=simulated_history,
+                    ranked_candidates=ranked,
+                    state=state,
+                )
+                chosen_action = self._guard_submit_without_inputs(
+                    action=chosen_action,
+                    prompt=prompt,
+                    history=simulated_history,
+                    ranked_candidates=ranked,
+                    state=state,
+                )
+                chosen_action = self._guard_redundant_type_action(
+                    action=chosen_action,
+                    prompt=prompt,
+                    history=simulated_history,
+                    ranked_candidates=ranked,
+                    state=state,
+                )
+                chosen_action = self._guard_redundant_select_action(
+                    action=chosen_action,
+                    history=simulated_history,
+                    ranked_candidates=ranked,
+                    state=state,
+                )
+                chosen_action = self._promote_click_input_to_type(
+                    action=chosen_action,
+                    prompt=prompt,
+                    ranked_candidates=ranked,
+                    state=state,
+                )
+            actions.append(chosen_action)
+            browser_tool_name = str(self._tool_name_for_action(chosen_action))
+            if not direct_loop:
+                self._remember_form_progress_from_action(prompt=prompt, action=chosen_action, ranked_candidates=ranked, state=state)
+                self._store_expected_effect(action=chosen_action, ranked_candidates=ranked, state=state)
+            simulated_history.append({"step": int(step_index), "action": chosen_action, "exec_ok": True})
+        chosen_action = actions[-1] if actions else None
+        if chosen_action is None:
+            return [], "", None
         sig = self._action_signature(chosen_action)
         state.counters.repeat_action_count = state.counters.repeat_action_count + 1 if sig == state.last_action_sig else 0
         state.last_action_sig = sig
@@ -6639,7 +7681,7 @@ class FSMOperator:
                 else:
                     current_page = best_fact or _candidate_text((text_ir.get("likely_answers") or [""])[0] if isinstance(text_ir.get("likely_answers"), list) else "") or "Current page answer not clear yet."
                 if not done and chosen_action is not None:
-                    decision_text = f"Take one browser action: {browser_tool_name or str(chosen_action.get('type') or 'action')}"
+                    decision_text = f"Take browser action sequence ending with: {browser_tool_name or str(chosen_action.get('type') or 'action')}"
                 elif not done:
                     decision_text = "No safe browser action selected."
                 reasoning = (
@@ -6655,13 +7697,17 @@ class FSMOperator:
         no_progress_score = self._no_progress_score(state=state, flags=flags, history=history)
         out: Dict[str, Any] = {
             "protocol_version": "1.0",
-            "actions": actions[:1],
+            "actions": actions,
             "done": bool(done),
             "content": final_content if done else None,
             "state_out": state.to_state_out(),
         }
         if isinstance(reasoning, str) and reasoning:
             out["reasoning"] = reasoning
+        if include_reasoning and isinstance(state.memory.reasoning_trace, dict) and state.memory.reasoning_trace:
+            out["reasoning_trace"] = dict(state.memory.reasoning_trace)
+        if include_reasoning and isinstance(state.memory.working_state, dict) and state.memory.working_state:
+            out["working_state"] = dict(state.memory.working_state)
         usage = usage_payload.get("usage") if isinstance(usage_payload.get("usage"), dict) else None
         if usage:
             out["usage"] = usage
@@ -6693,6 +7739,20 @@ class FSMOperator:
             },
         )
         return out
+
+    def _remember_reasoning_trace(self, *, state: AgentState, decision: Dict[str, Any]) -> None:
+        trace = _normalize_reasoning_trace(decision.get("reasoning_trace"))
+        if not trace:
+            return
+        state.memory.reasoning_trace = trace
+        next_expected = _candidate_text(trace.get("next_expected_proof"))
+        if next_expected:
+            state.progress.pending_expected_effect = next_expected[:40]
+
+    def _remember_working_state(self, *, state: AgentState, decision: Dict[str, Any]) -> None:
+        ws = _normalize_working_state(decision.get("working_state"))
+        if ws:
+            state.memory.working_state = ws
 
     def _build_completion_only_output(
         self,
@@ -6729,6 +7789,10 @@ class FSMOperator:
             "model": policy_model_used,
             "helper_models": usage_payload.get("helper_models") if isinstance(usage_payload.get("helper_models"), list) else [],
         }
+        if include_reasoning and isinstance(state.memory.reasoning_trace, dict) and state.memory.reasoning_trace:
+            out["reasoning_trace"] = dict(state.memory.reasoning_trace)
+        if include_reasoning and isinstance(state.memory.working_state, dict) and state.memory.working_state:
+            out["working_state"] = dict(state.memory.working_state)
         self._debug_log(
             task_id,
             {
@@ -6745,6 +7809,8 @@ class FSMOperator:
         *,
         task_id: str,
         prompt: str,
+        web_project_id: str,
+        use_case: Dict[str, str],
         url: str,
         html: str,
         screenshot: Any,
@@ -6833,6 +7899,9 @@ class FSMOperator:
         policy_obs = self.obs_builder.build_policy_obs(
             task_id=task_id,
             prompt=prompt,
+            web_project_id=web_project_id,
+            use_case=use_case,
+            snapshot_html=html,
             step_index=step_index,
             url=url,
             mode=state.mode,
@@ -6853,6 +7922,9 @@ class FSMOperator:
                 policy_obs = self.obs_builder.build_policy_obs(
                     task_id=task_id,
                     prompt=prompt,
+                    web_project_id=web_project_id,
+                    use_case=use_case,
+                    snapshot_html=html,
                     step_index=step_index,
                     url=url,
                     mode=state.mode,
@@ -6897,6 +7969,8 @@ class FSMOperator:
 
     def run(self, *, payload: Dict[str, Any], model_override: str = "") -> Dict[str, Any]:
         prompt = str(payload.get("prompt") or payload.get("task_prompt") or "")
+        web_project_id = _candidate_text(payload.get("web_project_id"))
+        use_case = _normalize_use_case_info(payload.get("use_case"))
         url = str(payload.get("url") or "")
         html = str(payload.get("snapshot_html") or "")
         screenshot = payload.get("screenshot")
@@ -6927,6 +8001,8 @@ class FSMOperator:
         prepared = self._prepare_run_context(
             task_id=task_id,
             prompt=prompt,
+            web_project_id=web_project_id,
+            use_case=use_case,
             url=url,
             html=html,
             screenshot=screenshot,
@@ -6950,7 +8026,7 @@ class FSMOperator:
         browser_allowed = prepared["browser_allowed"]
         meta_exec_trace: List[str] = []
         policy_reasoning = ""
-        chosen_action: Dict[str, Any] | None = None
+        chosen_actions: List[Dict[str, Any]] = []
         done = False
         content = ""
         if completion_only:
@@ -6967,7 +8043,7 @@ class FSMOperator:
                 policy_model_used=policy_model_used,
             )
         if direct_loop:
-            chosen_action, done, content, policy_reasoning, policy_model_used = self._run_direct_loop(
+            chosen_actions, done, content, policy_reasoning, policy_model_used = self._run_direct_loop(
                 task_id=task_id,
                 prompt=prompt,
                 url=url,
@@ -6983,10 +8059,13 @@ class FSMOperator:
                 policy_model_used=policy_model_used,
             )
         else:
-            chosen_action, done, content, policy_reasoning, policy_model_used, meta_exec_trace = self._run_legacy_loop(
+            chosen_actions, done, content, policy_reasoning, policy_model_used, meta_exec_trace = self._run_legacy_loop(
                 task_id=task_id,
                 prompt=prompt,
+                web_project_id=web_project_id,
+                use_case=use_case,
                 url=url,
+                html=html,
                 step_index=step_index,
                 history=history,
                 screenshot=screenshot,
@@ -7007,7 +8086,7 @@ class FSMOperator:
         actions, browser_tool_name, chosen_action = self._finalize_chosen_action(
             done=done,
             direct_loop=direct_loop,
-            chosen_action=chosen_action,
+            chosen_actions=chosen_actions,
             prompt=prompt,
             history=history,
             ranked=ranked,
@@ -8140,6 +9219,23 @@ class FSMOperator:
         if not action_type:
             return None
 
+        def resolve_target(*, prefer_roles: set[str], allow_unmatched_selector: bool) -> tuple[Dict[str, Any] | None, str, int | None]:
+            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
+            element_id = str(args.get("element_id") or args.get("_element_id") or "")
+            raw_index = args.get("index")
+            indexed_candidate = self._candidate_by_index(ranked_candidates, raw_index)
+            if indexed_candidate is not None and ((not prefer_roles) or indexed_candidate.role in prefer_roles):
+                return indexed_candidate.selector, indexed_candidate.id, int(raw_index)
+            selector, element_id = self._resolve_selector_and_element_id(
+                selector=selector,
+                element_id=element_id,
+                ranked_candidates=ranked_candidates,
+                state=state,
+                prefer_roles=prefer_roles,
+                allow_unmatched_selector=allow_unmatched_selector,
+            )
+            return selector, element_id, None
+
         if name == "browser.go_back":
             return {"type": "GoBackAction"}
 
@@ -8151,16 +9247,7 @@ class FSMOperator:
             return {"type": "SearchAction", "query": query[:300], "engine": engine}
 
         if name == "browser.click":
-            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
-            element_id = str(args.get("element_id") or args.get("_element_id") or "")
-            selector, element_id = self._resolve_selector_and_element_id(
-                selector=selector,
-                element_id=element_id,
-                ranked_candidates=ranked_candidates,
-                state=state,
-                prefer_roles={"button", "link", "input"},
-                allow_unmatched_selector=True,
-            )
+            selector, element_id, _ = resolve_target(prefer_roles={"button", "link", "input"}, allow_unmatched_selector=True)
             if selector is None and ranked_candidates:
                 for cand in ranked_candidates:
                     if cand.id not in state.blocklist.element_ids:
@@ -8286,17 +9373,8 @@ class FSMOperator:
             return {"type": "NavigateAction", "url": nav_url, "go_back": False, "go_forward": False}
 
         if name == "browser.input":
-            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
             text = _candidate_text(args.get("text"), args.get("value"))
-            element_id = str(args.get("element_id") or args.get("_element_id") or "")
-            selector, element_id = self._resolve_selector_and_element_id(
-                selector=selector,
-                element_id=element_id,
-                ranked_candidates=ranked_candidates,
-                state=state,
-                prefer_roles={"input", "textarea"},
-                allow_unmatched_selector=False,
-            )
+            selector, element_id, _ = resolve_target(prefer_roles={"input", "textarea"}, allow_unmatched_selector=False)
             if not isinstance(selector, dict):
                 for cand in ranked_candidates:
                     if cand.role == "input" and cand.id not in state.blocklist.element_ids:
@@ -8398,17 +9476,8 @@ class FSMOperator:
             return {"type": "WaitAction", "time_seconds": max(0.2, min(seconds, 8.0))}
 
         if name == "browser.select_dropdown":
-            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
             text = _candidate_text(args.get("text"), args.get("value"), "Option")
-            element_id = str(args.get("element_id") or args.get("_element_id") or "")
-            selector, element_id = self._resolve_selector_and_element_id(
-                selector=selector,
-                element_id=element_id,
-                ranked_candidates=ranked_candidates,
-                state=state,
-                prefer_roles={"select"},
-                allow_unmatched_selector=False,
-            )
+            selector, element_id, _ = resolve_target(prefer_roles={"select"}, allow_unmatched_selector=False)
             if not isinstance(selector, dict):
                 for cand in ranked_candidates:
                     if cand.role == "select" and cand.id not in state.blocklist.element_ids:
@@ -8447,16 +9516,7 @@ class FSMOperator:
             return out
 
         if name == "browser.dropdown_options":
-            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
-            element_id = str(args.get("element_id") or args.get("_element_id") or "")
-            selector, element_id = self._resolve_selector_and_element_id(
-                selector=selector,
-                element_id=element_id,
-                ranked_candidates=ranked_candidates,
-                state=state,
-                prefer_roles={"select"},
-                allow_unmatched_selector=False,
-            )
+            selector, element_id, _ = resolve_target(prefer_roles={"select"}, allow_unmatched_selector=False)
             selector = _sanitize_selector(selector if isinstance(selector, dict) else None)
             if not isinstance(selector, dict):
                 return None
@@ -8466,16 +9526,7 @@ class FSMOperator:
             return out
 
         if name == "browser.hover":
-            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
-            element_id = str(args.get("element_id") or args.get("_element_id") or "")
-            selector, element_id = self._resolve_selector_and_element_id(
-                selector=selector,
-                element_id=element_id,
-                ranked_candidates=ranked_candidates,
-                state=state,
-                prefer_roles={"button", "link", "input", "select"},
-                allow_unmatched_selector=True,
-            )
+            selector, element_id, _ = resolve_target(prefer_roles={"button", "link", "input", "select"}, allow_unmatched_selector=True)
             selector = _sanitize_selector(selector if isinstance(selector, dict) else None)
             if not isinstance(selector, dict):
                 return None
@@ -8485,16 +9536,7 @@ class FSMOperator:
             return out
 
         if name in {"browser.dblclick", "browser.rightclick", "browser.middleclick", "browser.tripleclick"}:
-            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
-            element_id = str(args.get("element_id") or args.get("_element_id") or "")
-            selector, element_id = self._resolve_selector_and_element_id(
-                selector=selector,
-                element_id=element_id,
-                ranked_candidates=ranked_candidates,
-                state=state,
-                prefer_roles={"button", "link", "input"},
-                allow_unmatched_selector=True,
-            )
+            selector, element_id, _ = resolve_target(prefer_roles={"button", "link", "input"}, allow_unmatched_selector=True)
             selector = _sanitize_selector(selector if isinstance(selector, dict) else None)
             if not isinstance(selector, dict):
                 return None
@@ -8531,7 +9573,7 @@ class FSMOperator:
             return out
         if name == "browser.extract":
             query = _candidate_text(args.get("query"), "")
-            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
+            selector, _, _ = resolve_target(prefer_roles=set(), allow_unmatched_selector=True)
             out = {"type": "ExtractAction", "query": query}
             if isinstance(selector, dict):
                 out["selector"] = selector
@@ -8592,6 +9634,15 @@ class FSMOperator:
         if not allow_unmatched_selector:
             return None, ""
         return selector, element_id
+
+    def _candidate_by_index(self, candidates: List[Candidate], raw_index: Any) -> Candidate | None:
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            return None
+        if index < 0 or index >= len(candidates):
+            return None
+        return candidates[index]
 
     def _candidate_id_for_selector(
         self,

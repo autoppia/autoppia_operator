@@ -301,6 +301,8 @@ async def run_evaluation(
     trace_dir: str | None = None,
     trace_full_payloads: bool = True,
     include_reasoning: bool = False,
+    use_site_knowledge: bool = False,
+    use_local_html_context: bool = False,
 ):
     # Re-load .env here as a guard: some imported modules may mutate env vars.
     try:
@@ -348,6 +350,8 @@ async def run_evaluation(
     logger.info(f"  Strict mdl: {bool(strict_model)}")
     logger.info(f"  Trace acts: {bool(save_act_traces)}")
     logger.info(f"  Reasoning:  {bool(include_reasoning)}")
+    logger.info(f"  Site knowl: {bool(use_site_knowledge)}")
+    logger.info(f"  Local HTML: {bool(use_local_html_context)}")
     logger.info("=" * 60)
 
     trace_root: Path | None = None
@@ -478,7 +482,17 @@ async def run_evaluation(
         server_env["AGENT_RETURN_METRICS"] = "1"
         k = server_env.get("OPENAI_API_KEY") or ""
         k_fpr = hashlib.sha256(k.encode("utf-8")).hexdigest()[:12] if k else "missing"
-        logger.info(f"Agent server env: OPENAI_MODEL={server_env.get('OPENAI_MODEL')} LLM_PROVIDER={server_env.get('LLM_PROVIDER')} START_AGENT_SERVER={os.getenv('START_AGENT_SERVER')} AGENT_BASE_URL={agent_base_url or 'local'} OPENAI_API_KEY={'set' if k else "missing"} fpr={k_fpr}")
+        server_env["FSM_USE_SITE_KNOWLEDGE"] = "1" if bool(use_site_knowledge) else "0"
+        server_env["FSM_USE_LOCAL_HTML_CONTEXT"] = "1" if bool(use_local_html_context) else "0"
+        logger.info(
+            f"Agent server env: OPENAI_MODEL={server_env.get('OPENAI_MODEL')} "
+            f"LLM_PROVIDER={server_env.get('LLM_PROVIDER')} "
+            f"FSM_USE_SITE_KNOWLEDGE={server_env.get('FSM_USE_SITE_KNOWLEDGE')} "
+            f"FSM_USE_LOCAL_HTML_CONTEXT={server_env.get('FSM_USE_LOCAL_HTML_CONTEXT')} "
+            f"START_AGENT_SERVER={os.getenv('START_AGENT_SERVER')} "
+            f"AGENT_BASE_URL={agent_base_url or 'local'} "
+            f"OPENAI_API_KEY={'set' if k else 'missing'} fpr={k_fpr}"
+        )
         server_proc = subprocess.Popen(
             [
                 sys.executable,
@@ -539,6 +553,7 @@ async def run_evaluation(
             "screenshot": screenshot,
             "step_index": int(step_index),
             "web_project_id": prepared_task.web_project_id,
+            "use_case": prepared_task.use_case.model_dump(mode="json") if hasattr(prepared_task.use_case, "model_dump") else prepared_task.use_case,
             "history": history,
             "model": str(requested_model),
             "include_reasoning": bool(include_reasoning),
@@ -797,9 +812,22 @@ async def run_evaluation(
                                 episode_cost_usd += float(c)
                             episode_llm_calls += int(llm_meta.get("llm_calls") or len(usages))
 
+                    action = None
+                    executed_actions: list[BaseAction] = []
+                    exec_ok = True
+                    exec_err = None
                     if actions:
-                        action = actions[0]
-                        step_result = await evaluator.step(action)
+                        for action in actions:
+                            executed_actions.append(action)
+                            step_result = await evaluator.step(action)
+                            ar = step_result.action_result
+                            try:
+                                if ar is not None and not bool(getattr(ar, "successfully_executed", True)):
+                                    exec_ok = False
+                                    exec_err = getattr(ar, "error", None)
+                                    break
+                            except Exception:
+                                pass
                     elif done:
                         action = None
                         final_score = step_result.score.raw_score
@@ -880,35 +908,51 @@ async def run_evaluation(
                     if isinstance(cid, str) and cid.isdigit():
                         cid = int(cid)
 
-                    ar = step_result.action_result
-                    exec_ok = True
-                    exec_err = None
-                    try:
-                        if ar is not None:
-                            exec_ok = bool(getattr(ar, "successfully_executed", True))
-                            exec_err = getattr(ar, "error", None)
-                    except Exception:
-                        exec_ok = True
-                        exec_err = None
-
-                    history.append(
-                        {
-                            "step": step_idx,
-                            "url": str(step_result.snapshot.url),
-                            "action": action.type if action else "done",
-                            "candidate_id": cid,
-                            "text": getattr(action, "text", None) if action else None,
-                            "exec_ok": exec_ok,
-                            "error": exec_err,
-                            "agent_decision": (metrics.get("decision") if isinstance(metrics, dict) else None),
-                            "done": bool(done),
-                            "content": content if isinstance(content, str) else None,
-                            "reasoning": reasoning if isinstance(reasoning, str) else None,
-                            "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
-                            "prompt_tokens": int(sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
-                            "completion_tokens": int(sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
-                        }
-                    )
+                    if executed_actions:
+                        for action_idx, action in enumerate(executed_actions):
+                            action_exec_ok = exec_ok if action_idx == len(executed_actions) - 1 else True
+                            action_exec_err = exec_err if action_idx == len(executed_actions) - 1 else None
+                            history.append(
+                                {
+                                    "step": len(history),
+                                    "episode_step": step_idx,
+                                    "action_index": action_idx,
+                                    "url": str(step_result.snapshot.url),
+                                    "action": action.type,
+                                    "candidate_id": cid,
+                                    "text": getattr(action, "text", None),
+                                    "exec_ok": action_exec_ok,
+                                    "error": action_exec_err,
+                                    "agent_decision": (metrics.get("decision") if isinstance(metrics, dict) else None),
+                                    "done": bool(done),
+                                    "content": content if isinstance(content, str) else None,
+                                    "reasoning": reasoning if isinstance(reasoning, str) else None,
+                                    "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
+                                    "prompt_tokens": int(sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
+                                    "completion_tokens": int(sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
+                                }
+                            )
+                    else:
+                        history.append(
+                            {
+                                "step": len(history),
+                                "episode_step": step_idx,
+                                "action_index": None,
+                                "url": str(step_result.snapshot.url),
+                                "action": action.type if action else "done",
+                                "candidate_id": cid,
+                                "text": getattr(action, "text", None) if action else None,
+                                "exec_ok": exec_ok,
+                                "error": exec_err,
+                                "agent_decision": (metrics.get("decision") if isinstance(metrics, dict) else None),
+                                "done": bool(done),
+                                "content": content if isinstance(content, str) else None,
+                                "reasoning": reasoning if isinstance(reasoning, str) else None,
+                                "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
+                                "prompt_tokens": int(sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
+                                "completion_tokens": int(sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
+                            }
+                        )
 
                     step_trace: dict[str, Any] = {
                         "step_index": int(step_idx),
@@ -926,11 +970,11 @@ async def run_evaluation(
                             "state_in": act_request_payload.get("state_in") if isinstance(act_request_payload, dict) else {},
                             "state_out": state_out if isinstance(state_out, dict) else {},
                         },
-                        "action": {
-                            "type": action.type if action else None,
-                            "raw": action.model_dump(mode="json", exclude_none=False) if action else None,
-                        },
-                        "execution": {"executed": bool(action is not None), "exec_ok": bool(exec_ok), "error": exec_err},
+                        "actions": [
+                            {"type": act.type, "raw": act.model_dump(mode="json", exclude_none=False)}
+                            for act in executed_actions
+                        ],
+                        "execution": {"executed": bool(executed_actions or action is not None), "exec_ok": bool(exec_ok), "error": exec_err},
                     }
                     if bool(trace_full_payloads):
                         step_trace["act_request"] = act_request_payload
@@ -1207,6 +1251,8 @@ def main():
     parser.add_argument("--trace-dir", default=None, help="Custom trace directory")
     parser.add_argument("--trace-full-payloads", action=argparse.BooleanOptionalAction, default=True, help="Include full payloads (snapshot_html/screenshot/history)")
     parser.add_argument("--include-reasoning", action=argparse.BooleanOptionalAction, default=False, help="Request reasoning from /act and store it in traces")
+    parser.add_argument("--use-site-knowledge", action=argparse.BooleanOptionalAction, default=False, help="Expose project-level site knowledge to the operator prompt")
+    parser.add_argument("--use-local-html-context", action=argparse.BooleanOptionalAction, default=False, help="Expose active-form and local DOM HTML snippets to the operator prompt")
     args = parser.parse_args()
 
     cache_path = Path(args.task_cache).resolve() if args.task_cache else TASK_CACHE
@@ -1245,6 +1291,8 @@ def main():
             trace_dir=args.trace_dir,
             trace_full_payloads=bool(args.trace_full_payloads),
             include_reasoning=bool(args.include_reasoning),
+            use_site_knowledge=bool(args.use_site_knowledge),
+            use_local_html_context=bool(args.use_local_html_context),
         )
     )
 

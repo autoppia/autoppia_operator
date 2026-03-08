@@ -77,7 +77,7 @@ The operator then:
 3. Builds a compact deterministic **Page IR** (forms, headings, links, cards, CTAs) plus deltas from previous step.
 4. Optionally runs a completion-check LLM call (small model, step/repeat-gated by default) to decide if task is already complete.
 5. Maintains RAM subgoal memory per `task_id` (inferred milestones, done/blocked tracking) and injects active-subgoal hint into planning.
-6. Calls the planner LLM to choose the next single action (`click`/`input`/`select_dropdown`/`scroll_*`/`done`) using Page IR + step context.
+6. Calls the planner LLM to choose the next browser action sequence (up to `FSM_MAX_ACTIONS_PER_STEP`, default `3`) using a browser-use-like observation with indexed interactive elements and recent action/results context.
 7. Returns tool calls for browser/user interaction and sets `done/content` when the task is complete.
 
 Preferred browser tool naming follows browser-use conventions:
@@ -103,6 +103,13 @@ Preferred browser tool naming follows browser-use conventions:
 - `browser.done`
 
 `browser.evaluate` and `browser.extract` now persist their returned value into execution traces via IWA `ActionExecutionResult.action_output`, so downstream evaluation and training logs can inspect those tool results.
+
+Runtime constraints for the planner:
+- Up to `FSM_MAX_ACTIONS_PER_STEP` browser actions per step (default `3`, hard cap `5`).
+- Multi-action steps should stay inside one local workflow.
+- Interactive element references should prefer `arguments.index` from the indexed shortlist.
+- Tabs and file tools are not supported in this runtime.
+- Unavailable tools include `switch_tab`, `close_tab`, `upload_file`, `read_file`, `write_file`, and `replace_file`.
 
 ### Completion checker defaults
 
