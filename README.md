@@ -116,6 +116,26 @@ This repo includes a local evaluator:
 python eval.py --model gpt-5.2 --num-tasks 5 --distinct-use-cases
 ```
 
+List available web projects/use cases from the configured cache:
+
+```bash
+python eval.py --list-web-projects
+python eval.py --list-use-cases --web-project-id autocinema
+```
+
+Run one web project with all use cases:
+
+```bash
+python eval.py --web-project-id autocinema --all-use-cases --tasks-per-use-case 1 --max-steps 15
+```
+
+Save full `/act` traces (request/response + metadata per step):
+
+```bash
+python eval.py --model gpt-5.2 --web-project-id autocinema --all-use-cases --save-act-traces
+# optional: add --include-reasoning to request reasoning in each /act trace
+```
+
 Task generation helper (writes the cache consumed by `eval.py`):
 
 ```bash

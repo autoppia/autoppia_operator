@@ -30,6 +30,8 @@ Internal-only intents (no direct browser side-effect):
 - `META.REPLAN`
 - `META.EXTRACT_LINKS(kind=product_cards|nav_links|all_links)`
 - `META.EXTRACT_FACTS(schema=generic|product_page|pricing)`
+- `META.SEARCH_TEXT(query)`
+- `META.FIND_ELEMENTS(role?, text?, limit?)`
 - `META.SELECT_NEXT_TARGET`
 - `META.ESCALATE(reason)`
 - `META.SET_MODE(mode)`
@@ -54,6 +56,7 @@ Internal loop is capped by `MAX_INTERNAL_META_STEPS=3`.
 - `memory`:
   - `facts[]`
   - `checkpoints[]`
+  - `history_summary`
 - `counters`:
   - `stall_count`
   - `repeat_action_count`

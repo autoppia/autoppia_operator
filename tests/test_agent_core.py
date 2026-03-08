@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent import (
+from agent_test_support import (
     _TASK_STATE,
     _Candidate,
     _all_subgoals_done,

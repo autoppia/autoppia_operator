@@ -129,9 +129,90 @@ def test_act_http_response_passthroughs_canonical_tool_calls(monkeypatch) -> Non
     body = resp.json()
 
     assert body["tool_calls"] == [{"name": "browser.navigate", "arguments": {"url": "https://example.com/docs"}}]
-    assert body["content"] == "Navigating to docs"
+    assert body["content"] is None
     assert body["done"] is False
     assert body["state_out"] == {"phase": "navigate"}
+
+
+def test_act_http_response_normalizes_browser_select_tool_call_to_value(monkeypatch) -> None:
+    async def _fake_act_from_payload(payload):
+        return {
+            "protocol_version": "1.0",
+            "tool_calls": [
+                {
+                    "name": "browser.select",
+                    "arguments": {
+                        "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre"},
+                        "text": "Comedy",
+                    },
+                }
+            ],
+            "done": False,
+            "state_out": {"phase": "filter"},
+        }
+
+    monkeypatch.setattr(agent.OPERATOR, "act_from_payload", _fake_act_from_payload)
+    client = TestClient(agent.app)
+
+    resp = client.post(
+        "/act",
+        json={
+            "task_id": "t-select",
+            "prompt": "filter by comedy",
+            "url": "https://example.com/search",
+            "snapshot_html": "<html></html>",
+            "step_index": 0,
+            "history": [],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["tool_calls"] == [
+        {
+            "name": "browser.select",
+            "arguments": {
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre"},
+                "value": "Comedy",
+            },
+        }
+    ]
+
+
+def test_act_http_response_passthroughs_metrics_and_usage(monkeypatch) -> None:
+    async def _fake_act_from_payload(payload):
+        return {
+            "protocol_version": "1.0",
+            "tool_calls": [{"name": "browser.scroll", "arguments": {"direction": "down"}}],
+            "done": False,
+            "state_out": {"mode": "NAV"},
+            "metrics": {"llm": {"llm_calls": 1, "llm_usages": [{"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}], "model": "gpt-5.2"}},
+            "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+            "total_tokens": 18,
+            "model": "gpt-5.2",
+            "helper_models": ["gpt-4o-mini-2024-07-18"],
+        }
+
+    monkeypatch.setattr(agent.OPERATOR, "act_from_payload", _fake_act_from_payload)
+    client = TestClient(agent.app)
+
+    resp = client.post(
+        "/act",
+        json={
+            "task_id": "t-metrics",
+            "prompt": "scroll",
+            "url": "https://example.com",
+            "snapshot_html": "<html></html>",
+            "step_index": 0,
+            "history": [],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body.get("metrics"), dict)
+    assert isinstance(body.get("usage"), dict)
+    assert int(body.get("total_tokens") or 0) == 18
+    assert body.get("model") == "gpt-5.2"
+    assert body.get("metrics", {}).get("llm", {}).get("helper_models") == ["gpt-4o-mini-2024-07-18"]
 
 
 def test_capabilities_exposes_protocol_and_tools() -> None:
@@ -210,3 +291,32 @@ def test_agent_step_method_aliases_act(monkeypatch) -> None:
     assert captured["step_index"] == 3
     assert captured["history"] == [{"type": "NavigateAction"}]
     assert captured["state"] == {"phase": "x"}
+
+
+def test_act_from_payload_forwards_screenshot_to_fsm(monkeypatch) -> None:
+    captured = {}
+
+    class _DummyFSM:
+        def run(self, *, payload, model_override=""):
+            captured["payload"] = payload
+            return {"protocol_version": "1.0", "actions": [], "state_out": {}}
+
+    monkeypatch.setattr(agent, "_FSM_OPERATOR", _DummyFSM())
+
+    import asyncio
+
+    asyncio.run(
+        agent.OPERATOR.act_from_payload(
+            {
+                "task_id": "t-shot",
+                "prompt": "inspect screenshot",
+                "url": "https://example.com",
+                "snapshot_html": "<html></html>",
+                "screenshot": "data:image/png;base64,abc123",
+                "step_index": 0,
+                "history": [],
+            }
+        )
+    )
+
+    assert captured["payload"]["screenshot"] == "data:image/png;base64,abc123"

@@ -169,6 +169,22 @@ _chutes = OpenAIGateway(
 _anthropic = AnthropicGateway()
 
 
+def _message_content_text_len(content: Any) -> int:
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        total = 0
+        for item in content:
+            if isinstance(item, dict):
+                total += _message_content_text_len(item.get("text"))
+            else:
+                total += _message_content_text_len(item)
+        return total
+    if isinstance(content, dict):
+        return _message_content_text_len(content.get("text"))
+    return len(str(content or ""))
+
+
 def _normalize_usage_from_response(
     *,
     raw_resp: Dict[str, Any],
@@ -198,7 +214,7 @@ def _normalize_usage_from_response(
     msg_chars = 0
     for m in messages:
         try:
-            msg_chars += len(str(m.get("content") or ""))
+            msg_chars += _message_content_text_len(m.get("content"))
         except Exception:
             pass
     out_chars = 0
@@ -209,6 +225,62 @@ def _normalize_usage_from_response(
     est_pt = max(1, msg_chars // 4) if msg_chars > 0 else 0
     est_ct = max(1, out_chars // 4) if out_chars > 0 else 0
     return {"prompt_tokens": int(est_pt), "completion_tokens": int(est_ct), "total_tokens": int(est_pt + est_ct)}
+
+
+def _openai_chat_with_compat(
+    *,
+    task_id: str,
+    messages: List[Dict[str, Any]],
+    model: str,
+    temperature: float,
+    max_tokens: int,
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {
+        "model": str(model),
+        "messages": messages,
+    }
+
+    if str(model).startswith("gpt-5"):
+        body["max_completion_tokens"] = int(max_tokens)
+        body["response_format"] = {"type": "json_object"}
+    else:
+        body.update(
+            {
+                "temperature": float(temperature),
+                "max_tokens": int(max_tokens),
+                "response_format": {"type": "json_object"},
+            }
+        )
+
+    def _post(b: Dict[str, Any]) -> Dict[str, Any]:
+        resp = _openai.chat_completions(task_id=task_id, body=b)
+        if isinstance(resp, dict):
+            resp["usage"] = _normalize_usage_from_response(raw_resp=resp, messages=messages)
+        return resp
+
+    try:
+        return _post(body)
+    except RuntimeError as e:
+        msg = str(e)
+        if "unsupported_parameter" in msg or "response_format" in msg:
+            b2 = dict(body)
+            b2.pop("response_format", None)
+            return _post(b2)
+
+        if "unsupported_parameter" in msg and "max_tokens" in body and "max_completion_tokens" not in body:
+            b2 = dict(body)
+            b2.pop("max_tokens", None)
+            b2.pop("temperature", None)
+            b2["max_completion_tokens"] = int(max_tokens)
+            b2.pop("response_format", None)
+            return _post(b2)
+
+        if "unsupported_value" in msg and "temperature" in body:
+            b2 = dict(body)
+            b2.pop("temperature", None)
+            return _post(b2)
+
+        raise
 
 
 def openai_chat_completions(
@@ -233,17 +305,39 @@ def openai_chat_completions(
     m = str(model)
 
     if provider == "chutes":
-        resp = _chutes.chat_completions(task_id=task_id, body={
+        body = {
             "model": m,
             "messages": messages,
             # Keep compatible defaults; some OpenAI-compatible providers may not
             # support response_format.
             "temperature": float(temperature),
             "max_tokens": int(max_tokens),
-        })
-        if isinstance(resp, dict):
-            resp["usage"] = _normalize_usage_from_response(raw_resp=resp, messages=messages)
-        return resp
+        }
+        try:
+            resp = _chutes.chat_completions(task_id=task_id, body=body)
+            if isinstance(resp, dict):
+                resp["usage"] = _normalize_usage_from_response(raw_resp=resp, messages=messages)
+            return resp
+        except RuntimeError as err:
+            # Generic resiliency: if provider/model pair is unavailable (404),
+            # transparently retry against OpenAI when a direct key is available.
+            # This avoids deterministic-fallback-only behavior in eval loops.
+            err_msg = str(err or "")
+            allow_model_fallback = str(os.getenv("CHUTES_MODEL_FALLBACK_TO_OPENAI", "1")).strip().lower() not in {
+                "0", "false", "no"
+            }
+            if "404" in err_msg and allow_model_fallback and os.getenv("OPENAI_API_KEY"):
+                resp = _openai_chat_with_compat(
+                    task_id=task_id,
+                    messages=messages,
+                    model=m,
+                    temperature=float(temperature),
+                    max_tokens=int(max_tokens),
+                )
+                if isinstance(resp, dict):
+                    resp["_provider_fallback"] = "openai"
+                return resp
+            raise
 
     if provider == 'anthropic':
         # Convert OpenAI-style messages into Anthropic messages+system.
@@ -276,47 +370,32 @@ def openai_chat_completions(
         return resp
 
     # Default: OpenAI-compatible.
-    body = {
-        'model': m,
-        'messages': messages,
-    }
+    return _openai_chat_with_compat(
+        task_id=task_id,
+        messages=messages,
+        model=m,
+        temperature=float(temperature),
+        max_tokens=int(max_tokens),
+    )
 
-    # Model-specific parameterization.
-    if m.startswith('gpt-5'):
-        body['max_completion_tokens'] = int(max_tokens)
-    else:
-        body.update({
-            'temperature': float(temperature),
-            'max_tokens': int(max_tokens),
-            'response_format': {'type': 'json_object'},
-        })
 
-    def _post(b: Dict[str, Any]) -> Dict[str, Any]:
-        resp = _openai.chat_completions(task_id=task_id, body=b)
-        if isinstance(resp, dict):
-            resp["usage"] = _normalize_usage_from_response(raw_resp=resp, messages=messages)
-        return resp
+def openai_vision_chat_completions(
+    *,
+    task_id: str,
+    messages: List[Dict[str, Any]],
+    model: str,
+    temperature: float = 0.0,
+    max_tokens: int = 300,
+) -> Dict[str, Any]:
+    """OpenAI-compatible multimodal chat completions for screenshot/image analysis.
 
-    try:
-        return _post(body)
-    except RuntimeError as e:
-        msg = str(e)
-        if 'unsupported_parameter' in msg or 'response_format' in msg:
-            b2 = dict(body)
-            b2.pop('response_format', None)
-            return _post(b2)
-
-        if 'unsupported_parameter' in msg and 'max_tokens' in body and 'max_completion_tokens' not in body:
-            b2 = dict(body)
-            b2.pop('max_tokens', None)
-            b2.pop('temperature', None)
-            b2['max_completion_tokens'] = int(max_tokens)
-            b2.pop('response_format', None)
-            return _post(b2)
-
-        if 'unsupported_value' in msg and 'temperature' in body:
-            b2 = dict(body)
-            b2.pop('temperature', None)
-            return _post(b2)
-
-        raise
+    This intentionally bypasses provider switching so the FSM can rely on an OpenAI
+    multimodal-capable model for screenshot reasoning when configured.
+    """
+    return _openai_chat_with_compat(
+        task_id=task_id,
+        messages=messages,
+        model=str(model),
+        temperature=float(temperature),
+        max_tokens=int(max_tokens),
+    )
