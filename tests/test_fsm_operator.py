@@ -41,7 +41,7 @@ def _dummy_llm_type_login_username(**_: Any) -> Dict[str, Any]:
             {
                 "message": {
                     "content": (
-                        '{"type":"browser","tool_call":{"name":"browser.type","arguments":{'
+                        '{"type":"browser","tool_call":{"name":"browser.input","arguments":{'
                         '"selector":{"type":"attributeValueSelector","attribute":"id","value":"login-username","case_sensitive":false},'
                         '"text":"<username>"}}}'
                     )
@@ -85,9 +85,9 @@ def _base_payload() -> Dict[str, Any]:
         "allowed_tools": [
             {"name": "browser.navigate"},
             {"name": "browser.click"},
-            {"name": "browser.type"},
+            {"name": "browser.input"},
             {"name": "browser.scroll"},
-            {"name": "browser.back"},
+            {"name": "browser.go_back"},
             {"name": "browser.wait"},
         ],
     }
@@ -144,7 +144,7 @@ def test_stuck_recovery_triggers_with_loop_signals(monkeypatch: Any) -> None:
     out = engine.run(payload=payload)
     actions = out.get("actions") if isinstance(out.get("actions"), list) else []
     assert len(actions) == 1
-    assert actions[0].get("type") in {"NavigateAction", "WaitAction", "ScrollAction"}
+    assert actions[0].get("type") in {"NavigateAction", "GoBackAction", "WaitAction", "ScrollAction"}
     st = out.get("state_out") or {}
     blocked = st.get("blocklist", {}).get("element_ids") if isinstance(st.get("blocklist"), dict) else []
     assert isinstance(blocked, list)
@@ -364,7 +364,7 @@ def test_auth_flow_is_not_forced_by_pre_actions() -> None:
         "step_index": 0,
         "history": [],
         "state_in": {"mode": "NAV"},
-        "allowed_tools": [{"name": "browser.type"}, {"name": "browser.click"}],
+        "allowed_tools": [{"name": "browser.input"}, {"name": "browser.click"}],
     }
     out = engine.run(payload=payload)
     actions = out.get("actions") if isinstance(out.get("actions"), list) else []
@@ -510,7 +510,7 @@ def test_non_auth_prompt_on_login_page_does_not_trigger_auth_pre_actions() -> No
         "step_index": 1,
         "history": [],
         "state_in": {"mode": "NAV"},
-        "allowed_tools": [{"name": "browser.click"}, {"name": "browser.type"}, {"name": "browser.wait"}],
+        "allowed_tools": [{"name": "browser.click"}, {"name": "browser.input"}, {"name": "browser.wait"}],
     }
     out = engine.run(payload=payload)
     reasoning = str(out.get("reasoning") or "")
@@ -544,7 +544,7 @@ def test_registration_flow_is_not_forced_by_pre_actions() -> None:
             </body></html>
         """,
         "history": [],
-        "allowed_tools": [{"name": "browser.type"}, {"name": "browser.click"}],
+        "allowed_tools": [{"name": "browser.input"}, {"name": "browser.click"}],
     }
     out = engine.run(payload={**base, "step_index": 0, "include_reasoning": True})
     actions = out.get("actions") if isinstance(out.get("actions"), list) else []
@@ -681,17 +681,17 @@ def test_browser_select_rejects_non_select_candidate_and_falls_back_to_real_sele
     ]
     action = engine._browser_action_from_tool_call(
         tool_call={
-            "name": "browser.select",
+            "name": "browser.select_dropdown",
             "arguments": {
                 "selector": {"type": "xpathSelector", "value": "//button[contains(normalize-space(.), 'year desc')]"},
                 "_element_id": "sort-button",
-                "value": "2003",
+                "text": "2003",
             },
         },
         ranked_candidates=ranked,
         state=state,
         prompt="Filter movies by year equals 2003",
-        allowed={"browser.select"},
+        allowed={"browser.select_dropdown"},
         current_url="https://example.com/search",
     )
     assert action is not None
@@ -720,7 +720,7 @@ def test_browser_type_blank_text_is_inferred_from_candidate_and_prompt() -> None
     ]
     action = engine._browser_action_from_tool_call(
         tool_call={
-            "name": "browser.type",
+            "name": "browser.input",
             "arguments": {
                 "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "register-username-field", "case_sensitive": False},
                 "text": "",
@@ -729,7 +729,7 @@ def test_browser_type_blank_text_is_inferred_from_candidate_and_prompt() -> None
         ranked_candidates=ranked,
         state=state,
         prompt="Please register an account using username equals '', email equals '' which ends with '@gmail.com', and password equals ''.",
-        allowed={"browser.type"},
+        allowed={"browser.input"},
         current_url="https://example.com/register",
     )
     assert isinstance(action, dict)
@@ -802,11 +802,11 @@ def test_browser_action_mapping_accepts_underscore_element_id_alias() -> None:
         )
     ]
     action = engine._browser_action_from_tool_call(
-        tool_call={"name": "browser.type", "arguments": {"selector": selector, "_element_id": "el_rating", "text": "4.1"}},
+        tool_call={"name": "browser.input", "arguments": {"selector": selector, "_element_id": "el_rating", "text": "4.1"}},
         ranked_candidates=ranked,
         state=state,
         prompt="Set rating to 4.1",
-        allowed={"browser.type"},
+        allowed={"browser.input"},
     )
     assert isinstance(action, dict)
     assert action.get("type") == "TypeAction"
@@ -1214,9 +1214,9 @@ def test_redundant_type_action_uses_state_roundtrip_and_advances_input(monkeypat
         "history": [],
         "allowed_tools": [
             {"name": "browser.click"},
-            {"name": "browser.type"},
+            {"name": "browser.input"},
             {"name": "browser.wait"},
-            {"name": "browser.back"},
+            {"name": "browser.go_back"},
             {"name": "browser.scroll"},
         ],
     }
@@ -1238,7 +1238,7 @@ def test_redundant_type_action_uses_state_roundtrip_and_advances_input(monkeypat
     )
     repeated = engine._browser_action_from_tool_call(
         tool_call={
-            "name": "browser.type",
+            "name": "browser.input",
             "arguments": {
                 "selector": {
                     "type": "attributeValueSelector",
@@ -1252,7 +1252,7 @@ def test_redundant_type_action_uses_state_roundtrip_and_advances_input(monkeypat
         ranked_candidates=ranked,
         state=state,
         prompt="Login to continue",
-        allowed={"browser.type", "browser.click"},
+        allowed={"browser.input", "browser.click"},
     )
     assert isinstance(repeated, dict)
     guarded = engine._guard_redundant_type_action(
@@ -1474,7 +1474,7 @@ def test_browser_type_rejects_non_input_selector_and_falls_back_to_input_candida
     ]
     action = engine._browser_action_from_tool_call(
         tool_call={
-            "name": "browser.type",
+            "name": "browser.input",
             "arguments": {
                 "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "panel", "case_sensitive": False},
                 "text": "cosmic",
@@ -1483,7 +1483,7 @@ def test_browser_type_rejects_non_input_selector_and_falls_back_to_input_candida
         ranked_candidates=candidates,
         state=state,
         prompt="Type cosmic into cast input",
-        allowed={"browser.type"},
+        allowed={"browser.input"},
         current_url="https://example.com/profile",
     )
     assert isinstance(action, dict)
@@ -2185,7 +2185,7 @@ def test_type_action_on_checkbox_is_converted_to_click() -> None:
                 {
                     "message": {
                         "content": (
-                            '{"type":"browser","tool_call":{"name":"browser.type","arguments":{'
+                            '{"type":"browser","tool_call":{"name":"browser.input","arguments":{'
                             '"element_id":"checkbox-1","text":"autoppia"}}}'
                         )
                     }
@@ -2204,7 +2204,7 @@ def test_type_action_on_checkbox_is_converted_to_click() -> None:
             "snapshot_html": "<html><body><input id='checkbox-1' type='checkbox' /><button>Continue</button></body></html>",
             "step_index": 1,
             "state_in": {"mode": "NAV"},
-            "allowed_tools": [{"name": "browser.type"}, {"name": "browser.click"}],
+            "allowed_tools": [{"name": "browser.input"}, {"name": "browser.click"}],
         }
     )
     actions = out.get("actions") if isinstance(out.get("actions"), list) else []
@@ -2546,13 +2546,13 @@ def test_browser_action_from_tool_call_redirects_delete_only_type_to_click() -> 
     )
     action = engine._browser_action_from_tool_call(
         tool_call={
-            "name": "browser.type",
+            "name": "browser.input",
             "arguments": {"element_id": "el_profile_email", "text": "autoppia@example.com"},
         },
         ranked_candidates=[profile_tab, movie_button, profile_email],
         state=AgentState(),
         prompt="Delete a film whose duration is NOT '142' minutes.",
-        allowed={"browser.type", "browser.click"},
+        allowed={"browser.input", "browser.click"},
         current_url="https://example.com/profile",
     )
     assert action is not None
@@ -2744,7 +2744,7 @@ def test_fallback_prefers_local_escape_candidate_before_global_back() -> None:
         prompt="Save the current form",
         mode="PLAN",
         policy_obs=policy_obs,
-        allowed_tools={"browser.click", "browser.back"},
+        allowed_tools={"browser.click", "browser.go_back"},
     )
     assert out["type"] == "browser"
     assert out["tool_call"]["name"] == "browser.click"
@@ -3535,7 +3535,7 @@ def test_browser_end_tool_call_normalizes_to_final_content() -> None:
             "choices": [
                 {
                     "message": {
-                        "content": '{"type":"browser","tool_call":{"name":"browser.end","arguments":{"content":"Total Treasury: 2.8K"}}}'
+                        "content": '{"type":"browser","tool_call":{"name":"browser.done","arguments":{"content":"Total Treasury: 2.8K"}}}'
                     }
                 }
             ],
@@ -3558,7 +3558,7 @@ def test_browser_end_tool_call_normalizes_to_final_content() -> None:
             """,
             "state_in": {},
             "include_reasoning": True,
-            "allowed_tools": [{"name": "browser.end"}],
+                "allowed_tools": [{"name": "browser.done"}],
         }
     )
     assert out.get("done") is True
@@ -3596,7 +3596,7 @@ def test_direct_loop_final_reasoning_uses_final_content(monkeypatch: Any) -> Non
             """,
             "state_in": {},
             "include_reasoning": True,
-            "allowed_tools": [{"name": "browser.end"}],
+            "allowed_tools": [{"name": "browser.done"}],
         }
     )
     reasoning = str(out.get("reasoning") or "")
@@ -3622,7 +3622,7 @@ def test_direct_loop_does_not_auto_finalize_from_page_evidence(monkeypatch: Any)
             """,
             "state_in": {},
             "include_reasoning": True,
-            "allowed_tools": [{"name": "browser.end"}],
+            "allowed_tools": [{"name": "browser.done"}],
         }
     )
     assert out.get("done") is False

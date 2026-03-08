@@ -77,8 +77,32 @@ The operator then:
 3. Builds a compact deterministic **Page IR** (forms, headings, links, cards, CTAs) plus deltas from previous step.
 4. Optionally runs a completion-check LLM call (small model, step/repeat-gated by default) to decide if task is already complete.
 5. Maintains RAM subgoal memory per `task_id` (inferred milestones, done/blocked tracking) and injects active-subgoal hint into planning.
-6. Calls the planner LLM to choose the next single action (`click`/`type`/`select`/`scroll_*`/`done`) using Page IR + step context.
+6. Calls the planner LLM to choose the next single action (`click`/`input`/`select_dropdown`/`scroll_*`/`done`) using Page IR + step context.
 7. Returns tool calls for browser/user interaction and sets `done/content` when the task is complete.
+
+Preferred browser tool naming follows browser-use conventions:
+- `browser.search`
+- `browser.navigate`
+- `browser.go_back`
+- `browser.click`
+- `browser.dblclick`
+- `browser.rightclick`
+- `browser.middleclick`
+- `browser.tripleclick`
+- `browser.input`
+- `browser.select_dropdown`
+- `browser.dropdown_options`
+- `browser.hover`
+- `browser.scroll`
+- `browser.wait`
+- `browser.screenshot`
+- `browser.send_keys`
+- `browser.hold_key`
+- `browser.evaluate`
+- `browser.extract`
+- `browser.done`
+
+`browser.evaluate` and `browser.extract` now persist their returned value into execution traces via IWA `ActionExecutionResult.action_output`, so downstream evaluation and training logs can inspect those tool results.
 
 ### Completion checker defaults
 

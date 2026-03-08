@@ -159,6 +159,38 @@ def _extract_result_text_from_action(action: dict[str, Any] | None) -> str | Non
     return _candidate_text(action) if isinstance(action, dict) else None
 
 
+def _canonical_browser_tool_name(raw_name: str) -> str:
+    name = str(raw_name or "").strip().lower()
+    if not name:
+        return ""
+    if name == "user.request_input":
+        return name
+    suffix = name[8:] if name.startswith("browser.") else name
+    alias = {
+        "search": "search",
+        "navigate": "navigate",
+        "go_back": "go_back",
+        "click": "click",
+        "dblclick": "dblclick",
+        "rightclick": "rightclick",
+        "middleclick": "middleclick",
+        "tripleclick": "tripleclick",
+        "input": "input",
+        "scroll": "scroll",
+        "wait": "wait",
+        "select_dropdown": "select_dropdown",
+        "dropdown_options": "dropdown_options",
+        "hover": "hover",
+        "screenshot": "screenshot",
+        "send_keys": "send_keys",
+        "hold_key": "hold_key",
+        "evaluate": "evaluate",
+        "extract": "extract",
+        "done": "done",
+    }
+    return f"browser.{alias.get(suffix, suffix)}"
+
+
 
 def _action_to_tool_call(action: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(action, dict):
@@ -172,37 +204,47 @@ def _action_to_tool_call(action: dict[str, Any]) -> dict[str, Any] | None:
     mapping = {
         "navigateaction": "browser.navigate",
         "clickaction": "browser.click",
-        "typeaction": "browser.type",
-        "fillaction": "browser.type",
+        "gobackaction": "browser.go_back",
+        "searchaction": "browser.search",
+        "typeaction": "browser.input",
+        "fillaction": "browser.input",
         "scrollaction": "browser.scroll",
         "waitaction": "browser.wait",
-        "selectaction": "browser.select",
-        "selectdropdownoptionaction": "browser.select",
+        "selectaction": "browser.select_dropdown",
+        "selectdropdownoptionaction": "browser.select_dropdown",
         "hoveraction": "browser.hover",
+        "screenshotaction": "browser.screenshot",
+        "getdropdownoptionsaction": "browser.dropdown_options",
+        "doubleclickaction": "browser.dblclick",
+        "rightclickaction": "browser.rightclick",
+        "middleclickaction": "browser.middleclick",
+        "tripleclickaction": "browser.tripleclick",
         "holdkeyaction": "browser.hold_key",
         "sendkeysaction": "browser.send_keys",
         "sendkeysiwaaction": "browser.send_keys",
-        "runworkflowaction": "browser.run_workflow",
+        "evaluateaction": "browser.evaluate",
+        "extractaction": "browser.extract",
     }
     tool_name = mapping.get(action_type.lower())
     if not tool_name:
         suffix = action_type[:-6] if action_type.endswith("Action") else action_type
         tool_name = f"browser.{suffix.strip().lower()}"
+    tool_name = _canonical_browser_tool_name(tool_name)
     return _normalize_tool_call_payload({"name": tool_name, "arguments": arguments})
 
 
 def _normalize_tool_call_payload(tool_call: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(tool_call, dict):
         return None
-    name = str(tool_call.get("name") or "").strip()
+    name = _canonical_browser_tool_name(str(tool_call.get("name") or "").strip())
     if not name:
         return None
     arguments = dict(tool_call.get("arguments") or {}) if isinstance(tool_call.get("arguments"), dict) else {}
-    if name == "browser.select":
-        value = _candidate_text(arguments.get("value")) or _candidate_text(arguments.get("text"))
+    if name == "browser.select_dropdown":
+        value = _candidate_text(arguments.get("text")) or _candidate_text(arguments.get("value"))
         if value:
-            arguments["value"] = value
-        arguments.pop("text", None)
+            arguments["text"] = value
+        arguments.pop("value", None)
     return {"name": name, "arguments": arguments}
 
 
@@ -458,9 +500,9 @@ def _normalize_allowed_tool_names(allowed_tools: Any) -> set[str]:
         if not raw_name and isinstance(item.get("function"), dict):
             function_name = str((item.get("function") or {}).get("name") or "").strip()
             if function_name:
-                raw_name = "user.request_input" if function_name == "request_user_input" else f"browser.{function_name}"
+                raw_name = "user.request_input" if function_name == "request_user_input" else _canonical_browser_tool_name(f"browser.{function_name}")
         if raw_name:
-            out.add(raw_name)
+            out.add(_canonical_browser_tool_name(raw_name))
     return out
 
 

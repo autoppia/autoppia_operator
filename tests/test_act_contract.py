@@ -139,11 +139,11 @@ def test_act_http_response_normalizes_browser_select_tool_call_to_value(monkeypa
         return {
             "protocol_version": "1.0",
             "tool_calls": [
-                {
-                    "name": "browser.select",
-                    "arguments": {
-                        "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre"},
-                        "text": "Comedy",
+                    {
+                        "name": "browser.select_dropdown",
+                        "arguments": {
+                            "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre"},
+                            "text": "Comedy",
                     },
                 }
             ],
@@ -169,10 +169,10 @@ def test_act_http_response_normalizes_browser_select_tool_call_to_value(monkeypa
     body = resp.json()
     assert body["tool_calls"] == [
         {
-            "name": "browser.select",
+            "name": "browser.select_dropdown",
             "arguments": {
                 "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre"},
-                "value": "Comedy",
+                "text": "Comedy",
             },
         }
     ]

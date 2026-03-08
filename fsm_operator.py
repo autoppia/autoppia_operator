@@ -52,16 +52,26 @@ CONTROL_META_TOOLS = {
 META_TOOLS = OBS_META_TOOLS | CONTROL_META_TOOLS
 
 SUPPORTED_BROWSER_TOOL_NAMES = {
+    "browser.search",
     "browser.navigate",
+    "browser.go_back",
     "browser.click",
-    "browser.type",
+    "browser.dblclick",
+    "browser.rightclick",
+    "browser.middleclick",
+    "browser.tripleclick",
+    "browser.input",
     "browser.scroll",
     "browser.wait",
-    "browser.back",
-    "browser.end",
-    "browser.select",
+    "browser.done",
+    "browser.select_dropdown",
+    "browser.dropdown_options",
+    "browser.hover",
+    "browser.screenshot",
     "browser.send_keys",
     "browser.hold_key",
+    "browser.evaluate",
+    "browser.extract",
 }
 
 MAX_INTERNAL_META_STEPS = 3
@@ -576,15 +586,25 @@ def _dedupe_keep_order(values: List[str], limit: int) -> List[str]:
 def _action_type_for_tool(tool_name: str) -> str | None:
     t = str(tool_name or "").strip().lower()
     mapping = {
+        "browser.search": "SearchAction",
         "browser.navigate": "NavigateAction",
+        "browser.go_back": "GoBackAction",
         "browser.click": "ClickAction",
-        "browser.type": "TypeAction",
+        "browser.dblclick": "DoubleClickAction",
+        "browser.rightclick": "RightClickAction",
+        "browser.middleclick": "MiddleClickAction",
+        "browser.tripleclick": "TripleClickAction",
+        "browser.input": "TypeAction",
         "browser.scroll": "ScrollAction",
         "browser.wait": "WaitAction",
-        "browser.back": "NavigateAction",
-        "browser.select": "SelectDropDownOptionAction",
+        "browser.select_dropdown": "SelectDropDownOptionAction",
+        "browser.dropdown_options": "GetDropDownOptionsAction",
+        "browser.hover": "HoverAction",
+        "browser.screenshot": "ScreenshotAction",
         "browser.send_keys": "SendKeysIWAAction",
         "browser.hold_key": "HoldKeyAction",
+        "browser.evaluate": "EvaluateAction",
+        "browser.extract": "ExtractAction",
     }
     return mapping.get(t)
 
@@ -603,30 +623,35 @@ def _canonical_allowed_tool_name(raw: str) -> str:
     name = str(raw or "").strip().lower()
     if not name:
         return ""
-    if name.startswith("browser.") or name.startswith("user."):
+    if name.startswith("user."):
         return name
     if name.startswith("meta."):
         return name.upper()
     if name == "request_user_input":
         return "user.request_input"
+    if name.startswith("browser."):
+        name = name.split(".", 1)[1].strip()
     alias = {
+        "search": "browser.search",
         "navigate": "browser.navigate",
-        "back": "browser.back",
+        "go_back": "browser.go_back",
         "click": "browser.click",
-        "double_click": "browser.click",
-        "right_click": "browser.click",
-        "middle_click": "browser.click",
-        "triple_click": "browser.click",
-        "hover": "browser.click",
-        "type": "browser.type",
-        "select": "browser.select",
-        "select_drop_down_option": "browser.select",
+        "dblclick": "browser.dblclick",
+        "rightclick": "browser.rightclick",
+        "middleclick": "browser.middleclick",
+        "tripleclick": "browser.tripleclick",
+        "hover": "browser.hover",
+        "input": "browser.input",
+        "select_dropdown": "browser.select_dropdown",
+        "dropdown_options": "browser.dropdown_options",
+        "screenshot": "browser.screenshot",
         "scroll": "browser.scroll",
         "wait": "browser.wait",
-        "send_keys_i_w_a": "browser.send_keys",
         "send_keys": "browser.send_keys",
         "hold_key": "browser.hold_key",
-        "end": "browser.end",
+        "evaluate": "browser.evaluate",
+        "extract": "browser.extract",
+        "done": "browser.done",
     }
     if name in alias:
         return alias[name]
@@ -4620,14 +4645,14 @@ class Policy:
                 '1) {"type":"browser","tool_call":{...}}\n'
                 '2) {"type":"final","done":true,"content":"..."}\n'
                 "Rules:\n"
-                "- First decide whether the current page already satisfies the task. If yes, finish immediately with final or browser.end.\n"
+                "- First decide whether the current page already satisfies the task. If yes, finish immediately with final or browser.done.\n"
                 "- content must be the actual user-facing answer, result, or extracted value.\n"
                 "- Do not keep exploring when CURRENT PAGE ANSWERS, PAGE FACTS, RELEVANT VISIBLE TEXT, or visible text already satisfy the task.\n"
                 "- Never return more than one browser action.\n"
                 "- Use only element_id values that appear in ACTION SHORTLIST.\n"
                 "- For click/type/select, prefer arguments.element_id from the shortlist.\n"
-                "- For browser.select, include a non-empty arguments.value.\n"
-                "- browser.end is the standard way to finish once the page already satisfies the task.\n"
+                "- For browser.select_dropdown, include a non-empty arguments.text.\n"
+                "- browser.done is the standard way to finish once the page already satisfies the task.\n"
                 "- If the task includes filters or explicit constraints, use visible controls first before opening result items.\n"
                 "- After typing into a field, if the page now shows a better submit, suggestion, or next control, use that instead of restarting.\n"
                 "- If a visible local form has multiple relevant empty fields, fill the remaining relevant fields before using submit.\n"
@@ -4652,11 +4677,11 @@ class Policy:
             "- If the current page already contains the answer, return final immediately.\n"
             "- For question-answering and data-extraction tasks, DONE is the correct action once the answer is visible on the current page.\n"
             "- Do NOT keep exploring once CURRENT PAGE FACTS or CURRENT PAGE ANSWERS already answer the task.\n"
-            "- Use final/done or browser.end with a concrete content string when the task is satisfied.\n"
+            "- Use final/done or browser.done with a concrete content string when the task is satisfied.\n"
             "- content must be the actual answer for the user, not a status message.\n"
             "- Avoid repeating low-value actions when the page did not materially change.\n"
             "- For click/type/select, prefer arguments.element_id from candidates.\n"
-            "- For browser.select, provide arguments.value with the option text/value to choose.\n"
+            "- For browser.select_dropdown, provide arguments.text with the option text/value to choose.\n"
             "- Preserve placeholders such as <username>, <password>, <signup_email> exactly when typing.\n"
             "- For informational tasks, use CURRENT PAGE FACTS and CURRENT PAGE ANSWERS before navigating more.\n"
             )
@@ -4678,7 +4703,7 @@ class Policy:
                 "",
                 "DONE / CONTENT CONTRACT:",
                 "- If the answer or completed result is already visible on the current page, return final now.",
-                "- final.content or browser.end.arguments.content must be the concrete answer for the user.",
+                "- final.content or browser.done.arguments.content must be the concrete answer for the user.",
                 "- Do not return generic status text like 'task complete' or 'done'.",
                 "- Before taking another action, check CURRENT PAGE SNAPSHOT, CURRENT PAGE ANSWERS, and CURRENT PAGE.",
                 "- If a select already shows the target value, do not select the same value again.",
@@ -4782,7 +4807,7 @@ class Policy:
                 "",
                 "Output schema examples:",
                 '{"type":"browser","tool_call":{"name":"browser.click","arguments":{"element_id":"el_123"}}}',
-                '{"type":"browser","tool_call":{"name":"browser.end","arguments":{"content":"The total value is 2844."}}}',
+                '{"type":"browser","tool_call":{"name":"browser.done","arguments":{"content":"The total value is 2844."}}}',
                 '{"type":"final","done":true,"content":"The total value is 2844."}',
             ]
         else:
@@ -4941,15 +4966,15 @@ class Policy:
                 "",
                 "Output schema examples:",
                 '{"type":"browser","tool_call":{"name":"browser.click","arguments":{"element_id":"el_123"}}}',
-                '{"type":"browser","tool_call":{"name":"browser.select","arguments":{"element_id":"el_456","value":"Comedy"}}}',
-                '{"type":"browser","tool_call":{"name":"browser.end","arguments":{"content":"The total value is 2844."}}}',
+                '{"type":"browser","tool_call":{"name":"browser.select_dropdown","arguments":{"element_id":"el_456","text":"Comedy"}}}',
+                '{"type":"browser","tool_call":{"name":"browser.done","arguments":{"content":"The total value is 2844."}}}',
                 '{"type":"final","done":true,"content":"The total value is 2844."}',
                 "",
                 "Instructions:",
                 "- Output JSON only.",
                 "- Return ONE step only.",
                 "- Do not burn steps on the same no-op pattern if nothing changed.",
-                "- For browser.select, include a non-empty arguments.value.",
+                "- For browser.select_dropdown, include a non-empty arguments.text.",
                 "- If the task is about narrowing results, use current-page controls before opening result items.",
                 "- Preserve placeholders exactly when typing.",
                 "- For informational tasks, prefer answering from what is already visible on the current page before opening more pages.",
@@ -5173,7 +5198,7 @@ class Policy:
                 }
             raw_name = str(tc.get("name") or "").strip()
             name = _canonical_allowed_tool_name(raw_name)
-            if name == "browser.end":
+            if name == "browser.done":
                 args = tc.get("arguments") if isinstance(tc.get("arguments"), dict) else {}
                 return {
                     "type": "final",
@@ -5299,11 +5324,11 @@ class Policy:
                         },
                     },
                 }
-            if role in {"input", "textarea"} and allow("browser.type"):
+            if role in {"input", "textarea"} and allow("browser.input"):
                 return {
                     "type": "browser",
                     "tool_call": {
-                        "name": "browser.type",
+                        "name": "browser.input",
                         "arguments": {
                             "selector": selector,
                             "element_id": element_id,
@@ -5311,11 +5336,11 @@ class Policy:
                         },
                     },
                 }
-            if role == "select" and allow("browser.select"):
+            if role == "select" and allow("browser.select_dropdown"):
                 return {
                     "type": "browser",
                     "tool_call": {
-                        "name": "browser.select",
+                        "name": "browser.select_dropdown",
                         "arguments": {
                             "selector": selector,
                             "element_id": element_id,
@@ -5343,8 +5368,8 @@ class Policy:
                     if act is not None:
                         return act
         if route_like_stuck:
-            if allow("browser.back"):
-                return {"type": "browser", "tool_call": {"name": "browser.back", "arguments": {}}}
+            if allow("browser.go_back"):
+                return {"type": "browser", "tool_call": {"name": "browser.go_back", "arguments": {}}}
         ordered = []
         ordered.extend([cand for cand in local_candidates if isinstance(cand, dict)])
         ordered.extend([cand for cand in escape_candidates if isinstance(cand, dict)])
@@ -6048,7 +6073,7 @@ class FSMOperator:
         done = False
         content = ""
         policy_reasoning = ""
-        direct_browser_allowed = {tool for tool in browser_allowed if tool != "browser.back"}
+        direct_browser_allowed = {tool for tool in browser_allowed if tool != "browser.go_back"}
         decision, usage = self.policy.decide(
             task_id=task_id or "task",
             prompt=prompt,
@@ -7417,14 +7442,25 @@ class FSMOperator:
         t = str(action.get("type") or "")
         t_l = t.lower()
         mapping = {
+            "searchaction": "browser.search",
             "navigateaction": "browser.navigate",
+            "gobackaction": "browser.go_back",
             "clickaction": "browser.click",
-            "typeaction": "browser.type",
+            "doubleclickaction": "browser.dblclick",
+            "rightclickaction": "browser.rightclick",
+            "middleclickaction": "browser.middleclick",
+            "tripleclickaction": "browser.tripleclick",
+            "typeaction": "browser.input",
             "scrollaction": "browser.scroll",
             "waitaction": "browser.wait",
-            "selectdropdownoptionaction": "browser.select",
+            "selectdropdownoptionaction": "browser.select_dropdown",
+            "getdropdownoptionsaction": "browser.dropdown_options",
+            "hoveraction": "browser.hover",
+            "screenshotaction": "browser.screenshot",
             "sendkeysiwaaction": "browser.send_keys",
             "holdkeyaction": "browser.hold_key",
+            "evaluateaction": "browser.evaluate",
+            "extractaction": "browser.extract",
         }
         return mapping.get(t_l, "")
 
@@ -8092,18 +8128,27 @@ class FSMOperator:
         allowed: set[str],
         current_url: str = "",
     ) -> Dict[str, Any] | None:
-        name = str(tool_call.get("name") or "").strip().lower()
+        normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
+        normalized_allowed.discard("")
+        name = _canonical_allowed_tool_name(str(tool_call.get("name") or "").strip().lower())
         if not name or not name.startswith("browser."):
             return None
-        if allowed and name not in allowed:
+        if normalized_allowed and name not in normalized_allowed:
             return None
         args = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
         action_type = _action_type_for_tool(name)
         if not action_type:
             return None
 
-        if name == "browser.back":
-            return {"type": "NavigateAction", "go_back": True, "go_forward": False}
+        if name == "browser.go_back":
+            return {"type": "GoBackAction"}
+
+        if name == "browser.search":
+            query = _candidate_text(args.get("query"))
+            engine = _candidate_text(args.get("engine"), "duckduckgo")
+            if not query:
+                return None
+            return {"type": "SearchAction", "query": query[:300], "engine": engine}
 
         if name == "browser.click":
             selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
@@ -8132,7 +8177,7 @@ class FSMOperator:
             if (
                 selected_candidate is not None
                 and selected_candidate.href
-                and ((not allowed) or ("browser.navigate" in allowed))
+                and ((not normalized_allowed) or ("browser.navigate" in normalized_allowed))
             ):
                 normalized_href = self._normalize_url_for_session(
                     target_url=selected_candidate.href,
@@ -8157,7 +8202,7 @@ class FSMOperator:
                             same_visible_link = True
                 if normalized_href and not same_visible_link:
                     return {"type": "NavigateAction", "url": normalized_href, "go_back": False, "go_forward": False}
-            if ((not allowed) or ("browser.navigate" in allowed)) and str(selector.get("type") or "") == "attributeValueSelector":
+            if ((not normalized_allowed) or ("browser.navigate" in normalized_allowed)) and str(selector.get("type") or "") == "attributeValueSelector":
                 attr = str(selector.get("attribute") or "").strip().lower()
                 raw_val = str(selector.get("value") or "").strip()
                 if attr == "href" and raw_val:
@@ -8203,7 +8248,7 @@ class FSMOperator:
             target_parts = urlsplit(nav_url)
             current_parts = urlsplit(str(current_safe or current_url or ""))
             if (
-                ((not allowed) or ("browser.click" in allowed))
+                ((not normalized_allowed) or ("browser.click" in normalized_allowed))
                 and target_parts.scheme
                 and target_parts.netloc
                 and current_parts.scheme
@@ -8240,7 +8285,7 @@ class FSMOperator:
                         return out
             return {"type": "NavigateAction", "url": nav_url, "go_back": False, "go_forward": False}
 
-        if name == "browser.type":
+        if name == "browser.input":
             selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
             text = _candidate_text(args.get("text"), args.get("value"))
             element_id = str(args.get("element_id") or args.get("_element_id") or "")
@@ -8283,7 +8328,7 @@ class FSMOperator:
                 )
             if resolved_candidate is not None and not self._candidate_accepts_typed_text(candidate=resolved_candidate):
                 input_type = str(resolved_candidate.input_type or "").strip().lower()
-                if input_type in {"checkbox", "radio"} and ((not allowed) or ("browser.click" in allowed)):
+                if input_type in {"checkbox", "radio"} and ((not normalized_allowed) or ("browser.click" in normalized_allowed)):
                     out = {"type": "ClickAction", "selector": selector}
                     if element_id:
                         out["_element_id"] = element_id
@@ -8352,7 +8397,7 @@ class FSMOperator:
             seconds = float(args.get("time_seconds") or 1.0)
             return {"type": "WaitAction", "time_seconds": max(0.2, min(seconds, 8.0))}
 
-        if name == "browser.select":
+        if name == "browser.select_dropdown":
             selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
             text = _candidate_text(args.get("text"), args.get("value"), "Option")
             element_id = str(args.get("element_id") or args.get("_element_id") or "")
@@ -8401,6 +8446,74 @@ class FSMOperator:
                 out["_element_id"] = element_id
             return out
 
+        if name == "browser.dropdown_options":
+            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
+            element_id = str(args.get("element_id") or args.get("_element_id") or "")
+            selector, element_id = self._resolve_selector_and_element_id(
+                selector=selector,
+                element_id=element_id,
+                ranked_candidates=ranked_candidates,
+                state=state,
+                prefer_roles={"select"},
+                allow_unmatched_selector=False,
+            )
+            selector = _sanitize_selector(selector if isinstance(selector, dict) else None)
+            if not isinstance(selector, dict):
+                return None
+            out = {"type": "GetDropDownOptionsAction", "selector": selector}
+            if element_id:
+                out["_element_id"] = element_id
+            return out
+
+        if name == "browser.hover":
+            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
+            element_id = str(args.get("element_id") or args.get("_element_id") or "")
+            selector, element_id = self._resolve_selector_and_element_id(
+                selector=selector,
+                element_id=element_id,
+                ranked_candidates=ranked_candidates,
+                state=state,
+                prefer_roles={"button", "link", "input", "select"},
+                allow_unmatched_selector=True,
+            )
+            selector = _sanitize_selector(selector if isinstance(selector, dict) else None)
+            if not isinstance(selector, dict):
+                return None
+            out = {"type": "HoverAction", "selector": selector}
+            if element_id:
+                out["_element_id"] = element_id
+            return out
+
+        if name in {"browser.dblclick", "browser.rightclick", "browser.middleclick", "browser.tripleclick"}:
+            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
+            element_id = str(args.get("element_id") or args.get("_element_id") or "")
+            selector, element_id = self._resolve_selector_and_element_id(
+                selector=selector,
+                element_id=element_id,
+                ranked_candidates=ranked_candidates,
+                state=state,
+                prefer_roles={"button", "link", "input"},
+                allow_unmatched_selector=True,
+            )
+            selector = _sanitize_selector(selector if isinstance(selector, dict) else None)
+            if not isinstance(selector, dict):
+                return None
+            click_type_map = {
+                "browser.dblclick": "DoubleClickAction",
+                "browser.rightclick": "RightClickAction",
+                "browser.middleclick": "MiddleClickAction",
+                "browser.tripleclick": "TripleClickAction",
+            }
+            out = {"type": click_type_map[name], "selector": selector}
+            if element_id:
+                out["_element_id"] = element_id
+            return out
+
+        if name == "browser.screenshot":
+            file_path = _candidate_text(args.get("file_path"), args.get("file_name"), "")
+            full_page = bool(args.get("full_page"))
+            return {"type": "ScreenshotAction", "file_path": file_path, "full_page": full_page}
+
         if name == "browser.send_keys":
             keys = _candidate_text(args.get("keys"), "Enter")
             return {"type": "SendKeysIWAAction", "keys": keys}
@@ -8408,6 +8521,28 @@ class FSMOperator:
         if name == "browser.hold_key":
             key = _candidate_text(args.get("key"), "Control")
             return {"type": "HoldKeyAction", "key": key}
+        if name == "browser.evaluate":
+            script = _candidate_text(args.get("script"), args.get("expression"))
+            if not script:
+                return None
+            out = {"type": "EvaluateAction", "script": script}
+            if "arg" in args:
+                out["arg"] = args.get("arg")
+            return out
+        if name == "browser.extract":
+            query = _candidate_text(args.get("query"), "")
+            selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
+            out = {"type": "ExtractAction", "query": query}
+            if isinstance(selector, dict):
+                out["selector"] = selector
+            if "include_html" in args:
+                out["include_html"] = bool(args.get("include_html"))
+            if "max_chars" in args:
+                try:
+                    out["max_chars"] = int(args.get("max_chars") or 0)
+                except Exception:
+                    pass
+            return out
         return None
 
     def _resolve_selector_and_element_id(
@@ -8523,8 +8658,11 @@ class FSMOperator:
         state: AgentState,
         allowed: set[str],
     ) -> tuple[Dict[str, Any] | None, bool, str, str]:
+        normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
+        normalized_allowed.discard("")
+
         def allow(tool: str) -> bool:
-            return (not allowed) or (tool in allowed)
+            return (not normalized_allowed) or (_canonical_allowed_tool_name(tool) in normalized_allowed)
 
         if state.last_action_element_id:
             state.blocklist.element_ids = _dedupe_keep_order(
@@ -8547,7 +8685,7 @@ class FSMOperator:
             )
 
         current_url = str(url or "").strip().lower()
-        if allow("browser.back") and current_url not in {"", "about:blank"}:
+        if allow("browser.go_back") and current_url not in {"", "about:blank"}:
             return (
                 {"type": "NavigateAction", "go_back": True, "go_forward": False},
                 False,
@@ -8572,8 +8710,11 @@ class FSMOperator:
         allowed: set[str],
         current_url: str,
     ) -> Dict[str, Any] | None:
+        normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
+        normalized_allowed.discard("")
+
         def allow(tool: str) -> bool:
-            return (not allowed) or (tool in allowed)
+            return (not normalized_allowed) or (_canonical_allowed_tool_name(tool) in normalized_allowed)
 
         focus_region_id = str(state.focus_region.region_id or "").strip()
         focus_region_context = _norm_ws(state.focus_region.region_context)
@@ -8606,11 +8747,11 @@ class FSMOperator:
                     continue
                 if cand.role in {"link", "button"} and allow("browser.click"):
                     return {"type": "ClickAction", "selector": cand.selector, "_element_id": cand.id}
-                if cand.role == "input" and allow("browser.type"):
+                if cand.role == "input" and allow("browser.input"):
                     text = self._infer_input_text(prompt=prompt, candidate=cand)
                     if text:
                         return {"type": "TypeAction", "selector": cand.selector, "text": text[:220], "_element_id": cand.id}
-                if cand.role == "select" and allow("browser.select"):
+                if cand.role == "select" and allow("browser.select_dropdown"):
                     text = self._infer_input_text(prompt=prompt, candidate=cand)
                     if text:
                         return {"type": "SelectDropDownOptionAction", "selector": cand.selector, "text": text, "_element_id": cand.id}
@@ -8621,11 +8762,11 @@ class FSMOperator:
                 continue
             if cand.role in {"link", "button"} and allow("browser.click"):
                 return {"type": "ClickAction", "selector": cand.selector, "_element_id": cand.id}
-            if cand.role == "input" and allow("browser.type"):
+            if cand.role == "input" and allow("browser.input"):
                 text = self._infer_input_text(prompt=prompt, candidate=cand)
                 if text:
                     return {"type": "TypeAction", "selector": cand.selector, "text": text[:220], "_element_id": cand.id}
-            if cand.role == "select" and allow("browser.select"):
+            if cand.role == "select" and allow("browser.select_dropdown"):
                 text = self._infer_input_text(prompt=prompt, candidate=cand)
                 if text:
                     return {"type": "SelectDropDownOptionAction", "selector": cand.selector, "text": text, "_element_id": cand.id}
