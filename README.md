@@ -303,3 +303,120 @@ This validates entrypoints, endpoint shapes, and scans for obvious secrets.
 - optional: `AGENT_IMAGE`, `AGENT_VERSION`
 
 If those are absent, subnet metadata can be considered missing during handshake.
+
+## Fork-ready production onboarding (recommended)
+
+This repo is ready for fork-and-iterate workflows with these defaults for subnet36:
+
+1. Copy env template:
+
+```bash
+cp .env.template .env
+```
+
+2. Fill local secrets only:
+
+- `SN36_COLDKEY`
+- `SN36_HOTKEY`
+- optional SMTP/RunPod variables if used
+- `IWAP_BASE_URL=https://api-leaderboard.autoppia.com`
+- `IWAP_API_TOKEN` (only if the IWAP endpoint requires auth)
+
+3. Run local gate and score loop:
+
+```bash
+python scripts/sn36_ops.py preflight
+python scripts/sn36_ops.py eval --project-id autocinema
+python scripts/sn36_ops.py cycle --github-url <repo/tree/or/commit> --agent-name "<AGENT_NAME>" --submit
+```
+
+4. Verify:
+
+```bash
+python tools/bittensor_tools.py my-miner
+python tools/iwap_tools.py last-round
+python tools/iwap_tools.py season-tasks --season-id 36
+```
+
+### Production IWAP settings
+
+- Backend recommended in forked setups: `IWAP_BASE_URL=https://api-leaderboard.autoppia.com`
+- In this repo tooling, IWAP metrics are mock-first by default.
+- For live fetch, call scripts with `--prefer-live` (or wire that behavior in your wrapper) and:
+  - `IWAP_BASE_URL=https://api-leaderboard.autoppia.com`
+  - `IWAP_API_TOKEN` only if the endpoint requires auth
+- If live fetch fails, tools fall back to mock payload for continuity.
+- For smoke validation, you can keep `IWAP_API_TOKEN` empty and use mock mode.
+
+### MCP naming for clients
+
+Use either:
+
+- `miner_mcp` (recommended)
+- `mcp`
+
+as the `mcpServers` key in client configs. Do not use `daryxx_mcp`.
+
+Example:
+
+```json
+{
+  "mcpServers": {
+    "miner_mcp": {
+      "command": "python",
+      "args": ["/home/usuario1/autoppia/operator/autoppia_operator/tools/mcp_server.py"]
+    }
+  }
+}
+```
+
+### Known production caveats (fork users)
+
+- `SN36_*` must match local wallet state; wrong hotkey/coldkey names are the most common reason for blank `my-miner` output.
+- `IWAP_MOCK_DATA` (if set) overrides `IWAP_BASE_URL` and forces mock reads.
+- `tools/iwap_tools.py` uses:
+  - mock path by default,
+  - live path only when `--base-url` is present and `--prefer-live` is set.
+- Keep `IWAP_API_TOKEN` out of docs and commit history; set it only in local environment.
+
+## Quick Codex + MCP setup (3-step)
+
+Recommended for users who want Codex to run the auto-mining loop:
+
+1) Install/prepare environment
+
+```bash
+cp .env.template .env
+# Fill only local values:
+# SN36_COLDKEY, SN36_HOTKEY, (optional) IWAP_API_TOKEN, SMTP/RUNPOD vars
+```
+
+2) Configure your MCP client with `miner_mcp` (or `mcp`)
+
+```json
+{
+  "mcpServers": {
+    "miner_mcp": {
+      "command": "python",
+      "args": ["/home/usuario1/autoppia/operator/autoppia_operator/tools/mcp_server.py"],
+      "env": {
+        "SN36_COLDKEY": "<your-coldkey>",
+        "SN36_HOTKEY": "<your-hotkey>",
+        "SN36_NETWORK": "finney",
+        "SN36_NETUID": "36",
+        "IWAP_BASE_URL": "https://api-leaderboard.autoppia.com"
+      }
+    }
+  }
+}
+```
+
+3) Verify and start loop
+
+```bash
+python tools/mcp_server.py --list-tools
+python scripts/sn36_ops.py preflight
+python scripts/sn36_ops.py eval --project-id autocinema --success-threshold 0.70 --avg-score-threshold 0.60
+```
+
+Then ask Codex to follow the SOP in [AGENTS.md](/home/usuario1/autoppia/operator/autoppia_operator/AGENTS.md) for `preflight → eval → cycle → submit → IWAP verification`.
