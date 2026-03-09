@@ -16,7 +16,7 @@ import subprocess
 import socket
 import sys
 import time
-from typing import Any
+from typing import Any, TypedDict
 from copy import deepcopy
 from pathlib import Path
 
@@ -50,6 +50,25 @@ random.seed(time.time())
 
 # ── Task loading ─────────────────────────────────────────────────
 
+def _task_row_matches_filters(
+    td: dict,
+    task_id: str | None,
+    use_case: str | None,
+    web_project_id: str | None,
+) -> bool:
+    """Return True if the raw task dict passes the given filters (reduces load_tasks complexity)."""
+    if task_id and str(td.get("id", "")) != str(task_id):
+        return False
+    if use_case:
+        uc = td.get("use_case", {})
+        uc_name = uc.get("name", "") if isinstance(uc, dict) else ""
+        if use_case.upper() not in str(uc_name).upper():
+            return False
+    if web_project_id is not None and str(td.get("web_project_id", "")) != str(web_project_id):
+        return False
+    return True
+
+
 def load_tasks(
     cache_path: Path = TASK_CACHE,
     use_case: str | None = None,
@@ -58,29 +77,15 @@ def load_tasks(
     limit: int = 20,
 ) -> list[Task]:
     """Load tasks from the JSON cache, optionally filtered."""
-    with open(cache_path) as f:
+    with open(cache_path, encoding="utf-8") as f:
         data = json.load(f)
 
     raw_tasks = data["tasks"] if isinstance(data, dict) and "tasks" in data else data
 
     tasks: list[Task] = []
     for td in raw_tasks:
-        # Optional task id filter (exact match)
-        if task_id:
-            if str(td.get("id", "")) != str(task_id):
-                continue
-
-        # Optional use-case filter
-        if use_case:
-            uc = td.get("use_case", {})
-            uc_name = uc.get("name", "") if isinstance(uc, dict) else ""
-            if use_case.upper() not in str(uc_name).upper():
-                continue
-
-        # Optional web project filter
-        if web_project_id is not None:
-            if str(td.get("web_project_id", "")) != str(web_project_id):
-                continue
+        if not _task_row_matches_filters(td, task_id, use_case, web_project_id):
+            continue
 
         try:
             task = Task(**td)
@@ -92,6 +97,20 @@ def load_tasks(
             break
 
     return tasks
+
+
+class _EvalOpts(TypedDict, total=False):
+    """Optional parameters for run_evaluation (S107: reduce parameter count)."""
+    use_case: str | None
+    web_project_id: str | None
+    task_id: str | None
+    seed: int | None
+    repeat: int
+    temperature: float
+    distinct_use_cases: bool
+    out_path: str | None
+    task_cache: str | None
+    strict_model: bool
 
 
 def _serialize_screenshot(raw: Any | None) -> str | None:
@@ -115,22 +134,45 @@ def inject_seed(task: Task, seed: int | None = None) -> tuple[Task, int]:
 
 # ── Main evaluation loop ────────────────────────────────────────
 
+def _start_agent_server_sync(
+    port: int,
+    log_path: Path,
+    server_env: dict,
+    script_dir: Path,
+) -> tuple[subprocess.Popen, Any]:
+    """Start uvicorn in a subprocess and return (process, log_file). Run from to_thread (S7487, S7493)."""
+    log_f = open(log_path, "a", encoding="utf-8")
+    log_f.write(f"\n=== uvicorn main:app port={port} ===\n")
+    log_f.flush()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", str(port)],
+        cwd=str(script_dir),
+        stdout=log_f,
+        stderr=subprocess.STDOUT,
+        env=server_env,
+    )
+    return proc, log_f
+
+
 async def run_evaluation(
     provider: str = "openai",
     model: str = "gpt-5-mini",
     num_tasks: int = 20,
     max_steps: int = 15,
-    use_case: str | None = None,
-    web_project_id: str | None = None,
-    task_id: str | None = None,
-    seed: int | None = None,
-    repeat: int = 1,
-    temperature: float = 0.2,
-    distinct_use_cases: bool = False,
-    out_path: str | None = None,
-    task_cache: str | None = None,
-    strict_model: bool = True,
+    opts: _EvalOpts | None = None,
 ):
+    o = opts or {}
+    use_case = o.get("use_case")
+    web_project_id = o.get("web_project_id")
+    task_id = o.get("task_id")
+    seed = o.get("seed")
+    repeat = o.get("repeat", 1)
+    temperature = o.get("temperature", 0.2)
+    distinct_use_cases = o.get("distinct_use_cases", False)
+    out_path = o.get("out_path")
+    task_cache = o.get("task_cache")
+    strict_model = o.get("strict_model", True)
+
     # Re-load .env here as a guard: some imported modules may mutate env vars.
     try:
         from dotenv import load_dotenv
@@ -243,14 +285,10 @@ async def run_evaluation(
         if not agent_base_url:
             agent_base_url = f"http://127.0.0.1:{port}"
 
-        # Append logs per run so bind errors / tracebacks are preserved.
+        # Append logs per run so bind errors / tracebacks are preserved (S7493, S7487: sync in thread).
         out_dir = SCRIPT_DIR / "data"
         out_dir.mkdir(parents=True, exist_ok=True)
         log_path = out_dir / "agent_server.log"
-        log_f = open(log_path, "a", encoding="utf-8")
-        log_f.write(f"\n=== uvicorn main:app port={port} ===\n")
-        log_f.flush()
-
         server_env = os.environ.copy()
         server_env["OPENAI_MODEL"] = str(model)
         server_env["LLM_PROVIDER"] = str(provider_s)
@@ -259,24 +297,11 @@ async def run_evaluation(
         k = server_env.get("OPENAI_API_KEY") or ""
         k_fpr = hashlib.sha256(k.encode("utf-8")).hexdigest()[:12] if k else "missing"
         logger.info(f"Agent server env: OPENAI_MODEL={server_env.get('OPENAI_MODEL')} LLM_PROVIDER={server_env.get('LLM_PROVIDER')} START_AGENT_SERVER={os.getenv('START_AGENT_SERVER')} AGENT_BASE_URL={agent_base_url or 'local'} OPENAI_API_KEY={'set' if k else "missing"} fpr={k_fpr}")
-        server_proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "uvicorn",
-                "main:app",
-                "--host",
-                "0.0.0.0",
-                "--port",
-                str(port),
-            ],
-            cwd=str(SCRIPT_DIR),
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            env=server_env,
+        server_proc, log_f = await asyncio.to_thread(
+            _start_agent_server_sync, port, log_path, server_env, SCRIPT_DIR
         )
-        # Give the server a moment to start
-        time.sleep(1.5)
+        # Give the server a moment to start (S7488: async sleep)
+        await asyncio.sleep(1.5)
     else:
         if not agent_base_url:
             agent_base_url = "http://127.0.0.1:5000"
@@ -630,14 +655,18 @@ async def run_evaluation(
             print(f"    {uc:30s}  {st['success']}/{st['total']}  ({uc_rate:.0%})")
         print()
 
-    # Save results
+    # Save results (S7493: avoid blocking open in async; run in thread)
     out_dir = SCRIPT_DIR / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = Path(out_path).resolve() if out_path else (out_dir / 'eval_results.json')
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"  Results saved to: {out_path}\n")
+    out_path_resolved = Path(out_path).resolve() if out_path else (out_dir / 'eval_results.json')
+    out_path_resolved.parent.mkdir(parents=True, exist_ok=True)
+
+    def _write_results_json(path: Path, data: dict) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    await asyncio.to_thread(_write_results_json, out_path_resolved, results)
+    print(f"  Results saved to: {out_path_resolved}\n")
 
     if server_proc:
         try:
@@ -679,16 +708,18 @@ def main():
             model=args.model,
             num_tasks=args.num_tasks,
             max_steps=args.max_steps,
-            use_case=args.use_case,
-            web_project_id=args.web_project_id,
-            task_id=args.task_id,
-            seed=args.seed,
-            repeat=args.repeat,
-            temperature=args.temperature,
-            distinct_use_cases=bool(args.distinct_use_cases),
-            out_path=args.out,
-            task_cache=args.task_cache,
-            strict_model=bool(args.strict_model),
+            opts={
+                "use_case": args.use_case,
+                "web_project_id": args.web_project_id,
+                "task_id": args.task_id,
+                "seed": args.seed,
+                "repeat": args.repeat,
+                "temperature": args.temperature,
+                "distinct_use_cases": bool(args.distinct_use_cases),
+                "out_path": args.out,
+                "task_cache": args.task_cache,
+                "strict_model": bool(args.strict_model),
+            },
         )
     )
 
