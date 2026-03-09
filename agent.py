@@ -1066,7 +1066,7 @@ def _structured_hints(_task: str, candidates: List[_Candidate]) -> Dict[str, Any
         })
     return {
         'inputs': inputs[:20],
-        'clickables': list(
+        'clickables': [
             {
                 'candidate_id': i,
                 'tag': c.tag,
@@ -1080,11 +1080,11 @@ def _structured_hints(_task: str, candidates: List[_Candidate]) -> Dict[str, Any
                 key=lambda t: len((t[1].context or '').strip()),
                 reverse=True,
             )
-        )[:25],
+        ][:25],
     }
 
 def _tokenize(s: str) -> set[str]:
-    return {t for t in re.findall(r"[a-z0-9]{2,}", (s or "").lower())}
+    return set(re.findall(r"[a-z0-9]{2,}", (s or "").lower()))
 
 
 def _score_candidate(_task: str, c: _Candidate) -> float:
@@ -2465,4 +2465,5 @@ async def step(payload: Annotated[Dict[str, Any], Body()]) -> Dict[str, Any]:
 if __name__ == "__main__":
     import uvicorn
 
+    # Bind to 0.0.0.0 intentionally for container/network access (Sonar S8392: mark as Won't fix)
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
