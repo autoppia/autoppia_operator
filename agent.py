@@ -672,6 +672,25 @@ def _extract_candidates(html: str, max_candidates: int = 30) -> List[_Candidate]
     return parser.candidates[:max_candidates]
 
 
+def _strip_tags_simple(html: str) -> str:
+    """Remove HTML tags without regex to avoid ReDoS (py/polynomial-redos)."""
+    out: list[str] = []
+    i = 0
+    while i < len(html):
+        if html[i] == "<":
+            j = html.find(">", i + 1)
+            if j < 0:
+                # Unclosed tag: leave rest as-is (same as regex not matching)
+                out.append(html[i:])
+                break
+            out.append(" ")
+            i = j + 1
+        else:
+            out.append(html[i])
+            i += 1
+    return "".join(out)
+
+
 def _summarize_html(html: str, limit: int = 1200) -> str:
     if not html:
         return ""
@@ -685,7 +704,7 @@ def _summarize_html(html: str, limit: int = 1200) -> str:
             pass
 
     try:
-        text = re.sub(r"<[^>]+>", " ", html)
+        text = _strip_tags_simple(html)
         return _norm_ws(text)[:limit]
     except Exception:
         return ""
