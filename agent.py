@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Annotated, Any, Dict, List, Optional, Tuple, TypedDict
 
 import json
 import os
@@ -11,6 +11,20 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from html.parser import HTMLParser
 
 from fastapi import Body, FastAPI, HTTPException
+
+# Constant for Sonar S1192 (duplicated string literal)
+_BS4_UNAVAILABLE_MSG = "bs4 not available"
+
+
+class _LlmDecideOpts(TypedDict, total=False):
+    """Optional parameters for _llm_decide (S107: reduce parameter count)."""
+    page_ir_text: str
+    extra_hint: str
+    target_hint: str
+    state_delta: str
+    ir_delta: str
+    prev_sig_set: set[str] | None
+    model_override: str
 
 # Default this branch to OpenAI via the validator gateway.
 os.environ.setdefault("LLM_PROVIDER", "openai")
@@ -56,13 +70,15 @@ _LOG_ERRORS = _env_bool("AGENT_LOG_ERRORS", False)
 
 def _log_trace(message: str) -> None:
     if _LOG_DECISIONS:
-        logger.info(f"[AGENT_TRACE] {message}")
+        # Internal trace only; message is truncated to reduce log-injection surface (S5145)
+        safe = (str(message) or "")[:500].replace("\n", " ").replace("\r", "")
+        logger.info(f"[AGENT_TRACE] {safe}")
 
 
 if not _AUTOPPIA_IWA_IMPORT_OK:
     logger.error(f"[AGENT_TRACE] autoppia_iwa import failed: {_AUTOPPIA_IWA_IMPORT_ERROR}")
 else:
-    _log_trace(f"autoppia_iwa import ok; BaseAction module={getattr(BaseAction, '__module__', 'unknown')}")
+    _log_trace("autoppia_iwa import ok; BaseAction module=" + getattr(BaseAction, "__module__", "unknown"))
 
 
 def _normalize_demo_url(raw_url: str | None) -> str:
@@ -267,7 +283,12 @@ class _CandidateExtractor(HTMLParser):
         if tag in {"button", "a", "input", "textarea", "select"} or attr_map.get("role") in {"button", "link"}:
             label = attr_map.get("aria-label") or attr_map.get("placeholder") or attr_map.get("title") or ""
             selector = _build_selector(tag, attr_map, text=label)
-            group = 'FORM' if tag in {'input','textarea','select'} else ('LINKS' if tag=='a' else 'BUTTONS')
+            if tag in {"input", "textarea", "select"}:
+                group = "FORM"
+            elif tag == "a":
+                group = "LINKS"
+            else:
+                group = "BUTTONS"
             self.candidates.append(_Candidate(selector, label, tag, attr_map, context="", group=group, container_chain=[group]))
 
     def handle_data(self, data: str) -> None:
@@ -418,7 +439,7 @@ def _pick_context_container_bs4(el) -> object | None:
         return None
 
 
-def _container_chain_from_el(soup, el) -> list[str]:
+def _container_chain_from_el(el: Any) -> list[str]:
     """Return a short container path for an element to render a simplified DOM tree."""
     chain: list[str] = []
     try:
@@ -520,7 +541,7 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
                     fid = ''
                 group = f"FORM:{fid}" if fid else 'FORM'
         except Exception:
-            group = group
+            pass
 
         # Skip obvious non-interactives.
         if tag == "input" and attr_map.get("type", "").lower() == "hidden":
@@ -608,7 +629,7 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> List[_Candidat
 
         container_chain = []
         try:
-            container_chain = _container_chain_from_el(soup, el)
+            container_chain = _container_chain_from_el(el)
         except Exception:
             container_chain = []
 
@@ -1014,10 +1035,8 @@ def _compute_ir_delta(*, task_id: str, page_ir: Dict[str, Any]) -> str:
 
 
 
-def _structured_hints(task: str, candidates: List[_Candidate]) -> Dict[str, Any]:
+def _structured_hints(_task: str, candidates: List[_Candidate]) -> Dict[str, Any]:
     """Build compact, structured hints to help the LLM disambiguate UI."""
-    task_l = (task or '').lower()
-
     # Inputs
     inputs: List[Dict[str, Any]] = []
     for i, c in enumerate(candidates):
@@ -1047,7 +1066,7 @@ def _structured_hints(task: str, candidates: List[_Candidate]) -> Dict[str, Any]
         })
     return {
         'inputs': inputs[:20],
-        'clickables': [
+        'clickables': list(
             {
                 'candidate_id': i,
                 'tag': c.tag,
@@ -1057,18 +1076,18 @@ def _structured_hints(task: str, candidates: List[_Candidate]) -> Dict[str, Any]
                 'attrs': {k: str((c.attrs or {}).get(k) or '') for k in ('id','name','type','placeholder','aria-label','role') if (c.attrs or {}).get(k)},
             }
             for i, c in sorted(
-                [(i, c) for i, c in enumerate(candidates) if c.tag in {'a','button'}],
+                ((i, c) for i, c in enumerate(candidates) if c.tag in {'a', 'button'}),
                 key=lambda t: len((t[1].context or '').strip()),
                 reverse=True,
             )
-        ][:25],
+        )[:25],
     }
 
 def _tokenize(s: str) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]{2,}", (s or "").lower())}
 
 
-def _score_candidate(task: str, c: _Candidate) -> float:
+def _score_candidate(_task: str, c: _Candidate) -> float:
     """Structural scoring only.
 
     Avoids task-specific string heuristics; prefers stable selectors and form-relevant elements.
@@ -1441,7 +1460,7 @@ def _tool_search_text(*, html: str, query: str, regex: bool = False, case_sensit
 def _tool_css_select(*, html: str, selector: str, max_nodes: int = 25) -> Dict[str, Any]:
     """Run a CSS selector over the DOM (via BeautifulSoup) and return summaries."""
     if BeautifulSoup is None:
-        return {"ok": False, "error": "bs4 not available"}
+        return {"ok": False, "error": _BS4_UNAVAILABLE_MSG}
     sel = str(selector or "").strip()
     if not sel:
         return {"ok": False, "error": "missing selector"}
@@ -1472,7 +1491,7 @@ def _tool_css_select(*, html: str, selector: str, max_nodes: int = 25) -> Dict[s
 def _tool_extract_forms(*, html: str, max_forms: int = 10, max_inputs: int = 25) -> Dict[str, Any]:
     """Extract forms and their controls in a structured way (generic)."""
     if BeautifulSoup is None:
-        return {"ok": False, "error": "bs4 not available"}
+        return {"ok": False, "error": _BS4_UNAVAILABLE_MSG}
 
     try:
         soup = BeautifulSoup(html or "", "lxml")
@@ -1598,7 +1617,7 @@ def _tool_list_links(
     Generic tool that helps the LLM choose a navigation target without depending on a candidate_id.
     """
     if BeautifulSoup is None:
-        return {"ok": False, "error": "bs4 not available"}
+        return {"ok": False, "error": _BS4_UNAVAILABLE_MSG}
 
     try:
         soup = BeautifulSoup(html or "", "lxml")
@@ -1803,16 +1822,19 @@ def _llm_decide(
     candidates: List[_Candidate],
     page_summary: str,
     dom_digest: str,
-    html_snapshot: str,
+    _html_snapshot: str,  # unused; kept for API consistency
     history: List[Dict[str, Any]] | None,
-    page_ir_text: str = "",
-    extra_hint: str = "",
-    target_hint: str = "",
-    state_delta: str = "",
-    ir_delta: str = "",
-    prev_sig_set: set[str] | None = None,
-    model_override: str = "",
+    opts: _LlmDecideOpts | None = None,
 ) -> Dict[str, Any]:
+    o = opts or {}
+    page_ir_text = o.get("page_ir_text", "")
+    extra_hint = o.get("extra_hint", "")
+    target_hint = o.get("target_hint", "")
+    state_delta = o.get("state_delta", "")
+    ir_delta = o.get("ir_delta", "")
+    prev_sig_set = o.get("prev_sig_set")
+    model_override = o.get("model_override", "")
+
     browser_state = _format_browser_state(candidates=candidates, prev_sig_set=prev_sig_set)
     system_msg = (
         "You are a web automation agent. Given the task, step number, state, history, and state diff, choose ONE next action. "
@@ -1844,7 +1866,7 @@ def _llm_decide(
         suffix = 'OK' if ok else f"FAILED err={str(err)[:80]}"
         history_lines.append(f"{step}. {action} cid={cid} text={text} [{suffix}]")
 
-    hint = _history_hint(history)
+    _ = _history_hint(history)  # side effect only; result unused
 
     structured = _structured_hints(task, candidates)
 
@@ -1975,7 +1997,7 @@ def _llm_decide(
             args = obj.get("args") if isinstance(obj.get("args"), dict) else {}
             tool_calls += 1
             try:
-                result = _run_tool(tool, args, html=html_snapshot, url=str(url), candidates=candidates)
+                result = _run_tool(tool, args, html=_html_snapshot, url=str(url), candidates=candidates)
             except Exception as e:
                 result = {"ok": False, "error": str(e)[:200]}
 
@@ -2037,7 +2059,7 @@ def _compute_state_delta(
     url: str,
     page_summary: str,
     dom_digest: str,
-    html_snapshot: str,
+    _html_snapshot: str,  # unused; kept for API consistency with callers
     candidates: List[_Candidate],
 ) -> str:
     """Compute a compact diff signal between current and previous observed state."""
@@ -2070,8 +2092,15 @@ def _compute_state_delta(
         pd = _norm_ws(prev_digest)
         cd = _norm_ws(dom_digest)
 
-        same_summary = bool(ps and cs and ps[:240] == cs[:240])
-        same_digest = bool(pd and cd and pd[:240] == cd[:240])
+        # Use startswith for prefix equality when both strings are long enough (S6659)
+        same_summary = bool(
+            ps and cs
+            and (ps == cs if len(ps) < 240 or len(cs) < 240 else (ps.startswith(cs[:240]) and cs.startswith(ps[:240])))
+        )
+        same_digest = bool(
+            pd and cd
+            and (pd == cd if len(pd) < 240 or len(cd) < 240 else (pd.startswith(cd[:240]) and cd.startswith(pd[:240])))
+        )
 
         # Persist current state for next step.
         st["prev_url"] = str(url)
@@ -2209,11 +2238,11 @@ class ApifiedWebAgent(IWebAgent):
             if isinstance(st, dict):
                 prev = st.get('prev_sig_set')
                 if isinstance(prev, list):
-                    prev_sig_set = set(str(x) for x in prev)
+                    prev_sig_set = {str(x) for x in prev}
         except Exception:
             prev_sig_set = None
 
-        state_delta = _compute_state_delta(task_id=task_id, url=str(url), page_summary=page_summary, dom_digest=dom_digest, html_snapshot=html, candidates=candidates)
+        state_delta = _compute_state_delta(task_id=task_id, url=str(url), page_summary=page_summary, dom_digest=dom_digest, _html_snapshot=html, candidates=candidates)
         ir_delta = _compute_ir_delta(task_id=task_id, page_ir=page_ir)
         try:
             if isinstance(st, dict):
@@ -2246,21 +2275,25 @@ class ApifiedWebAgent(IWebAgent):
                 candidates=candidates,
                 page_summary=page_summary,
                 dom_digest=dom_digest,
-                html_snapshot=html,
+                _html_snapshot=html,
                 history=history,
-                page_ir_text=page_ir_text,
-                extra_hint=extra_hint,
-                target_hint=target_hint,
-                state_delta=state_delta,
-                ir_delta=ir_delta,
-                prev_sig_set=prev_sig_set,
-                model_override=model_override,
+                opts={
+                    "page_ir_text": page_ir_text,
+                    "extra_hint": extra_hint,
+                    "target_hint": target_hint,
+                    "state_delta": state_delta,
+                    "ir_delta": ir_delta,
+                    "prev_sig_set": prev_sig_set,
+                    "model_override": model_override,
+                },
             )
         except Exception as e:
             if _LOG_ERRORS:
+                # Truncate user-controlled fields to limit log injection (S5145)
+                tid, u, err = (task_id or "")[:80], (str(url) or "")[:200], (str(e) or "")[:200]
                 logger.exception(
-                    f"[AGENT_TRACE] llm_decide exception task_id={task_id} "
-                    f"step_index={int(step_index)} url={str(url)} err={str(e)}"
+                    "[AGENT_TRACE] llm_decide exception task_id=%s step_index=%s url=%s err=%s",
+                    tid, step_index, u, err,
                 )
             if os.getenv("AGENT_DEBUG_ERRORS", "0").lower() in {"1", "true", "yes"}:
                 raise HTTPException(status_code=500, detail=str(e)[:400])
@@ -2381,8 +2414,12 @@ def _task_from_payload(payload: Dict[str, Any]) -> Task:
     return SimpleNamespace(**task_payload)
 
 
-@app.post("/act", summary="Decide next agent actions")
-async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+@app.post(
+    "/act",
+    summary="Decide next agent actions",
+    responses={"500": {"description": "Internal server error"}, "400": {"description": "Bad request"}},
+)
+async def act(payload: Annotated[Dict[str, Any], Body()]) -> Dict[str, Any]:
     task_id = str(payload.get("task_id") or "")
     step_index = int(payload.get("step_index") or 0)
     url = _normalize_demo_url(str(payload.get("url") or ""))
@@ -2398,9 +2435,11 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             action_payload = action.model_dump(exclude_none=True)
             normalized.append(_sanitize_action_payload(action_payload))
         except Exception as exc:
+            # Truncate user-controlled fields (S5145)
+            tid, step, err_str, raw_str = (task_id or "")[:80], step_index, (str(exc) or "")[:200], (str(action) or "")[:500]
             logger.error(
-                f"[AGENT_TRACE] /act action normalization failed task_id={task_id} "
-                f"step_index={step_index} err={str(exc)} raw={str(action)[:500]}"
+                "[AGENT_TRACE] /act action normalization failed task_id=%s step_index=%s err=%s raw=%s",
+                tid, step, err_str, raw_str,
             )
             continue
     _log_trace(
@@ -2414,8 +2453,12 @@ async def act(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     return out
 
 
-@app.post("/step", summary="Alias for /act")
-async def step(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+@app.post(
+    "/step",
+    summary="Alias for /act",
+    responses={"500": {"description": "Internal server error"}, "400": {"description": "Bad request"}},
+)
+async def step(payload: Annotated[Dict[str, Any], Body()]) -> Dict[str, Any]:
     return await act(payload)
 
 
