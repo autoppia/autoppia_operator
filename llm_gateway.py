@@ -80,6 +80,36 @@ class OpenAIGateway:
             return resp.json()
 
 
+def _anthropic_extract_text(raw: Any) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    try:
+        parts = raw.get("content") if isinstance(raw.get("content"), list) else None
+        if not parts:
+            return ""
+        return "".join(str(p.get("text") or "") for p in parts if isinstance(p, dict) and p.get("type") == "text")
+    except Exception:
+        return ""
+
+
+def _anthropic_usage(raw: Any) -> tuple[int, int]:
+    if not isinstance(raw, dict):
+        return 0, 0
+    usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else None
+    if not usage:
+        return 0, 0
+    return int(usage.get("input_tokens") or 0), int(usage.get("output_tokens") or 0)
+
+
+def _anthropic_to_openai_format(raw: Any, text: str, input_tokens: int, output_tokens: int) -> dict[str, Any]:
+    model = raw.get("model") if isinstance(raw, dict) and isinstance(raw.get("model"), str) else None
+    return {
+        "choices": [{"message": {"content": text}}],
+        "usage": {"prompt_tokens": input_tokens, "completion_tokens": output_tokens, "total_tokens": input_tokens + output_tokens},
+        "model": model,
+    }
+
+
 class AnthropicGateway:
     """Anthropic Messages API client that injects IWA headers and normalizes output.
 
@@ -109,14 +139,12 @@ class AnthropicGateway:
         api_key = self.api_key if self.api_key is not None else os.getenv("ANTHROPIC_API_KEY", "")
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY not set")
-
         headers = {
             "content-type": "application/json",
             "x-api-key": api_key,
             "anthropic-version": self.anthropic_version,
             "IWA-Task-ID": str(task_id),
         }
-
         with httpx.Client(timeout=self.timeout_seconds) as client:
             resp = client.post(
                 f"{self.base_url}/v1/messages",
@@ -128,36 +156,10 @@ class AnthropicGateway:
             except httpx.HTTPStatusError as e:
                 detail = (e.response.text or "")[:200]
                 raise RuntimeError(f"Anthropic error ({e.response.status_code}): {detail}") from e
-
             raw = resp.json()
-
-        # Extract text
-        text = ""
-        try:
-            parts = raw.get("content") if isinstance(raw, dict) else None
-            if isinstance(parts, list):
-                bits = []
-                for p in parts:
-                    if isinstance(p, dict) and p.get("type") == "text":
-                        bits.append(str(p.get("text") or ""))
-                text = "".join(bits)
-        except Exception:
-            text = ""
-
-        usage = raw.get("usage") if isinstance(raw, dict) else None
-        input_tokens = int((usage or {}).get("input_tokens") or 0) if isinstance(usage, dict) else 0
-        output_tokens = int((usage or {}).get("output_tokens") or 0) if isinstance(usage, dict) else 0
-
-        # Normalize to OpenAI-like response.
-        return {
-            "choices": [{"message": {"content": text}}],
-            "usage": {
-                "prompt_tokens": input_tokens,
-                "completion_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens,
-            },
-            "model": raw.get("model") if isinstance(raw, dict) else None,
-        }
+        text = _anthropic_extract_text(raw)
+        inp, out = _anthropic_usage(raw)
+        return _anthropic_to_openai_format(raw, text, inp, out)
 
 
 _openai = OpenAIGateway()

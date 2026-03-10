@@ -382,6 +382,24 @@ def _extract_label_from_bs4(soup, el, attr_map: dict[str, str]) -> str:
     return ""
 
 
+def _container_node_info(cur) -> tuple[int, int, Any] | None:
+    """Return (text_len, n_interactive, node) for a container tag, or None to skip."""
+    tag = str(getattr(cur, "name", "") or "")
+    if tag not in {"li", "tr", "article", "section", "div", "td"}:
+        return None
+    try:
+        txt_raw = cur.get_text("\n", strip=True)
+    except Exception:
+        txt_raw = ""
+    if len(txt_raw or "") <= 0:
+        return None
+    try:
+        n_inter = len(cur.find_all(["a", "button", "input", "select", "textarea"]))
+    except Exception:
+        n_inter = 0
+    return (len(txt_raw or ""), n_inter, cur)
+
+
 def _collect_container_candidates(el) -> list:
     """Walk up from el and collect (text_len, n_interactive, node) for container tags."""
     candidates = []
@@ -395,20 +413,9 @@ def _collect_container_candidates(el) -> list:
             break
         if cur is None:
             break
-        tag = str(getattr(cur, "name", "") or "")
-        if tag not in {"li", "tr", "article", "section", "div", "td"}:
-            continue
-        try:
-            txt_raw = cur.get_text("\n", strip=True)
-        except Exception:
-            txt_raw = ""
-        if len(txt_raw or "") <= 0:
-            continue
-        try:
-            n_inter = len(cur.find_all(["a", "button", "input", "select", "textarea"]))
-        except Exception:
-            n_inter = 0
-        candidates.append((len(txt_raw or ""), n_inter, cur))
+        info = _container_node_info(cur)
+        if info is not None:
+            candidates.append(info)
     return candidates
 
 
@@ -563,7 +570,7 @@ def _select_options_from_el(el) -> list:
     return opts
 
 
-def _select_primary_and_label(el, primary: dict[str, Any], dom_label: str, opts: list) -> tuple[dict[str, Any], str]:
+def _select_primary_and_label(primary: dict[str, Any], dom_label: str, opts: list) -> tuple[dict[str, Any], str]:
     """Refine primary selector and label for <select> elements."""
     label = dom_label or "select"
     if isinstance(primary, dict) and primary.get("type") == "attributeValueSelector" and str(primary.get("attribute") or "") == "custom" and str(primary.get("value") or "") == "select":
@@ -578,6 +585,33 @@ def _select_primary_and_label(el, primary: dict[str, Any], dom_label: str, opts:
     return primary, label
 
 
+def _make_candidate_from_el(el, soup, seen: set) -> _Candidate | None:
+    tag = str(getattr(el, "name", "") or "")
+    attr_map = _attrs_to_str_map(getattr(el, "attrs", {}) or {})
+    if _should_skip_candidate(tag, attr_map):
+        return None
+    group = _group_for_el(el)
+    label = _extract_label_from_bs4(soup, el, attr_map)
+    dom_label = label
+    context, context_raw, _ = _context_and_title_for_el(el)
+    if context and len(context) > 180:
+        context = context[:177] + "..."
+    primary = _build_selector(tag, attr_map, text=(dom_label or label))
+    if tag == "select":
+        opts = _select_options_from_el(el)
+        primary, label = _select_primary_and_label(primary, dom_label, opts)
+    try:
+        container_chain = _container_chain_from_el(el)
+    except Exception:
+        container_chain = []
+    text_sel = _sel_text(dom_label, case_sensitive=False) if tag in {"a", "button"} and dom_label else None
+    sig = (str(primary.get("type") or ""), str(primary.get("attribute") or ""), str(primary.get("value") or ""))
+    if sig in seen:
+        return None
+    seen.add(sig)
+    return _Candidate(primary, label, tag, attr_map, text_selector=text_sel, context=context, context_raw=context_raw, group=group, container_chain=container_chain)
+
+
 def _extract_candidates_bs4(html: str, *, max_candidates: int) -> list[_Candidate]:
     soup = BeautifulSoup(html, "lxml")
     selectors = ["button", "a[href]", "input", "textarea", "select", "[role='button']", "[role='link']"]
@@ -586,38 +620,12 @@ def _extract_candidates_bs4(html: str, *, max_candidates: int) -> list[_Candidat
         els.extend(soup.select(sel))
     seen: set[tuple[str, str, str]] = set()
     out: list[_Candidate] = []
-
     for el in els:
-        tag = str(getattr(el, "name", "") or "")
-        attr_map = _attrs_to_str_map(getattr(el, "attrs", {}) or {})
-        if _should_skip_candidate(tag, attr_map):
-            continue
-
-        group = _group_for_el(el)
-        label = _extract_label_from_bs4(soup, el, attr_map)
-        dom_label = label
-        context, context_raw, title = _context_and_title_for_el(el)
-        if context and len(context) > 180:
-            context = context[:177] + "..."
-
-        primary = _build_selector(tag, attr_map, text=(dom_label or label))
-        if tag == "select":
-            opts = _select_options_from_el(el)
-            primary, label = _select_primary_and_label(el, primary, dom_label, opts)
-
-        try:
-            container_chain = _container_chain_from_el(el)
-        except Exception:
-            container_chain = []
-
-        text_sel = _sel_text(dom_label, case_sensitive=False) if tag in {"a", "button"} and dom_label else None
-        sig = (str(primary.get("type") or ""), str(primary.get("attribute") or ""), str(primary.get("value") or ""))
-        if sig in seen:
-            continue
-        seen.add(sig)
-        out.append(_Candidate(primary, label, tag, attr_map, text_selector=text_sel, context=context, context_raw=context_raw, group=group, container_chain=container_chain))
-        if len(out) >= max_candidates:
-            break
+        cand = _make_candidate_from_el(el, soup, seen)
+        if cand is not None:
+            out.append(cand)
+            if len(out) >= max_candidates:
+                break
     return out
 
 
@@ -805,6 +813,36 @@ def _ir_title_headings_from_soup(html: str) -> tuple[str, list]:
         return "", []
 
 
+def _ir_control_blob(c: dict) -> str:
+    blob = _norm_ws(
+        " ".join(
+            [
+                str(c.get("tag") or ""),
+                str(c.get("type") or ""),
+                str(c.get("name") or ""),
+                str(c.get("id") or ""),
+                str(c.get("placeholder") or ""),
+                str(c.get("aria_label") or ""),
+                str(c.get("text") or ""),
+            ]
+        )
+    )
+    return blob[:140] if blob else ""
+
+
+def _ir_cleaned_form_entry(f: dict) -> dict | None:
+    controls = f.get("controls") if isinstance(f.get("controls"), list) else []
+    keep = [b for c in controls[:12] if isinstance(c, dict) for b in [_ir_control_blob(c)] if b]
+    if not keep:
+        return None
+    return {
+        "id": str(f.get("id") or ""),
+        "name": str(f.get("name") or ""),
+        "method": str(f.get("method") or ""),
+        "controls": keep[:8],
+    }
+
+
 def _ir_cleaned_forms(forms_obj: Any, max_forms: int) -> list:
     if not isinstance(forms_obj, dict) or not forms_obj.get("ok"):
         return []
@@ -815,35 +853,9 @@ def _ir_cleaned_forms(forms_obj: Any, max_forms: int) -> list:
     for f in forms[:max_forms]:
         if not isinstance(f, dict):
             continue
-        controls = f.get("controls") if isinstance(f.get("controls"), list) else []
-        keep = []
-        for c in controls[:12]:
-            if not isinstance(c, dict):
-                continue
-            blob = _norm_ws(
-                " ".join(
-                    [
-                        str(c.get("tag") or ""),
-                        str(c.get("type") or ""),
-                        str(c.get("name") or ""),
-                        str(c.get("id") or ""),
-                        str(c.get("placeholder") or ""),
-                        str(c.get("aria_label") or ""),
-                        str(c.get("text") or ""),
-                    ]
-                )
-            )
-            if blob:
-                keep.append(blob[:140])
-        if keep:
-            cleaned.append(
-                {
-                    "id": str(f.get("id") or ""),
-                    "name": str(f.get("name") or ""),
-                    "method": str(f.get("method") or ""),
-                    "controls": keep[:8],
-                }
-            )
+        entry = _ir_cleaned_form_entry(f)
+        if entry is not None:
+            cleaned.append(entry)
     return cleaned[:max_forms]
 
 
@@ -1076,45 +1088,44 @@ def _tokenize(s: str) -> set[str]:
     return set(re.findall(r"[a-z0-9]{2,}", (s or "").lower()))
 
 
-def _score_candidate(_task: str, c: _Candidate) -> float:
-    """Structural scoring only.
+def _score_tag(tag: str) -> float:
+    if tag in {"input", "textarea", "select"}:
+        return 6.0
+    if tag == "button":
+        return 4.0
+    if tag == "a":
+        return 2.0
+    return 0.0
 
-    Avoids task-specific string heuristics; prefers stable selectors and form-relevant elements.
-    """
-    score = 0.0
 
-    if c.tag in {"input", "textarea", "select"}:
-        score += 6.0
-    elif c.tag == "button":
-        score += 4.0
-    elif c.tag == "a":
-        score += 2.0
-
-    attrs = c.attrs or {}
+def _score_attrs(attrs: dict, tag: str) -> float:
+    s = 0.0
     if attrs.get("id"):
-        score += 4.0
+        s += 4.0
     if attrs.get("name"):
-        score += 2.0
+        s += 2.0
     if attrs.get("aria-label"):
-        score += 2.0
+        s += 2.0
     if attrs.get("placeholder"):
-        score += 1.0
+        s += 1.0
     if attrs.get("href"):
-        score += 1.0
+        s += 1.0
     if attrs.get("role") in {"button", "link"}:
-        score += 0.5
+        s += 0.5
+    if attrs.get("required") is not None and tag in {"input", "textarea", "select"}:
+        s += 2.0
+    return s
 
-    if attrs.get("required") is not None and c.tag in {"input", "textarea", "select"}:
-        score += 2.0
 
+def _score_candidate(_task: str, c: _Candidate) -> float:
+    """Structural scoring only. Prefers stable selectors and form-relevant elements."""
+    score = _score_tag(c.tag) + _score_attrs(c.attrs or {}, c.tag)
     if c.selector.get("attribute") == "custom" and c.selector.get("value") in {"a", "button", "input", "select", "textarea"}:
         score -= 2.0
-
     if (c.text or "").strip():
         score += 1.0
     if (c.context or "").strip():
         score += 0.5
-
     return score
 
 
@@ -1124,36 +1135,27 @@ def _rank_candidates(task: str, candidates: list[_Candidate], max_candidates: in
     return [c for _, _, c in scored[:max_candidates]]
 
 
-def _select_candidates_for_llm(task: str, candidates_all: list[_Candidate], current_url: str, max_total: int = 60) -> list[_Candidate]:
-    """Pick a diverse, usable candidate set for the LLM.
+def _is_self_link(c: _Candidate, current_url: str) -> bool:
+    if c.tag != "a":
+        return False
+    try:
+        from urllib.parse import urlparse
 
-    Structural selection only (no task keyword heuristics):
-    - keep all form controls (input/textarea/select)
-    - keep primary buttons
-    - keep a slice of anchors/buttons that have non-trivial surrounding context (cards)
-    """
-    if not candidates_all:
-        return []
+        href = str((c.attrs or {}).get("href") or "")
+        if not href:
+            return False
+        ph, pc = urlparse(href), urlparse(current_url or "")
+        return bool(ph.path and pc.path and ph.path == pc.path)
+    except Exception:
+        return False
 
-    controls = []
-    primaries = []
-    contextual = []
-    others = []
+
+def _bucket_candidates(candidates_all: list[_Candidate], current_url: str) -> tuple[list, list, list, list]:
+    """Return (controls, primaries, contextual, others)."""
+    controls, primaries, contextual, others = [], [], [], []
     for c in candidates_all:
-        # Skip self-links (common in nav) to avoid loops when already on the target page.
-        try:
-            from urllib.parse import urlparse
-
-            if c.tag == "a":
-                href = str((c.attrs or {}).get("href") or "")
-                if href:
-                    ph = urlparse(href)
-                    pc = urlparse(current_url or "")
-                    if ph.path and pc.path and ph.path == pc.path:
-                        # Same path; let other non-nav elements be considered.
-                        continue
-        except Exception:
-            pass
+        if _is_self_link(c, current_url):
+            continue
         if c.tag in {"input", "textarea", "select"}:
             controls.append(c)
             continue
@@ -1161,38 +1163,34 @@ def _select_candidates_for_llm(task: str, candidates_all: list[_Candidate], curr
             primaries.append(c)
             continue
         if c.tag in {"a", "button"} and (c.context or "").strip():
-            if len((c.context or "").strip()) >= 40:
-                contextual.append(c)
-            else:
-                others.append(c)
+            (contextual if len((c.context or "").strip()) >= 40 else others).append(c)
             continue
         others.append(c)
+    return controls, primaries, contextual, others
 
+
+def _add_candidates_unique(picked: list, seen: set, arr: list, max_total: int) -> None:
+    for c in arr:
+        sig = f"{_selector_repr(c.selector)}|{(c.text or '')[:80]}"
+        if sig in seen:
+            continue
+        seen.add(sig)
+        picked.append(c)
+        if len(picked) >= max_total:
+            break
+
+
+def _select_candidates_for_llm(task: str, candidates_all: list[_Candidate], current_url: str, max_total: int = 60) -> list[_Candidate]:
+    """Pick a diverse, usable candidate set for the LLM. Structural selection only."""
+    if not candidates_all:
+        return []
+    controls, primaries, contextual, others = _bucket_candidates(candidates_all, current_url)
     picked = []
     seen = set()
-
-    def add_many(arr, limit):
-        nonlocal picked
-        for c in arr:
-            # NOTE: f-string expressions cannot contain unescaped quotes that match the
-            # f-string delimiter. Use single quotes inside the expression.
-            sig = f"{_selector_repr(c.selector)}|{(c.text or '')[:80]}"
-            if sig in seen:
-                continue
-            seen.add(sig)
-            picked.append(c)
-            if len(picked) >= max_total or len(picked) >= limit:
-                return
-
-    # Order: controls first, then contextual card links, then buttons, then the rest.
-    add_many(controls, max_total)
-    if len(picked) < max_total:
-        add_many(contextual, max_total)
-    if len(picked) < max_total:
-        add_many(primaries, max_total)
-    if len(picked) < max_total:
-        add_many(others, max_total)
-
+    for arr in (controls, contextual, primaries, others):
+        _add_candidates_unique(picked, seen, arr, max_total)
+        if len(picked) >= max_total:
+            break
     return picked[:max_total]
 
 
@@ -1231,31 +1229,40 @@ def _llm_is_tool(obj: dict[str, Any]) -> bool:
     return not obj.get("action")
 
 
+def _llm_valid_navigate(obj: dict[str, Any], url: str) -> bool:
+    u = obj.get("url")
+    if not isinstance(u, str) or not u.strip():
+        return False
+    try:
+        if _same_path_query(str(u).strip(), str(url).strip(), base_a=str(url).strip(), base_b=""):
+            return False
+    except Exception:
+        if str(u).strip() == str(url).strip():
+            return False
+    return True
+
+
+def _llm_valid_click_type_select(obj: dict[str, Any], action: str, candidates: list[_Candidate]) -> bool:
+    cid = obj.get("candidate_id")
+    if isinstance(cid, str) and cid.isdigit():
+        cid = int(cid)
+    if not isinstance(cid, int) or not (0 <= cid < len(candidates)):
+        return False
+    if action in {"type", "select"}:
+        t = obj.get("text")
+        if not isinstance(t, str) or not t.strip():
+            return False
+    return True
+
+
 def _llm_valid_action(obj: dict[str, Any], url: str, candidates: list[_Candidate]) -> bool:
     a = (obj.get("action") or "").lower()
     if a not in {"click", "type", "select", "navigate", "scroll_down", "scroll_up", "done"}:
         return False
     if a == "navigate":
-        u = obj.get("url")
-        if not isinstance(u, str) or not u.strip():
-            return False
-        try:
-            if _same_path_query(str(u).strip(), str(url).strip(), base_a=str(url).strip(), base_b=""):
-                return False
-        except Exception:
-            if str(u).strip() == str(url).strip():
-                return False
-        return True
+        return _llm_valid_navigate(obj, url)
     if a in {"click", "type", "select"}:
-        cid = obj.get("candidate_id")
-        if isinstance(cid, str) and cid.isdigit():
-            cid = int(cid)
-        if not isinstance(cid, int) or not (0 <= cid < len(candidates)):
-            return False
-        if a in {"type", "select"}:
-            t = obj.get("text")
-            if not isinstance(t, str) or not t.strip():
-                return False
+        return _llm_valid_click_type_select(obj, a, candidates)
     return True
 
 
@@ -1311,24 +1318,26 @@ def _browser_state_chain_for(c: _Candidate) -> list[str]:
     return [str(x)[:80] for x in ch if str(x).strip()][:3]
 
 
+def _browser_state_item_line(i: int, c: _Candidate, prev_sig_set: set[str] | None, indent: str) -> str:
+    label = str((c.text or "").strip() or (c.attrs or {}).get("placeholder", "") or (c.attrs or {}).get("aria-label", "") or "").strip()
+    sig = f"{_selector_repr(c.selector)}|{(c.text or '')[:80]}"
+    star = "* " if (prev_sig_set and sig not in prev_sig_set) else ""
+    attrs_bits = []
+    for k in ("id", "name", "type", "placeholder", "aria-label", "href", "role"):
+        v = (c.attrs or {}).get(k)
+        if v:
+            vv = str(v)[:57] + "..." if len(str(v)) > 60 else str(v)
+            attrs_bits.append(f"{k}={vv}")
+    attrs_str = " | " + ", ".join(attrs_bits) if attrs_bits else ""
+    ctx = ""
+    if c.tag in {"a", "button"} and (c.context or "").strip():
+        with contextlib.suppress(Exception):
+            ctx = " :: " + _norm_ws(c.context)[:120]
+    return f"{indent}{star}[{i}]<{c.tag}>{label}</{c.tag}>{attrs_str}{ctx}"
+
+
 def _browser_state_render_node(node: _BrowserStateNode, prev_sig_set: set[str] | None, indent: str) -> list[str]:
-    lines = []
-    for i, c in node.items:
-        label = str((c.text or "").strip() or (c.attrs or {}).get("placeholder", "") or (c.attrs or {}).get("aria-label", "") or "").strip()
-        sig = f"{_selector_repr(c.selector)}|{(c.text or '')[:80]}"
-        star = "* " if (prev_sig_set and sig not in prev_sig_set) else ""
-        attrs_bits = []
-        for k in ("id", "name", "type", "placeholder", "aria-label", "href", "role"):
-            v = (c.attrs or {}).get(k)
-            if v:
-                vv = str(v)[:57] + "..." if len(str(v)) > 60 else str(v)
-                attrs_bits.append(f"{k}={vv}")
-        attrs_str = " | " + ", ".join(attrs_bits) if attrs_bits else ""
-        ctx = ""
-        if c.tag in {"a", "button"} and (c.context or "").strip():
-            with contextlib.suppress(Exception):
-                ctx = " :: " + _norm_ws(c.context)[:120]
-        lines.append(f"{indent}{star}[{i}]<{c.tag}>{label}</{c.tag}>{attrs_str}{ctx}")
+    lines = [_browser_state_item_line(i, c, prev_sig_set, indent) for i, c in node.items]
     for name, child in node.children.items():
         lines.append(f"{indent}{name}:")
         lines.extend(_browser_state_render_node(child, prev_sig_set, indent + "\t"))
@@ -1485,40 +1494,38 @@ def _tool_css_select(*, html: str, selector: str, max_nodes: int = 25) -> dict[s
     return {"ok": True, "count": len(nodes), "nodes": out}
 
 
+def _form_control_entry(el) -> dict | None:
+    try:
+        tag = str(getattr(el, "name", "") or "")
+        a = _attrs_to_str_map(getattr(el, "attrs", {}) or {})
+        t = _norm_ws(el.get_text(" ", strip=True))
+        return {
+            "tag": tag,
+            "type": (a.get("type") or "").lower(),
+            "id": a.get("id") or "",
+            "name": a.get("name") or "",
+            "placeholder": a.get("placeholder") or "",
+            "aria_label": a.get("aria-label") or "",
+            "value": _safe_truncate(a.get("value") or "", 120),
+            "text": _safe_truncate(t, 160),
+        }
+    except Exception:
+        return None
+
+
 def _tool_extract_forms(*, html: str, max_forms: int = 10, max_inputs: int = 25) -> dict[str, Any]:
     """Extract forms and their controls in a structured way (generic)."""
     if BeautifulSoup is None:
         return {"ok": False, "error": _BS4_UNAVAILABLE_MSG}
-
     try:
         soup = BeautifulSoup(html or "", "lxml")
     except Exception as e:
         return {"ok": False, "error": f"parse failed: {str(e)[:160]}"}
-
     forms = []
     for f in soup.find_all("form")[: int(max_forms or 0)]:
         try:
             f_attrs = _attrs_to_str_map(getattr(f, "attrs", {}) or {})
-            inputs = []
-            for el in f.find_all(["input", "textarea", "select", "button"])[: int(max_inputs or 0)]:
-                try:
-                    tag = str(getattr(el, "name", "") or "")
-                    a = _attrs_to_str_map(getattr(el, "attrs", {}) or {})
-                    t = _norm_ws(el.get_text(" ", strip=True))
-                    inputs.append(
-                        {
-                            "tag": tag,
-                            "type": (a.get("type") or "").lower(),
-                            "id": a.get("id") or "",
-                            "name": a.get("name") or "",
-                            "placeholder": a.get("placeholder") or "",
-                            "aria_label": a.get("aria-label") or "",
-                            "value": _safe_truncate(a.get("value") or "", 120),
-                            "text": _safe_truncate(t, 160),
-                        }
-                    )
-                except Exception:
-                    continue
+            inputs = [e for el in f.find_all(["input", "textarea", "select", "button"])[: int(max_inputs or 0)] for e in [_form_control_entry(el)] if e is not None]
             forms.append(
                 {
                     "id": f_attrs.get("id") or "",
@@ -1530,7 +1537,6 @@ def _tool_extract_forms(*, html: str, max_forms: int = 10, max_inputs: int = 25)
             )
         except Exception:
             continue
-
     return {"ok": True, "forms": forms, "count": len(forms)}
 
 
@@ -1684,74 +1690,75 @@ def _tool_list_links(
     return {"ok": True, "count": len(out), "links": out}
 
 
+def _card_group_key(c: _Candidate) -> str | None:
+    if c.tag not in {"a", "button"}:
+        sel = c.click_selector()
+        if not (isinstance(sel, dict) and sel.get("type") == "attributeValueSelector" and str(sel.get("attribute") or "") == "href"):
+            return None
+    return (c.context_raw or c.context or "").strip() or "(no_context)"
+
+
+def _card_facts_from_key(key: str) -> list:
+    try:
+        lines = [ln.strip() for ln in str(key or "").splitlines() if ln.strip()]
+        return [ln for ln in lines if any(ch.isdigit() for ch in ln)][:6]
+    except Exception:
+        return []
+
+
+def _card_action_entry(c: _Candidate, i: int, sel: dict[str, Any]) -> dict:
+    href = ""
+    if isinstance(sel, dict) and sel.get("type") == "attributeValueSelector" and str(sel.get("attribute") or "") == "href":
+        href = str(sel.get("value") or "").strip()
+    return {
+        "candidate_id": i,
+        "tag": c.tag,
+        "text": _safe_truncate(c.text or "", 140),
+        "click": _selector_repr(sel),
+        "href": _safe_truncate(href, 240) if href else "",
+    }
+
+
+def _card_rank_score(g: dict) -> tuple:
+    txt = str(g.get("card_text") or "")
+    n_actions = len(g.get("actions") or [])
+    L = len(txt)
+    penalty = 400 if L < 40 else (min(1200, L - 900) if L > 900 else 0)
+    return (1000 - penalty + min(L, 700), n_actions)
+
+
 def _tool_list_cards(*, candidates: list[_Candidate], max_cards: int = 25, max_text: int = 900, max_actions_per_card: int = 6) -> dict[str, Any]:
-    """Group candidates into card-like clusters using their extracted container context.
-
-    Generic: clusters clickables (a/button or href-selectable) by context_raw/context. Returns surrounding text plus actions.
-    """
+    """Group candidates into card-like clusters by context. Returns surrounding text plus actions."""
     groups: dict[str, dict[str, Any]] = {}
-
     for i, c in enumerate(candidates or []):
         try:
-            # Only cluster around clickables to avoid dumping huge filter panels.
-            if c.tag not in {"a", "button"}:
-                sel = c.click_selector()
-                if not (isinstance(sel, dict) and sel.get("type") == "attributeValueSelector" and str(sel.get("attribute") or "") == "href"):
-                    continue
-
-            key = (c.context_raw or c.context or "").strip()
-            if not key:
-                key = "(no_context)"
-
+            key = _card_group_key(c)
+            if key is None:
+                continue
             g = groups.get(key)
             if g is None:
-                facts = []
-                try:
-                    lines = [ln.strip() for ln in str(key or "").splitlines() if ln.strip()]
-                    facts = [ln for ln in lines if any(ch.isdigit() for ch in ln)][:6]
-                except Exception:
-                    facts = []
-                g = {"card_text": _safe_truncate(key, int(max_text or 0)), "card_facts": facts, "candidate_ids": [], "actions": []}
+                g = {"card_text": _safe_truncate(key, int(max_text or 0)), "card_facts": _card_facts_from_key(key), "candidate_ids": [], "actions": []}
                 groups[key] = g
-
             g["candidate_ids"].append(i)
             if len(g["actions"]) < int(max_actions_per_card or 0):
                 sel = c.click_selector()
-                href = ""
-                try:
-                    if isinstance(sel, dict) and sel.get("type") == "attributeValueSelector" and str(sel.get("attribute") or "") == "href":
-                        href = str(sel.get("value") or "").strip()
-                except Exception:
-                    href = ""
-
-                g["actions"].append(
-                    {
-                        "candidate_id": i,
-                        "tag": c.tag,
-                        "text": _safe_truncate(c.text or "", 140),
-                        "click": _selector_repr(sel),
-                        "href": _safe_truncate(href, 240) if href else "",
-                    }
-                )
+                g["actions"].append(_card_action_entry(c, i, sel))
         except Exception:
             continue
-
-    ranked = []
-    for _k, g in groups.items():
-        txt = str(g.get("card_text") or "")
-        n_actions = len(g.get("actions") or [])
-        L = len(txt)
-        penalty = 0
-        if L < 40:
-            penalty += 400
-        if L > 900:
-            penalty += min(1200, L - 900)
-        score = (1000 - penalty + min(L, 700), n_actions)
-        ranked.append((score, g))
-
+    ranked = [(_card_rank_score(g), g) for g in groups.values()]
     ranked.sort(key=lambda x: x[0], reverse=True)
     cards = [g for _, g in ranked[: int(max_cards or 0)]]
     return {"ok": True, "count": len(cards), "cards": cards}
+
+
+def _card_blob_for_query(c: dict) -> str:
+    blob_parts = [str(c.get("card_text") or "")]
+    blob_parts.extend(str(x) for x in (c.get("card_facts") if isinstance(c.get("card_facts"), list) else [])[:8])
+    for a in (c.get("actions") if isinstance(c.get("actions"), list) else [])[:6]:
+        if isinstance(a, dict):
+            blob_parts.append(str(a.get("text") or ""))
+            blob_parts.append(str(a.get("href") or ""))
+    return _norm_ws(" ".join(blob_parts)).lower()
 
 
 def _tool_find_card(*, candidates: list[_Candidate], query: str, max_cards: int = 10, max_text: int = 900, max_actions_per_card: int = 6) -> dict[str, Any]:
@@ -1763,23 +1770,7 @@ def _tool_find_card(*, candidates: list[_Candidate], query: str, max_cards: int 
     if not isinstance(base, dict) or not base.get("ok"):
         return base
     cards = base.get("cards") if isinstance(base.get("cards"), list) else []
-    out = []
-    for c in cards:
-        if not isinstance(c, dict):
-            continue
-        blob_parts = [str(c.get("card_text") or "")]
-        facts = c.get("card_facts") if isinstance(c.get("card_facts"), list) else []
-        blob_parts.extend(str(x) for x in facts[:8])
-        acts = c.get("actions") if isinstance(c.get("actions"), list) else []
-        for a in acts[:6]:
-            if isinstance(a, dict):
-                blob_parts.append(str(a.get("text") or ""))
-                blob_parts.append(str(a.get("href") or ""))
-        blob = _norm_ws(" ".join(blob_parts)).lower()
-        if q in blob:
-            out.append(c)
-        if len(out) >= int(max_cards or 0):
-            break
+    out = [c for c in cards if isinstance(c, dict) and q in _card_blob_for_query(c)][: int(max_cards or 0)]
     return {"ok": True, "query": q, "count": len(out), "cards": out}
 
 
@@ -2045,6 +2036,32 @@ def _act_handle_click(c: _Candidate, cid: int, decision: dict[str, Any], task_id
     return _resp([{"type": "ClickAction", "selector": selector}], {"decision": "click", "candidate_id": cid, **_act_decision_meta(decision)})
 
 
+def _act_handle_type_or_select(
+    action: str,
+    c: _Candidate,
+    cid: int,
+    text: Any,
+    task_id: str,
+    url: str,
+    decision: dict[str, Any],
+    _resp,
+) -> dict[str, Any]:
+    if action == "type":
+        if not text:
+            raise HTTPException(status_code=400, detail="type action missing text")
+        selector = c.type_selector()
+        _update_task_state(task_id, str(url), f"type:{_selector_repr(selector)}")
+        return _resp([{"type": "TypeAction", "selector": selector, "text": str(text)}], {"decision": "type", "candidate_id": cid, **_act_decision_meta(decision)})
+    if not text:
+        raise HTTPException(status_code=400, detail="select action missing text")
+    selector = c.type_selector()
+    _update_task_state(task_id, str(url), f"select:{_selector_repr(selector)}")
+    return _resp(
+        [{"type": "SelectDropDownOptionAction", "selector": selector, "text": str(text), "timeout_ms": int(os.getenv("AGENT_SELECT_TIMEOUT_MS", "4000"))}],
+        {"decision": "select", "candidate_id": cid, **_act_decision_meta(decision)},
+    )
+
+
 def _act_response_for_action(
     action: str,
     cid: Any,
@@ -2072,20 +2089,7 @@ def _act_response_for_action(
         c = candidates[cid]
         if action == "click":
             return _act_handle_click(c, cid, decision, task_id, url, effective_url, _resp)
-        if action == "type":
-            if not text:
-                raise HTTPException(status_code=400, detail="type action missing text")
-            selector = c.type_selector()
-            _update_task_state(task_id, str(url), f"type:{_selector_repr(selector)}")
-            return _resp([{"type": "TypeAction", "selector": selector, "text": str(text)}], {"decision": "type", "candidate_id": cid, **_act_decision_meta(decision)})
-        if not text:
-            raise HTTPException(status_code=400, detail="select action missing text")
-        selector = c.type_selector()
-        _update_task_state(task_id, str(url), f"select:{_selector_repr(selector)}")
-        return _resp(
-            [{"type": "SelectDropDownOptionAction", "selector": selector, "text": str(text), "timeout_ms": int(os.getenv("AGENT_SELECT_TIMEOUT_MS", "4000"))}],
-            {"decision": "select", "candidate_id": cid, **_act_decision_meta(decision)},
-        )
+        return _act_handle_type_or_select(action, c, cid, text, task_id, url, decision, _resp)
     if candidates and step_index < 5:
         selector = candidates[0].click_selector()
         _update_task_state(task_id, str(url), f"fallback_click:{_selector_repr(selector)}")
@@ -2123,6 +2127,37 @@ def _state_delta_strings_equal(a: str, b: str) -> bool:
     return a.startswith(b[:240]) and b.startswith(a[:240])
 
 
+def _cur_sig_set_from_candidates(candidates: list[_Candidate]) -> set[str]:
+    return {f"{_selector_repr(c.selector)}|{(c.text or '')[:80]}" for c in candidates[:30]}
+
+
+def _state_delta_parts(
+    prev_url: str,
+    url: str,
+    prev_summary: str,
+    page_summary: str,
+    prev_digest: str,
+    dom_digest: str,
+    prev_sig_set: set[str],
+    cur_sig_set: set[str],
+) -> list[str]:
+    added = len(cur_sig_set - prev_sig_set) if prev_sig_set else len(cur_sig_set)
+    removed = len(prev_sig_set - cur_sig_set) if prev_sig_set else 0
+    unchanged = len(cur_sig_set & prev_sig_set) if prev_sig_set else 0
+    ps, cs = _norm_ws(prev_summary), _norm_ws(page_summary)
+    pd, cd = _norm_ws(prev_digest), _norm_ws(dom_digest)
+    same_summary = _state_delta_strings_equal(ps, cs)
+    same_digest = _state_delta_strings_equal(pd, cd)
+    return [
+        f"url_changed={str(prev_url != str(url)).lower()}" if prev_url else "url_changed=unknown",
+        f"summary_changed={str(not same_summary).lower()}" if (ps and cs) else "summary_changed=unknown",
+        f"digest_changed={str(not same_digest).lower()}" if (pd and cd) else "digest_changed=unknown",
+        f"candidate_added={added}",
+        f"candidate_removed={removed}",
+        f"candidate_unchanged={unchanged}",
+    ]
+
+
 def _compute_state_delta(
     *,
     task_id: str,
@@ -2135,51 +2170,53 @@ def _compute_state_delta(
     """Compute a compact diff signal between current and previous observed state."""
     if not task_id:
         return ""
-
     try:
         st = _TASK_STATE.get(task_id)
         if not isinstance(st, dict):
             st = {}
             _TASK_STATE[task_id] = st
-
         prev_url = str(st.get("prev_url") or "")
         prev_summary = str(st.get("prev_summary") or "")
         prev_digest = str(st.get("prev_digest") or "")
         prev_sig_set = set(st.get("prev_sig_set") or [])
-
-        cur_sig_set = set()
-        for c in candidates[:30]:
-            sig = f"{_selector_repr(c.selector)}|{(c.text or '')[:80]}"
-            cur_sig_set.add(sig)
-
-        added = len(cur_sig_set - prev_sig_set) if prev_sig_set else len(cur_sig_set)
-        removed = len(prev_sig_set - cur_sig_set) if prev_sig_set else 0
-        unchanged = len(cur_sig_set & prev_sig_set) if prev_sig_set else 0
-
-        ps = _norm_ws(prev_summary)
-        cs = _norm_ws(page_summary)
-        pd = _norm_ws(prev_digest)
-        cd = _norm_ws(dom_digest)
-        same_summary = _state_delta_strings_equal(ps, cs)
-        same_digest = _state_delta_strings_equal(pd, cd)
-
-        # Persist current state for next step.
+        cur_sig_set = _cur_sig_set_from_candidates(candidates)
         st["prev_url"] = str(url)
         st["prev_summary"] = str(page_summary)
         st["prev_digest"] = str(dom_digest)
         st["prev_sig_set"] = list(cur_sig_set)
-
-        parts = [
-            f"url_changed={str(prev_url != str(url)).lower()}" if prev_url else "url_changed=unknown",
-            f"summary_changed={str(not same_summary).lower()}" if (ps and cs) else "summary_changed=unknown",
-            f"digest_changed={str(not same_digest).lower()}" if (pd and cd) else "digest_changed=unknown",
-            f"candidate_added={added}",
-            f"candidate_removed={removed}",
-            f"candidate_unchanged={unchanged}",
-        ]
+        parts = _state_delta_parts(prev_url, url, prev_summary, page_summary, prev_digest, dom_digest, prev_sig_set, cur_sig_set)
         return ", ".join(parts)
     except Exception:
         return ""
+
+
+def _act_effective_url_from_state(st: dict[str, Any] | None, url: str) -> str:
+    if not isinstance(st, dict):
+        return str(url)
+    eu = str(st.get("effective_url") or "").strip()
+    return eu if eu else str(url)
+
+
+def _act_prev_sig_set_from_state(st: dict[str, Any] | None) -> set[str] | None:
+    if not isinstance(st, dict):
+        return None
+    prev = st.get("prev_sig_set")
+    return {str(x) for x in prev} if isinstance(prev, list) else None
+
+
+def _act_extra_hint_from_state(st: dict[str, Any] | None, url: str, task: str, step_index: int, candidates: list[_Candidate]) -> str:
+    hint = ""
+    if isinstance(st, dict):
+        last_url = str(st.get("last_url") or "")
+        repeat = int(st.get("repeat") or 0)
+        if last_url and last_url == str(url) and repeat >= 2:
+            hint = "You appear stuck on the same URL after repeating an action. Choose a different element or scroll."
+    risk = _task_risk_hint(task, step_index, candidates)
+    return ((hint + " ") if hint else "") + risk if risk else hint
+
+
+def _act_target_hint_from_payload(payload: dict[str, Any]) -> str:
+    return str(payload.get("target_hint") or os.getenv("AGENT_TARGET_HINT", "")).strip()
 
 
 class ApifiedWebAgent(IWebAgent):
@@ -2275,45 +2312,12 @@ class ApifiedWebAgent(IWebAgent):
             return _resp([{"type": "WaitAction", "time_seconds": 0.1}], {"decision": "check_wait"})
 
         st = _TASK_STATE.get(task_id) if task_id else None
-        effective_url = str(url)
-        try:
-            if isinstance(st, dict):
-                eu = str(st.get("effective_url") or "").strip()
-                if eu:
-                    effective_url = eu
-        except Exception:
-            effective_url = str(url)
-        extra_hint = ""
-        target_hint = ""
-        prev_sig_set = None
-        try:
-            if isinstance(st, dict):
-                prev = st.get("prev_sig_set")
-                if isinstance(prev, list):
-                    prev_sig_set = {str(x) for x in prev}
-        except Exception:
-            prev_sig_set = None
-
+        effective_url = _act_effective_url_from_state(st, url)
+        prev_sig_set = _act_prev_sig_set_from_state(st)
         state_delta = _compute_state_delta(task_id=task_id, url=str(url), page_summary=page_summary, dom_digest=dom_digest, _html_snapshot=html, candidates=candidates)
         ir_delta = _compute_ir_delta(task_id=task_id, page_ir=page_ir)
-        try:
-            if isinstance(st, dict):
-                last_url = str(st.get("last_url") or "")
-                repeat = int(st.get("repeat") or 0)
-                if last_url and last_url == str(url) and repeat >= 2:
-                    extra_hint = "You appear stuck on the same URL after repeating an action. Choose a different element or scroll."
-        except Exception:
-            extra_hint = ""
-        try:
-            risk_hint = _task_risk_hint(task=task, step_index=int(step_index), candidates=candidates)
-            if risk_hint:
-                extra_hint = ((extra_hint + " ") if extra_hint else "") + risk_hint
-        except Exception:
-            pass
-        try:
-            target_hint = str(payload.get("target_hint") or os.getenv("AGENT_TARGET_HINT", "")).strip()
-        except Exception:
-            target_hint = ""
+        extra_hint = _act_extra_hint_from_state(st, str(url), task, int(step_index), candidates)
+        target_hint = _act_target_hint_from_payload(payload)
 
         try:
             base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
@@ -2397,6 +2401,17 @@ def _task_from_payload(payload: dict[str, Any]) -> Task:
     summary="Decide next agent actions",
     responses={"500": {"description": "Internal server error"}, "400": {"description": "Bad request"}},
 )
+def _normalize_act_action(action: Any, task_id: str, step_index: int) -> dict[str, Any] | None:
+    try:
+        if isinstance(action, dict):
+            return _sanitize_action_payload(action)
+        return _sanitize_action_payload(action.model_dump(exclude_none=True))
+    except Exception as exc:
+        tid, err_str, raw_str = (task_id or "")[:80], (str(exc) or "")[:200], (str(action) or "")[:500]
+        logger.error("[AGENT_TRACE] /act action normalization failed task_id=%s step_index=%s err=%s raw=%s", tid, step_index, err_str, raw_str)
+        return None
+
+
 async def act(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     task_id = str(payload.get("task_id") or "")
     step_index = int(payload.get("step_index") or 0)
@@ -2404,25 +2419,7 @@ async def act(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     _log_trace(f"/act start task_id={task_id} step_index={step_index} url={url}")
     raw_resp = await OPERATOR.act_from_payload(payload)
     actions = raw_resp.get("actions") if isinstance(raw_resp, dict) else []
-    normalized = []
-    for action in actions if isinstance(actions, list) else []:
-        try:
-            if isinstance(action, dict):
-                normalized.append(_sanitize_action_payload(action))
-                continue
-            action_payload = action.model_dump(exclude_none=True)
-            normalized.append(_sanitize_action_payload(action_payload))
-        except Exception as exc:
-            # Truncate user-controlled fields (S5145)
-            tid, step, err_str, raw_str = (task_id or "")[:80], step_index, (str(exc) or "")[:200], (str(action) or "")[:500]
-            logger.error(
-                "[AGENT_TRACE] /act action normalization failed task_id=%s step_index=%s err=%s raw=%s",
-                tid,
-                step,
-                err_str,
-                raw_str,
-            )
-            continue
+    normalized = [a for act_item in (actions if isinstance(actions, list) else []) for a in [_normalize_act_action(act_item, task_id, step_index)] if a is not None]
     _log_trace(
         f"/act end task_id={task_id} step_index={step_index} "
         f"raw_count={len(actions) if isinstance(actions, list) else 0} out_count={len(normalized)} "
