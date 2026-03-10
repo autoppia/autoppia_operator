@@ -11,13 +11,13 @@ import base64
 import json
 import os
 import random
-import subprocess
 import socket
+import subprocess
 import sys
 import time
-from typing import Any, TypedDict
 from copy import deepcopy
 from pathlib import Path
+from typing import Any, TypedDict
 
 # ── Ensure the operator repo is on sys.path ─────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -33,13 +33,13 @@ if operator_env.exists():
     load_dotenv(operator_env, override=True)
 
 # ── Imports ──────────────────────────────────────────────────────
-from loguru import logger
-
+import autoppia_iwa.src.execution.actions.actions  # noqa: F401
 from autoppia_iwa.src.data_generation.tasks.classes import Task
 from autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator
 from autoppia_iwa.src.execution.actions.base import BaseAction
+from loguru import logger
+
 from pricing import estimate_cost_usd
-import autoppia_iwa.src.execution.actions.actions  # noqa: F401
 
 # Default task cache path
 TASK_CACHE = OPERATOR_ROOT / "autoppia_rl" / "data" / "task_cache" / "autoppia_cinema_tasks.json"
@@ -48,6 +48,7 @@ random.seed(time.time())
 
 
 # ── Task loading ─────────────────────────────────────────────────
+
 
 def _task_row_matches_filters(
     td: dict,
@@ -63,9 +64,7 @@ def _task_row_matches_filters(
         uc_name = uc.get("name", "") if isinstance(uc, dict) else ""
         if use_case.upper() not in str(uc_name).upper():
             return False
-    if web_project_id is not None and str(td.get("web_project_id", "")) != str(web_project_id):
-        return False
-    return True
+    return not (web_project_id is not None and str(td.get("web_project_id", "")) != str(web_project_id))
 
 
 def load_tasks(
@@ -100,6 +99,7 @@ def load_tasks(
 
 class _EvalOpts(TypedDict, total=False):
     """Optional parameters for run_evaluation (S107: reduce parameter count)."""
+
     use_case: str | None
     web_project_id: str | None
     task_id: str | None
@@ -117,7 +117,7 @@ def _serialize_screenshot(raw: Any | None) -> str | None:
         return None
     if isinstance(raw, str):
         return raw or None
-    if isinstance(raw, (bytes, bytearray, memoryview)):
+    if isinstance(raw, bytes | bytearray | memoryview):
         return base64.b64encode(bytes(raw)).decode("ascii")
     return None
 
@@ -133,6 +133,7 @@ def inject_seed(task: Task, seed: int | None = None) -> tuple[Task, int]:
 
 # ── Main evaluation loop ────────────────────────────────────────
 
+
 def _start_agent_server_sync(
     port: int,
     log_path: Path,
@@ -140,7 +141,8 @@ def _start_agent_server_sync(
     script_dir: Path,
 ) -> tuple[subprocess.Popen, Any]:
     """Start uvicorn in a subprocess and return (process, log_file). Run from to_thread (S7487, S7493)."""
-    log_f = open(log_path, "a", encoding="utf-8")
+    # File intentionally left open for Popen stdout; caller closes after process ends.
+    log_f = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
     log_f.write(f"\n=== uvicorn main:app port={port} ===\n")
     log_f.flush()
     proc = subprocess.Popen(
@@ -175,17 +177,18 @@ async def run_evaluation(
     # Re-load .env here as a guard: some imported modules may mutate env vars.
     try:
         from dotenv import load_dotenv
+
         operator_env = Path(__file__).resolve().parent / ".env"
         if operator_env.exists():
             load_dotenv(operator_env, override=True)
     except Exception:
         pass
 
-    provider_s = str(provider or os.getenv('LLM_PROVIDER') or 'openai').strip().lower()
+    provider_s = str(provider or os.getenv("LLM_PROVIDER") or "openai").strip().lower()
 
     cache_path = Path(task_cache).resolve() if task_cache else TASK_CACHE
-    if provider_s == 'anthropic':
-        api_key = os.getenv('ANTHROPIC_API_KEY')
+    if provider_s == "anthropic":
+        api_key = os.getenv("ANTHROPIC_API_KEY")
         logger.info(f"Eval env: ANTHROPIC_API_KEY={'set' if api_key else 'missing'}")
         if not api_key:
             logger.error("ANTHROPIC_API_KEY not set. Check .env file.")
@@ -194,12 +197,12 @@ async def run_evaluation(
         api_key = os.getenv("OPENAI_API_KEY")
         logger.info(f"Eval env: OPENAI_API_KEY={'set' if api_key else 'missing'}")
         # For sandbox-gateway routing, OPENAI_API_KEY may be intentionally absent.
-        base_url = (os.getenv('OPENAI_BASE_URL') or 'https://api.openai.com/v1').rstrip('/')
-        if not api_key and not base_url.startswith('http://sandbox-gateway') and not base_url.startswith('http://localhost') and not base_url.startswith('http://127.0.0.1'):
+        base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+        if not api_key and not base_url.startswith("http://sandbox-gateway") and not base_url.startswith("http://localhost") and not base_url.startswith("http://127.0.0.1"):
             logger.error("OPENAI_API_KEY not set. Check .env file.")
             sys.exit(1)
     logger.info("=" * 60)
-    logger.info("  Autoppia Operator – LLM Agent Evaluation")
+    logger.info("  Autoppia Operator - LLM Agent Evaluation")
     logger.info(f"  Provider:   {provider_s}")
     logger.info(f"  Model:      {model}")
     logger.info(f"  Tasks:      {num_tasks}")
@@ -234,7 +237,7 @@ async def run_evaluation(
             if isinstance(uc, dict):
                 uc_name = str(uc.get("name") or "")
             elif uc is not None and hasattr(uc, "name"):
-                uc_name = str(getattr(uc, "name") or "")
+                uc_name = str(uc.name or "")
             if not uc_name:
                 rest.append(t)
                 continue
@@ -259,6 +262,7 @@ async def run_evaluation(
     agent_base_url = os.getenv("AGENT_BASE_URL", "").strip().rstrip("/")
     start_server = os.getenv("START_AGENT_SERVER", "1") in {"1", "true", "yes"}
     web_agent_id = os.getenv("WEB_AGENT_ID", "1").strip() or "1"
+
     def _port_available(port: int) -> bool:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -292,19 +296,16 @@ async def run_evaluation(
         server_env["OPENAI_TEMPERATURE"] = str(temperature)
         server_env["AGENT_RETURN_METRICS"] = "1"
         k = server_env.get("OPENAI_API_KEY") or ""
-        logger.info(f"Agent server env: OPENAI_MODEL={server_env.get('OPENAI_MODEL')} LLM_PROVIDER={server_env.get('LLM_PROVIDER')} START_AGENT_SERVER={os.getenv('START_AGENT_SERVER')} AGENT_BASE_URL={agent_base_url or 'local'} OPENAI_API_KEY={'set' if k else 'missing'}")
-        server_proc, log_f = await asyncio.to_thread(
-            _start_agent_server_sync, port, log_path, server_env, SCRIPT_DIR
+        logger.info(
+            f"Agent server env: OPENAI_MODEL={server_env.get('OPENAI_MODEL')} LLM_PROVIDER={server_env.get('LLM_PROVIDER')} START_AGENT_SERVER={os.getenv('START_AGENT_SERVER')} AGENT_BASE_URL={agent_base_url or 'local'} OPENAI_API_KEY={'set' if k else 'missing'}"
         )
+        server_proc, log_f = await asyncio.to_thread(_start_agent_server_sync, port, log_path, server_env, SCRIPT_DIR)
         # Give the server a moment to start (S7488: async sleep)
         await asyncio.sleep(1.5)
     else:
         if not agent_base_url:
             agent_base_url = "http://127.0.0.1:5000"
         server_proc = None
-
-
-
 
     async def call_agent_act(
         prepared_task: Task,
@@ -329,10 +330,9 @@ async def run_evaluation(
             "history": history,
             "model": str(requested_model),
         }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"{agent_base_url}/act", json=payload) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
+        async with aiohttp.ClientSession() as session, session.post(f"{agent_base_url}/act", json=payload) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
 
         metrics = data.get("metrics") if isinstance(data, dict) else {}
         if not isinstance(metrics, dict):
@@ -392,9 +392,7 @@ async def run_evaluation(
                     uc_name = str(uc)
 
             rep_label = f" r={r + 1}/{reps}" if reps > 1 else ""
-            logger.info(
-                f"[{i + 1}/{len(tasks)}]{rep_label} seed={seed_used} | {uc_name} | {task.prompt[:50]}..."
-            )
+            logger.info(f"[{i + 1}/{len(tasks)}]{rep_label} seed={seed_used} | {uc_name} | {task.prompt[:50]}...")
 
             task_start = time.time()
             episode_llm_calls = 0
@@ -438,9 +436,7 @@ async def run_evaluation(
                         model_name = llm_meta.get("model") or model
                         episode_model = str(model_name)
                         if bool(strict_model) and str(episode_model).strip() != str(requested_model).strip():
-                            raise RuntimeError(
-                                f"model_mismatch requested={requested_model} effective={episode_model} task={episode_task_id} step={step_idx}"
-                            )
+                            raise RuntimeError(f"model_mismatch requested={requested_model} effective={episode_model} task={episode_task_id} step={step_idx}")
                         if isinstance(usages, list):
                             for u in usages:
                                 if not isinstance(u, dict):
@@ -462,12 +458,12 @@ async def run_evaluation(
                         step_result = await evaluator.step(None)
 
                     # Optional: persist per-step trace for debugging.
-                    if os.getenv('EVAL_SAVE_TRACES', '0').lower() in {'1','true','yes'}:
+                    if os.getenv("EVAL_SAVE_TRACES", "0").lower() in {"1", "true", "yes"}:
                         try:
-                            trace_dir = (SCRIPT_DIR / 'data' / 'traces' / str(episode_task_id))
+                            trace_dir = SCRIPT_DIR / "data" / "traces" / str(episode_task_id)
                             trace_dir.mkdir(parents=True, exist_ok=True)
-                            (trace_dir / f'{step_idx:02d}.url.txt').write_text(str(step_result.snapshot.url), encoding='utf-8')
-                            (trace_dir / f'{step_idx:02d}.html').write_text(str(step_result.snapshot.html), encoding='utf-8', errors='replace')
+                            (trace_dir / f"{step_idx:02d}.url.txt").write_text(str(step_result.snapshot.url), encoding="utf-8")
+                            (trace_dir / f"{step_idx:02d}.html").write_text(str(step_result.snapshot.html), encoding="utf-8", errors="replace")
                         except Exception:
                             pass
 
@@ -486,25 +482,31 @@ async def run_evaluation(
                     exec_err = None
                     try:
                         if ar is not None:
-                            exec_ok = bool(getattr(ar, 'successfully_executed', True))
-                            exec_err = getattr(ar, 'error', None)
+                            exec_ok = bool(getattr(ar, "successfully_executed", True))
+                            exec_err = getattr(ar, "error", None)
                     except Exception:
                         exec_ok = True
                         exec_err = None
 
-                    history.append({
-                        "step": step_idx,
-                        "url": str(step_result.snapshot.url),
-                        "action": action.type if action else "done",
-                        "candidate_id": cid,
-                        "text": getattr(action, "text", None) if action else None,
-                        "exec_ok": exec_ok,
-                        "error": exec_err,
-                        "agent_decision": (metrics.get("decision") if isinstance(metrics, dict) else None),
-                        "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
-                        "prompt_tokens": int(sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
-                        "completion_tokens": int(sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
-                    })
+                    history.append(
+                        {
+                            "step": step_idx,
+                            "url": str(step_result.snapshot.url),
+                            "action": action.type if action else "done",
+                            "candidate_id": cid,
+                            "text": getattr(action, "text", None) if action else None,
+                            "exec_ok": exec_ok,
+                            "error": exec_err,
+                            "agent_decision": (metrics.get("decision") if isinstance(metrics, dict) else None),
+                            "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
+                            "prompt_tokens": int(
+                                sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))
+                            ),
+                            "completion_tokens": int(
+                                sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))
+                            ),
+                        }
+                    )
 
                     if final_success:
                         break
@@ -557,8 +559,8 @@ async def run_evaluation(
             except Exception as e:
                 # Best-effort cleanup (errors can happen before we reach the normal close path).
                 try:
-                    if 'evaluator' in locals() and locals().get('evaluator') is not None:
-                        await locals()['evaluator'].close()
+                    if "evaluator" in locals() and locals().get("evaluator") is not None:
+                        await locals()["evaluator"].close()
                 except Exception:
                     pass
                 task_elapsed = time.time() - task_start
@@ -566,24 +568,26 @@ async def run_evaluation(
                 results["errors"] += 1
                 if "model_mismatch" in str(e):
                     results["model_mismatch_errors"] += 1
-                results["episodes"].append({
-                    "task_id": str(task.id),
-                    "episode_task_id": str(getattr(locals().get('prepared_task', None), 'id', task.id)),
-                    "repeat_index": int(r),
-                    "use_case": uc_name,
-                    "seed": seed_used,
-                    "success": False,
-                    "score": 0.0,
-                    "steps": 0,
-                    "task_seconds": round(task_elapsed, 4),
-                    "llm_calls": int(episode_llm_calls),
-                    "prompt_tokens": int(episode_prompt_tokens),
-                    "completion_tokens": int(episode_completion_tokens),
-                    "total_tokens": int(episode_total_tokens),
-                    "estimated_cost_usd": round(float(episode_cost_usd), 6),
-                    "avg_step_seconds": 0.0,
-                    "error": str(e),
-                })
+                results["episodes"].append(
+                    {
+                        "task_id": str(task.id),
+                        "episode_task_id": str(getattr(locals().get("prepared_task", None), "id", task.id)),
+                        "repeat_index": int(r),
+                        "use_case": uc_name,
+                        "seed": seed_used,
+                        "success": False,
+                        "score": 0.0,
+                        "steps": 0,
+                        "task_seconds": round(task_elapsed, 4),
+                        "llm_calls": int(episode_llm_calls),
+                        "prompt_tokens": int(episode_prompt_tokens),
+                        "completion_tokens": int(episode_completion_tokens),
+                        "total_tokens": int(episode_total_tokens),
+                        "estimated_cost_usd": round(float(episode_cost_usd), 6),
+                        "avg_step_seconds": 0.0,
+                        "error": str(e),
+                    }
+                )
                 logger.error(f"  -> ERROR: {e}")
     elapsed = time.time() - t_start
 
@@ -591,21 +595,11 @@ async def run_evaluation(
     total = results["num_tasks"]
     succ = results["successes"]
     rate = succ / total if total > 0 else 0
-    avg_score = (
-        sum(ep["score"] for ep in results["episodes"]) / total if total > 0 else 0
-    )
-    avg_steps = (
-        sum(ep["steps"] for ep in results["episodes"]) / total if total > 0 else 0
-    )
-    avg_task_seconds = (
-        sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total if total > 0 else 0
-    )
+    avg_score = sum(ep["score"] for ep in results["episodes"]) / total if total > 0 else 0
+    avg_steps = sum(ep["steps"] for ep in results["episodes"]) / total if total > 0 else 0
+    avg_task_seconds = sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total if total > 0 else 0
     total_steps = sum(ep["steps"] for ep in results["episodes"])
-    avg_step_seconds = (
-        sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total_steps
-        if total_steps > 0
-        else 0
-    )
+    avg_step_seconds = sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total_steps if total_steps > 0 else 0
 
     results["timing"]["total_seconds"] = round(elapsed, 4)
     results["timing"]["avg_task_seconds"] = round(avg_task_seconds, 4)
@@ -654,7 +648,7 @@ async def run_evaluation(
     # Save results (S7493: avoid blocking open in async; run in thread)
     out_dir = SCRIPT_DIR / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path_resolved = Path(out_path).resolve() if out_path else (out_dir / 'eval_results.json')
+    out_path_resolved = Path(out_path).resolve() if out_path else (out_dir / "eval_results.json")
     out_path_resolved.parent.mkdir(parents=True, exist_ok=True)
 
     def _write_results_json(path: Path, data: dict) -> None:
@@ -678,11 +672,12 @@ async def run_evaluation(
 
 # ── CLI ──────────────────────────────────────────────────────────
 
+
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Autoppia Operator - LLM Agent Evaluation")
-    parser.add_argument('--provider', default='chutes', help='LLM provider: openai|chutes|anthropic')
+    parser.add_argument("--provider", default="chutes", help="LLM provider: openai|chutes|anthropic")
     parser.add_argument("--model", default="deepseek-ai/DeepSeek-V3-0324", help="Model name")
     parser.add_argument("--num-tasks", type=int, default=20, help="Number of tasks to evaluate")
     parser.add_argument("--max-steps", type=int, default=15, help="Max steps per episode")
@@ -692,8 +687,8 @@ def main():
     parser.add_argument("--seed", type=int, default=None, help="Fixed seed (otherwise random)")
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each selected task N times")
     parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
-    parser.add_argument('--out', default=None, help='Output JSON path (default: data/eval_results.json)')
-    parser.add_argument('--task-cache', default=None, help='Task cache JSON path')
+    parser.add_argument("--out", default=None, help="Output JSON path (default: data/eval_results.json)")
+    parser.add_argument("--task-cache", default=None, help="Task cache JSON path")
     parser.add_argument("--strict-model", action=argparse.BooleanOptionalAction, default=True, help="Fail episodes when effective model != requested model")
     parser.add_argument("--distinct-use-cases", action="store_true", help="Pick tasks with distinct use cases")
     args = parser.parse_args()
