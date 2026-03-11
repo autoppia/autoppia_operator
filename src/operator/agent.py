@@ -10,7 +10,7 @@ from src.operator.entrypoint import (
     _sanitize_action_payload,
     _task_from_payload,
 )
-from src.operator.api.server import app  # noqa: E402
+from src.operator.server import app  # noqa: E402
 
 __all__ = [
     "ApifiedWebAgent",
