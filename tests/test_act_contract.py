@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-import agent
+from src.operator import agent
+from src.operator import fsm_operator
 
 
 def test_act_http_response_is_canonical_single_step(monkeypatch) -> None:
@@ -301,7 +302,7 @@ def test_act_from_payload_forwards_screenshot_to_fsm(monkeypatch) -> None:
             captured["payload"] = payload
             return {"protocol_version": "1.0", "actions": [], "state_out": {}}
 
-    monkeypatch.setattr(agent, "_FSM_OPERATOR", _DummyFSM())
+    monkeypatch.setattr(fsm_operator, "_FSM_OPERATOR", _DummyFSM())
 
     import asyncio
 
