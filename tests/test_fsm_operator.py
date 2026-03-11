@@ -3250,6 +3250,71 @@ def test_policy_obs_includes_site_knowledge_when_enabled(monkeypatch: Any) -> No
     assert site_knowledge.get("project_id") == "autocinema"
     current = site_knowledge.get("current_task_routing") if isinstance(site_knowledge.get("current_task_routing"), dict) else {}
     assert current.get("likely_best_section") == "detail"
+    routes = site_knowledge.get("routes") if isinstance(site_knowledge.get("routes"), list) else []
+    assert any(str(route.get("path") or "") == "/search" for route in routes if isinstance(route, dict))
+    assert any(str(route.get("path") or "") == "/movies/123" for route in routes if isinstance(route, dict))
+
+
+def test_policy_obs_does_not_expose_browser_evaluate() -> None:
+    builder = ObsBuilder()
+    policy_obs = builder.build_policy_obs(
+        task_id="no-evaluate",
+        prompt="Open the login page",
+        web_project_id="autobooks",
+        use_case={"name": "LOGIN_BOOK", "description": "Authenticate into the site."},
+        snapshot_html="<html><body><a href='/login'>Login</a></body></html>",
+        step_index=0,
+        url="https://example.com",
+        mode="NAV",
+        flags={},
+        state=AgentState(mode="NAV"),
+        text_ir={"title": "Home", "visible_text": "Login", "headings": []},
+        candidates=[],
+        history=[],
+        screenshot_available=False,
+    )
+    available = policy_obs.get("available_browser_tools") if isinstance(policy_obs.get("available_browser_tools"), list) else []
+    unavailable = policy_obs.get("unavailable_browser_tools") if isinstance(policy_obs.get("unavailable_browser_tools"), list) else []
+    assert "browser.evaluate" not in available
+    assert "browser.evaluate" not in unavailable
+
+
+def test_policy_obs_uses_crawler_routes_when_static_map_missing(monkeypatch: Any) -> None:
+    import fsm_operator as fsm
+
+    monkeypatch.setenv("FSM_USE_SITE_KNOWLEDGE", "1")
+    monkeypatch.setenv("FSM_ENABLE_SITE_CRAWLER", "1")
+    monkeypatch.setattr(fsm, "_load_static_site_maps", lambda: {})
+    monkeypatch.setattr(
+        fsm,
+        "_crawl_site_routes",
+        lambda start_url, depth, max_pages, timeout_s: (
+            ("Login", "https://example.com/login", "/login", "auth"),
+            ("Search", "https://example.com/search", "/search", "catalog"),
+        ),
+    )
+    builder = ObsBuilder()
+    policy_obs = builder.build_policy_obs(
+        task_id="crawl-site-knowledge",
+        prompt="Log in to the site",
+        web_project_id="unknownproject",
+        use_case={"name": "LOGIN", "description": "Authenticate into the site."},
+        snapshot_html="<html><body><a href='/login'>Login</a></body></html>",
+        step_index=0,
+        url="https://example.com",
+        mode="NAV",
+        flags={},
+        state=AgentState(mode="NAV"),
+        text_ir={"title": "Home", "visible_text": "Login", "headings": []},
+        candidates=[],
+        history=[],
+        screenshot_available=False,
+    )
+    site_knowledge = policy_obs.get("site_knowledge") if isinstance(policy_obs.get("site_knowledge"), dict) else {}
+    crawled = site_knowledge.get("crawled_routes") if isinstance(site_knowledge.get("crawled_routes"), list) else []
+    assert any(str(route.get("path") or "") == "/login" for route in crawled if isinstance(route, dict))
+    site_source = site_knowledge.get("site_source") if isinstance(site_knowledge.get("site_source"), dict) else {}
+    assert site_source.get("crawler") is True
 
 
 def test_policy_obs_exposes_local_workflow_closure_when_ready_to_commit() -> None:

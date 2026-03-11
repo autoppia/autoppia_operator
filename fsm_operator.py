@@ -10,6 +10,7 @@ import re
 from functools import lru_cache
 from typing import Any, Callable, Dict, List, Literal
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 from pathlib import Path
 from datetime import datetime
 
@@ -71,7 +72,6 @@ SUPPORTED_BROWSER_TOOL_NAMES = {
     "browser.screenshot",
     "browser.send_keys",
     "browser.hold_key",
-    "browser.evaluate",
     "browser.extract",
 }
 
@@ -85,6 +85,7 @@ UNAVAILABLE_BROWSER_TOOLS = (
 )
 
 SITE_KNOWLEDGE_TASK_CACHE = Path(__file__).resolve().parent / "autoppia_rl" / "data" / "task_cache" / "autoppia_cinema_tasks.json"
+SITE_KNOWLEDGE_STATIC_MAP_PATH = Path(__file__).resolve().parent / "data" / "site_maps.json"
 
 MAX_INTERNAL_META_STEPS = 3
 MAX_FACTS = 32
@@ -172,6 +173,26 @@ def _merge_usage_dicts(base: Dict[str, Any] | None, extra: Dict[str, Any] | None
     out["completion_tokens"] += int(((extra or {}).get("completion_tokens") or 0))
     out["total_tokens"] += int(((extra or {}).get("total_tokens") or 0))
     return out
+
+
+def _empty_usage_dict() -> Dict[str, int]:
+    return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+
+def _empty_call_breakdown() -> Dict[str, int]:
+    return {
+        "policy_llm_calls": 0,
+        "obs_extract_llm_calls": 0,
+        "vision_llm_calls": 0,
+    }
+
+
+def _usage_breakdown_template() -> Dict[str, Dict[str, int]]:
+    return {
+        "policy": _empty_usage_dict(),
+        "obs_extract": _empty_usage_dict(),
+        "vision": _empty_usage_dict(),
+    }
 
 
 def _dom_digest(html: str) -> str:
@@ -490,11 +511,219 @@ def _load_task_cache_site_index() -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def _build_site_knowledge(project_id: str, use_case: Dict[str, str], prompt: str) -> Dict[str, Any]:
+@lru_cache(maxsize=1)
+def _load_static_site_maps() -> Dict[str, Dict[str, Any]]:
+    path = SITE_KNOWLEDGE_STATIC_MAP_PATH
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    projects = payload.get("projects") if isinstance(payload.get("projects"), dict) else payload
+    out: Dict[str, Dict[str, Any]] = {}
+    for project_id, project_payload in projects.items() if isinstance(projects, dict) else []:
+        pid = _candidate_text(project_id)
+        if not pid or not isinstance(project_payload, dict):
+            continue
+        out[pid] = dict(project_payload)
+    return out
+
+
+def _section_key_for_path(path: str) -> str:
+    clean = str(path or "").strip().lower() or "/"
+    if clean in {"", "/"}:
+        return "home"
+    if any(tok in clean for tok in ("/login", "/register", "/signup", "/signin", "/auth")):
+        return "auth"
+    if any(tok in clean for tok in ("/search", "/browse", "/catalog", "/books", "/movies", "/restaurants")):
+        return "catalog"
+    if any(tok in clean for tok in ("/detail", "/movie/", "/book/", "/restaurant/", "/item/", "/film/")):
+        return "detail"
+    if any(tok in clean for tok in ("/contact", "/create", "/add", "/edit", "/delete", "/checkout", "/reserve", "/booking")):
+        return "form"
+    if any(tok in clean for tok in ("/profile", "/account", "/watchlist", "/wishlist", "/saved", "/menu", "/calendar")):
+        return "account"
+    if any(tok in clean for tok in ("/about", "/help", "/support", "/faq", "/policy")):
+        return "info"
+    return "home"
+
+
+def _normalize_route_entry(route: Dict[str, Any], *, base_url: str = "") -> Dict[str, Any] | None:
+    if not isinstance(route, dict):
+        return None
+    raw_href = _candidate_text(route.get("href"), route.get("url"), route.get("path"))
+    if not raw_href:
+        return None
+    safe_href = _safe_url(raw_href, base=base_url)
+    parsed = urlsplit(str(safe_href or raw_href))
+    path = str(parsed.path or "/")
+    label = _candidate_text(route.get("label"), route.get("text"), path)
+    section_id = _candidate_text(route.get("section_id")) or _section_key_for_path(path)
+    return {
+        "label": label[:120],
+        "href": str(safe_href or raw_href)[:300],
+        "path": path[:180],
+        "section_id": section_id,
+        "source": _candidate_text(route.get("source"), "static"),
+    }
+
+
+def _discover_page_routes(*, snapshot_html: str, current_url: str, candidates: List[Any]) -> List[Dict[str, Any]]:
+    discovered: List[Dict[str, Any]] = []
+    if snapshot_html and BeautifulSoup is not None:
+        try:
+            soup = BeautifulSoup(snapshot_html, "lxml")
+        except Exception:
+            soup = None
+        if soup is not None:
+            try:
+                for anchor in soup.find_all("a", href=True, limit=80):
+                    href = _candidate_text(anchor.get("href"))
+                    if not href or href.startswith(("javascript:", "mailto:", "tel:")):
+                        continue
+                    label = _candidate_text(anchor.get_text(" ", strip=True), anchor.get("aria-label"), href)
+                    discovered.append(
+                        {
+                            "href": href,
+                            "label": label,
+                            "source": "page_anchor",
+                        }
+                    )
+            except Exception:
+                pass
+    for cand in candidates:
+        href = _candidate_text(getattr(cand, "href", ""))
+        if not href:
+            continue
+        discovered.append(
+            {
+                "href": href,
+                "label": _candidate_text(getattr(cand, "text", ""), getattr(cand, "context", ""), href),
+                "source": "candidate_href",
+            }
+        )
+    normalized: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in discovered:
+        route = _normalize_route_entry(item, base_url=current_url)
+        if not isinstance(route, dict):
+            continue
+        dedupe_key = f"{route.get('path')}::{route.get('label')}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(route)
+        if len(normalized) >= 20:
+            break
+    return normalized
+
+
+def _canonical_crawl_path(url: str) -> str:
+    parsed = urlsplit(str(url or ""))
+    path = str(parsed.path or "/")
+    return path or "/"
+
+
+@lru_cache(maxsize=32)
+def _crawl_site_routes(start_url: str, depth: int, max_pages: int, timeout_s: float) -> tuple[tuple[str, str, str, str], ...]:
+    if BeautifulSoup is None:
+        return ()
+    start = str(start_url or "").strip()
+    parsed_start = urlsplit(start)
+    if not (parsed_start.scheme and parsed_start.netloc):
+        return ()
+    same_origin = f"{parsed_start.scheme}://{parsed_start.netloc}"
+    queue: List[tuple[str, int]] = [(start, 0)]
+    root = _root_url(start)
+    if root and root != start:
+        queue.append((root, 0))
+    fetched_paths: set[str] = set()
+    emitted: List[tuple[str, str, str, str]] = []
+    emitted_paths: set[str] = set()
+    while queue and len(fetched_paths) < max(1, int(max_pages)):
+        page_url, current_depth = queue.pop(0)
+        page_path = _canonical_crawl_path(page_url)
+        if page_path in fetched_paths:
+            continue
+        fetched_paths.add(page_path)
+        try:
+            req = Request(page_url, headers={"User-Agent": "autoppia-operator-site-crawler/1.0"})
+            with urlopen(req, timeout=max(0.5, float(timeout_s))) as resp:
+                content_type = str(resp.headers.get("Content-Type") or "").lower()
+                if "html" not in content_type:
+                    continue
+                raw_html = resp.read()
+        except Exception:
+            continue
+        try:
+            html = raw_html.decode("utf-8", errors="ignore")
+            soup = BeautifulSoup(html, "lxml")
+        except Exception:
+            continue
+        try:
+            anchors = soup.find_all("a", href=True, limit=120)
+        except Exception:
+            anchors = []
+        for anchor in anchors:
+            href = _candidate_text(anchor.get("href"))
+            if not href or href.startswith(("javascript:", "mailto:", "tel:")):
+                continue
+            absolute = _safe_url(href, base=page_url)
+            parsed = urlsplit(str(absolute or ""))
+            if f"{parsed.scheme}://{parsed.netloc}" != same_origin:
+                continue
+            route_path = _canonical_crawl_path(absolute)
+            if route_path not in emitted_paths:
+                emitted_paths.add(route_path)
+                emitted.append(
+                    (
+                        _candidate_text(anchor.get_text(" ", strip=True), anchor.get("aria-label"), route_path)[:120],
+                        str(absolute or href)[:300],
+                        route_path[:180],
+                        _section_key_for_path(route_path),
+                    )
+                )
+            if current_depth + 1 <= max(0, int(depth)) and route_path not in fetched_paths:
+                queue.append((str(absolute), current_depth + 1))
+    return tuple(emitted[:40])
+
+
+def _merge_site_routes(static_routes: List[Dict[str, Any]], discovered_routes: List[Dict[str, Any]], *, base_url: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in list(static_routes or []) + list(discovered_routes or []):
+        route = _normalize_route_entry(item, base_url=base_url)
+        if not isinstance(route, dict):
+            continue
+        dedupe_key = str(route.get("path") or route.get("href") or "")
+        if not dedupe_key or dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        out.append(route)
+        if len(out) >= 18:
+            break
+    return out
+
+
+def _build_site_knowledge(
+    project_id: str,
+    use_case: Dict[str, str],
+    prompt: str,
+    *,
+    current_url: str = "",
+    snapshot_html: str = "",
+    candidates: List[Any] | None = None,
+) -> Dict[str, Any]:
     project_id = _candidate_text(project_id)
     uc = _normalize_use_case_info(use_case)
     cache_index = _load_task_cache_site_index()
+    static_index = _load_static_site_maps()
     cached = cache_index.get(project_id, {}) if project_id else {}
+    static_project = static_index.get(project_id, {}) if project_id else {}
     known_use_cases = list((cached.get("use_cases") or {}).values()) if isinstance(cached, dict) else []
     all_use_cases = list(known_use_cases)
     if uc.get("name") and not any(str(item.get("name") or "") == uc["name"] for item in all_use_cases if isinstance(item, dict)):
@@ -527,9 +756,47 @@ def _build_site_knowledge(project_id: str, use_case: Dict[str, str], prompt: str
     current_keys = _section_keys_for_use_case(current_name, current_desc)
     best_key = next((key for key in current_keys if key != "home"), "home")
     unlikely_keys = [key for key in ("info", "auth", "home") if key != best_key and key in section_sources]
+    static_routes = list(static_project.get("routes") or []) if isinstance(static_project, dict) else []
+    discovered_routes = _discover_page_routes(
+        snapshot_html=str(snapshot_html or ""),
+        current_url=str(current_url or ""),
+        candidates=list(candidates or []),
+    )
+    crawled_routes: List[Dict[str, Any]] = []
+    if (not static_routes) and _env_bool("FSM_ENABLE_SITE_CRAWLER", True):
+        crawl_depth = max(0, min(_env_int("FSM_SITE_CRAWL_DEPTH", 3), 3))
+        crawl_max_pages = max(1, min(_env_int("FSM_SITE_CRAWL_MAX_PAGES", 12), 24))
+        crawl_timeout_s = max(0.5, min(float(os.getenv("FSM_SITE_CRAWL_TIMEOUT_S", "1.5") or 1.5), 4.0))
+        try:
+            crawled_routes = [
+                {
+                    "label": label,
+                    "href": href,
+                    "path": path,
+                    "section_id": section_id,
+                    "source": "crawler",
+                }
+                for (label, href, path, section_id) in _crawl_site_routes(
+                    str(current_url or ""),
+                    int(crawl_depth),
+                    int(crawl_max_pages),
+                    float(crawl_timeout_s),
+                )
+            ]
+        except Exception:
+            crawled_routes = []
+    merged_routes = _merge_site_routes(static_routes, list(discovered_routes) + list(crawled_routes), base_url=str(current_url or ""))
+    route_sections: Dict[str, List[str]] = {}
+    for route in merged_routes:
+        if not isinstance(route, dict):
+            continue
+        key = _candidate_text(route.get("section_id"))
+        label = _candidate_text(route.get("label"), route.get("path"))
+        if key and label:
+            route_sections.setdefault(key, []).append(label)
     return {
         "project_id": project_id,
-        "available": bool(known_sections),
+        "available": bool(known_sections or merged_routes),
         "known_sections": known_sections[:6],
         "current_use_case": current_name,
         "current_task_routing": {
@@ -537,6 +804,15 @@ def _build_site_knowledge(project_id: str, use_case: Dict[str, str], prompt: str
             "section_label": templates.get(best_key, {}).get("label", best_key),
             "why": templates.get(best_key, {}).get("when_useful", ""),
             "unlikely_sections_for_this_task": unlikely_keys[:3],
+        },
+        "routes": merged_routes[:12],
+        "discovered_routes": discovered_routes[:8],
+        "crawled_routes": crawled_routes[:8],
+        "route_sections": {k: _dedupe_keep_order(v, 5) for k, v in route_sections.items()},
+        "site_source": {
+            "static_map": bool(static_routes),
+            "page_discovery": bool(discovered_routes),
+            "crawler": bool(crawled_routes),
         },
         "example_task_prompts": list((cached.get("examples") or [])[:5]) if isinstance(cached, dict) else [],
     }
@@ -726,6 +1002,41 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
+def _use_vision() -> bool:
+    return _env_bool("USE_VISION", False) or _env_bool("AGENT_USE_VISION", False)
+
+
+def _supported_browser_tool_names() -> set[str]:
+    out = set(SUPPORTED_BROWSER_TOOL_NAMES)
+    if not _use_vision():
+        out.discard("browser.screenshot")
+    return out
+
+
+def _obs_meta_tools() -> set[str]:
+    out = set(OBS_META_TOOLS)
+    if not _use_vision():
+        out.discard("META.VISION_QA")
+    return out
+
+
+def _meta_tools() -> set[str]:
+    return _obs_meta_tools() | set(CONTROL_META_TOOLS)
+
+
+def _unavailable_browser_tools() -> tuple[str, ...]:
+    out = list(UNAVAILABLE_BROWSER_TOOLS)
+    if not _use_vision():
+        out.append("browser.screenshot")
+    return tuple(out)
+
+
+def _screenshot_available(value: Any) -> bool:
+    if not _use_vision():
+        return False
+    return bool(_normalize_screenshot_data_url(value))
+
+
 def _normalize_screenshot_data_url(value: Any) -> str:
     if isinstance(value, bytes):
         encoded = base64.b64encode(value).decode("ascii")
@@ -856,9 +1167,64 @@ def _sanitize_selector(selector: Dict[str, Any] | None) -> Dict[str, Any] | None
     if not isinstance(selector, dict):
         return None
     out = dict(selector)
-    sel_type = str(out.get("type") or "").strip()
-    if sel_type == "xpathSelector":
-        value = str(out.get("value") or "").strip()
+    raw_type = str(out.get("type") or "").strip()
+    sel_type = raw_type.lower()
+    case_sensitive = bool(out.get("case_sensitive", False))
+
+    def first_text(*keys: str) -> str:
+        for key in keys:
+            value = _candidate_text(out.get(key))
+            if value:
+                return value[:MAX_STR]
+        return ""
+
+    if sel_type in {"text", "textselector", "textcontains", "textcontainsselector", "linktext", "partiallinktext"}:
+        value = first_text("value", "text", "label", "name", "query")
+        if not value:
+            return None
+        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
+    if sel_type in {"attribute", "attributevalueselector"}:
+        attribute = first_text("attribute", "attr", "name")
+        value = first_text("value", "text", "label")
+        if not attribute or not value:
+            return None
+        return {
+            "type": "attributeValueSelector",
+            "attribute": attribute,
+            "value": value,
+            "case_sensitive": case_sensitive,
+        }
+    if sel_type in {"id", "class", "name", "href", "placeholder", "aria-label", "aria_label", "title", "role", "value", "type"}:
+        value = first_text("value", "text", "label")
+        if not value:
+            return None
+        attribute = "aria-label" if sel_type == "aria_label" else raw_type
+        return {
+            "type": "attributeValueSelector",
+            "attribute": attribute,
+            "value": value,
+            "case_sensitive": case_sensitive,
+        }
+    if sel_type not in {"attributevalueselector", "tagcontainsselector", "xpathselector"}:
+        attribute = first_text("attribute", "attr", "name")
+        value = first_text("value", "text", "label", "query")
+        if attribute and value:
+            return {
+                "type": "attributeValueSelector",
+                "attribute": attribute,
+                "value": value,
+                "case_sensitive": case_sensitive,
+            }
+        if value:
+            return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
+        return None
+    if sel_type == "tagcontainsselector":
+        value = first_text("value", "text", "label")
+        if not value:
+            return None
+        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
+    if sel_type == "xpathselector":
+        value = str(out.get("value") or out.get("text") or out.get("xpath") or "").strip()
         if value.lower().startswith("xpath="):
             value = value[6:].strip()
         if value.startswith("///"):
@@ -868,7 +1234,7 @@ def _sanitize_selector(selector: Dict[str, Any] | None) -> Dict[str, Any] | None
         value = re.sub(r"\s+", " ", value).strip()
         if not value:
             return None
-        out["value"] = value
+        return {"type": "xpathSelector", "value": value, "case_sensitive": case_sensitive}
     return out
 
 
@@ -906,7 +1272,6 @@ def _action_type_for_tool(tool_name: str) -> str | None:
         "browser.screenshot": "ScreenshotAction",
         "browser.send_keys": "SendKeysIWAAction",
         "browser.hold_key": "HoldKeyAction",
-        "browser.evaluate": "EvaluateAction",
         "browser.extract": "ExtractAction",
     }
     return mapping.get(t)
@@ -934,6 +1299,8 @@ def _canonical_allowed_tool_name(raw: str) -> str:
         return "user.request_input"
     if name.startswith("browser."):
         name = name.split(".", 1)[1].strip()
+    if name == "evaluate":
+        return ""
     alias = {
         "search": "browser.search",
         "navigate": "browser.navigate",
@@ -952,7 +1319,6 @@ def _canonical_allowed_tool_name(raw: str) -> str:
         "wait": "browser.wait",
         "send_keys": "browser.send_keys",
         "hold_key": "browser.hold_key",
-        "evaluate": "browser.evaluate",
         "extract": "browser.extract",
         "done": "browser.done",
     }
@@ -1083,6 +1449,7 @@ class AgentState(BaseModel):
     last_action_element_id: str = ""
     escalated_once: bool = False
     session_query: Dict[str, str] = Field(default_factory=dict)
+    score_feedback: Dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_state_in(cls, state_in: Any, prompt: str) -> "AgentState":
@@ -1272,6 +1639,14 @@ class AgentState(BaseModel):
                 for k, v in self.session_query.items()
                 if str(k).strip()
             }
+        raw_score_feedback = self.score_feedback if isinstance(self.score_feedback, dict) else {}
+        self.score_feedback = {
+            "enabled": bool(raw_score_feedback.get("enabled", False)),
+            "score": max(0.0, min(1.0, float(raw_score_feedback.get("score", 0.0) or 0.0))),
+            "success": bool(raw_score_feedback.get("success", False)),
+            "tests_passed": max(0, int(raw_score_feedback.get("tests_passed", 0) or 0)),
+            "total_tests": max(0, int(raw_score_feedback.get("total_tests", 0) or 0)),
+        } if raw_score_feedback else {}
         self.counters.stall_count = max(0, int(self.counters.stall_count or 0))
         self.counters.repeat_action_count = max(0, int(self.counters.repeat_action_count or 0))
         self.counters.meta_steps_used = max(0, int(self.counters.meta_steps_used or 0))
@@ -1477,6 +1852,13 @@ class Candidate:
     group_id: str = ""
     group_label: str = ""
     disabled: bool = False
+    required: bool = False
+    readonly: bool = False
+    placeholder: str = ""
+    aria_label: str = ""
+    name_attr: str = ""
+    current_value: str = ""
+    option_values: List[str] = field(default_factory=list)
     bbox: Dict[str, float] | None = None
 
     def as_obs(self, *, index: int | None = None) -> Dict[str, Any]:
@@ -1501,6 +1883,13 @@ class Candidate:
             "group_id": self.group_id[:120] if self.group_id else "",
             "group_label": self.group_label[:180] if self.group_label else "",
             "disabled": bool(self.disabled),
+            "required": bool(self.required),
+            "readonly": bool(self.readonly),
+            "placeholder": self.placeholder[:160] if self.placeholder else "",
+            "aria_label": self.aria_label[:160] if self.aria_label else "",
+            "name_attr": self.name_attr[:80] if self.name_attr else "",
+            "current_value": self.current_value[:120] if self.current_value else "",
+            "option_values": self.option_values[:8] if self.option_values else [],
             "bbox": self.bbox,
         }
         if index is not None:
@@ -1591,6 +1980,19 @@ class CandidateExtractor:
                 region_id = group_id
                 region_label = group_label
                 parent_region_id, region_ancestor_ids = self._region_lineage(node)
+                required = ("required" in attrs) or (str(attrs.get("aria-required") or "").strip().lower() == "true")
+                readonly = ("readonly" in attrs) or (str(attrs.get("aria-readonly") or "").strip().lower() == "true")
+                placeholder = _norm_ws(attrs.get("placeholder"))
+                aria_label = _norm_ws(attrs.get("aria-label"))
+                name_attr = _norm_ws(attrs.get("name"))
+                option_values: List[str] = []
+                if tag == "select":
+                    for option in node.find_all("option", limit=16):
+                        opt_text = _norm_ws(option.get_text(" ", strip=True))
+                        opt_value = _norm_ws(option.get("value"))
+                        opt_blob = _candidate_text(opt_text, opt_value)
+                        if opt_blob:
+                            option_values.append(opt_blob[:80])
                 field_kind = self._field_kind(
                     tag=tag,
                     attrs=attrs,
@@ -1621,6 +2023,13 @@ class CandidateExtractor:
                         group_id=group_id[:120],
                         group_label=group_label[:180],
                         disabled=bool(disabled),
+                        required=bool(required),
+                        readonly=bool(readonly),
+                        placeholder=placeholder[:160],
+                        aria_label=aria_label[:160],
+                        name_attr=name_attr[:80],
+                        current_value=current_value[:120],
+                        option_values=_dedupe_keep_order(option_values, 8),
                         bbox=None,
                     )
                 )
@@ -4343,7 +4752,14 @@ class ObsBuilder:
         recent_failures = self._recent_failures(history_recent, limit=4)
         progress_brief = self._progress_brief(state=state)
         site_knowledge = (
-            _build_site_knowledge(_candidate_text(web_project_id), _normalize_use_case_info(use_case), prompt)
+            _build_site_knowledge(
+                _candidate_text(web_project_id),
+                _normalize_use_case_info(use_case),
+                prompt,
+                current_url=url,
+                snapshot_html=snapshot_html,
+                candidates=candidates,
+            )
             if _env_bool("FSM_USE_SITE_KNOWLEDGE", False)
             else {}
         )
@@ -4401,11 +4817,11 @@ class ObsBuilder:
         )
         parts.append(
             "AVAILABLE TOOLS:\n"
-            + ", ".join(sorted(SUPPORTED_BROWSER_TOOL_NAMES))
+            + ", ".join(sorted(_supported_browser_tool_names()))
         )
         parts.append(
             "UNAVAILABLE TOOLS:\n"
-            + ", ".join(UNAVAILABLE_BROWSER_TOOLS)
+            + ", ".join(_unavailable_browser_tools())
             + "\nNever emit unavailable tools."
         )
         parts.append(
@@ -4415,7 +4831,6 @@ class ObsBuilder:
             + "- Use browser.select_dropdown only when a concrete option text is known.\n"
             + "- Use browser.dropdown_options before browser.select_dropdown if the correct option is unclear.\n"
             + "- Use browser.extract when the answer is visible but needs deterministic text extraction.\n"
-            + "- Use browser.evaluate only when DOM/JS state is required and normal actions are insufficient.\n"
             + "- Use browser.search only to start a web search, not for in-page site search boxes.\n"
             + "- Prefer browser.done when the page already contains the final answer."
         )
@@ -4430,7 +4845,7 @@ class ObsBuilder:
                 candidates=candidates,
                 active_region=active_region,
             )
-            if _env_bool("FSM_USE_LOCAL_HTML_CONTEXT", False)
+            if _env_bool("FSM_USE_LOCAL_HTML_CONTEXT", True)
             else {}
         )
         if local_html_context:
@@ -4696,7 +5111,7 @@ class ObsBuilder:
         candidates: List[Candidate],
         active_region: Dict[str, Any],
     ) -> Dict[str, Any]:
-        if not _env_bool("FSM_USE_LOCAL_HTML_CONTEXT", False):
+        if not _env_bool("FSM_USE_LOCAL_HTML_CONTEXT", True):
             return {}
         html = str(snapshot_html or "")
         if not html or BeautifulSoup is None:
@@ -4712,11 +5127,19 @@ class ObsBuilder:
             cand = by_id.get(str(cand_id))
             if cand is not None and cand not in target_candidates:
                 target_candidates.append(cand)
+        if not target_candidates:
+            for cand in candidates[:6]:
+                if isinstance(cand, Candidate) and cand not in target_candidates:
+                    target_candidates.append(cand)
+                if len(target_candidates) >= 4:
+                    break
         active_form = None
+        target_candidate_htmls: List[str] = []
         for cand in target_candidates:
             node = self._candidate_node(soup=soup, candidate=cand)
             if node is None:
                 continue
+            target_candidate_htmls.append(str(node)[:900])
             form = node.find_parent("form") if hasattr(node, "find_parent") else None
             if form is not None:
                 active_form = form
@@ -4746,9 +5169,19 @@ class ObsBuilder:
                     commit_htmls.append(str(node)[:1200])
         except Exception:
             pass
-        active_form_html = str(active_form)[:6000] if active_form is not None else ""
+        active_form_html = str(active_form)[:2500] if active_form is not None else ""
+        target_container_html = ""
+        if active_form is None and target_candidates:
+            try:
+                probe_node = self._candidate_node(soup=soup, candidate=target_candidates[0])
+                if probe_node is not None:
+                    target_container_html = str(self._nearest_region_container(probe_node) or "")[:1800]
+            except Exception:
+                target_container_html = ""
         return {
             "active_form_html": active_form_html,
+            "target_container_html": target_container_html,
+            "target_candidate_htmls": _dedupe_keep_order(target_candidate_htmls, 4),
             "last_used_element_html": last_used_html,
             "commit_candidate_htmls": _dedupe_keep_order(commit_htmls, 3),
         }
@@ -4878,7 +5311,14 @@ class ObsBuilder:
         )
         indexed_policy_candidates = self._indexed_candidate_obs(policy_candidates, limit=24)
         site_knowledge = (
-            _build_site_knowledge(_candidate_text(web_project_id), _normalize_use_case_info(use_case), prompt)
+            _build_site_knowledge(
+                _candidate_text(web_project_id),
+                _normalize_use_case_info(use_case),
+                prompt,
+                current_url=url,
+                snapshot_html=snapshot_html,
+                candidates=policy_candidates,
+            )
             if _env_bool("FSM_USE_SITE_KNOWLEDGE", False)
             else {}
         )
@@ -4898,14 +5338,20 @@ class ObsBuilder:
             },
             "mode": mode,
             "screenshot_available": bool(screenshot_available),
-            "available_browser_tools": sorted(SUPPORTED_BROWSER_TOOL_NAMES),
-            "unavailable_browser_tools": list(UNAVAILABLE_BROWSER_TOOLS),
+            "available_browser_tools": sorted(_supported_browser_tool_names()),
+            "unavailable_browser_tools": list(_unavailable_browser_tools()),
             "flags": flags,
             "page_observations": page_observations,
             "previous_step_verdict": verdict,
             "loop_nudges": loop_nudges,
             "active_objective": active_objective,
             "working_state": working_state,
+            "score_feedback": state.score_feedback if isinstance(state.score_feedback, dict) else {},
+            "state_score": (
+                float((state.score_feedback or {}).get("score"))
+                if isinstance(state.score_feedback, dict) and "score" in state.score_feedback
+                else None
+            ),
             "local_workflow_closure": local_workflow_closure,
             "local_html_context": local_html_context,
             "site_knowledge": site_knowledge,
@@ -5303,7 +5749,7 @@ class MetaToolExecutor:
         screenshot: Any = None,
     ) -> Dict[str, Any]:
         name = str(tool_name or "").strip().upper()
-        if name not in META_TOOLS:
+        if name not in _meta_tools():
             return {"ok": False, "error": f"unknown_meta_tool:{name}"}
 
         if name == "META.SOLVE_POPUPS":
@@ -5531,6 +5977,14 @@ class Policy:
                 "- Never emit unavailable tools.\n"
                 "- If the task includes filters or explicit constraints, use visible controls first before opening result items.\n"
                 "- Preserve placeholders such as <username>, <password>, <signup_email> exactly when typing.\n"
+                "- When useful, include reasoning as a short human-readable operator note grounded in visible page evidence.\n"
+                "- reasoning must be 1-2 short sentences, concrete, and suitable for product UI.\n"
+                "- reasoning must say what is visible now and why the chosen next action or final answer follows.\n"
+                "- reasoning must not contain chain-of-thought, filler, generic status text, or speculation without visible support.\n"
+                "- Before choosing actions, infer one short local workflow plan for the current page and keep it stable until that workflow is completed or visibly blocked.\n"
+                "- Update reasoning_trace.current_subgoal and reasoning_trace.plan to reflect the current local milestone, not the whole task from scratch.\n"
+                "- Do not replan the whole task every step unless the page changed materially or the current workflow clearly failed.\n"
+                "- If SCORE FEEDBACK is present in state and marks success=true or score=1.0, treat it as strong completion evidence and prefer final/browser.done unless visible evidence clearly contradicts it.\n"
             )
         else:
             system = (
@@ -5558,6 +6012,14 @@ class Policy:
             "- Never emit unavailable tools.\n"
             "- Preserve placeholders such as <username>, <password>, <signup_email> exactly when typing.\n"
             "- For informational tasks, use the current visible content before navigating more.\n"
+            "- When useful, include reasoning as a short human-readable operator note grounded in visible page evidence.\n"
+            "- reasoning must be 1-2 short sentences, concrete, and suitable for product UI.\n"
+            "- reasoning must say what is visible now and why the chosen next action or final answer follows.\n"
+            "- reasoning must not contain chain-of-thought, filler, generic status text, or speculation without visible support.\n"
+            "- Before choosing actions, infer one short local workflow plan for the current page and keep it stable until that workflow is completed or visibly blocked.\n"
+            "- Update reasoning_trace.current_subgoal and reasoning_trace.plan to reflect the current local milestone, not the whole task from scratch.\n"
+            "- Do not replan the whole task every step unless the page changed materially or the current workflow clearly failed.\n"
+            "- If SCORE FEEDBACK is present in state and marks success=true or score=1.0, treat it as strong completion evidence and prefer final/browser.done unless visible evidence clearly contradicts it.\n"
             )
         if direct_mode:
             user_parts = [
@@ -5582,7 +6044,7 @@ class Policy:
                 "file_tools_supported=false",
                 "",
                 "UNAVAILABLE TOOLS:",
-                ", ".join(policy_obs.get("unavailable_browser_tools") if isinstance(policy_obs.get("unavailable_browser_tools"), list) else list(UNAVAILABLE_BROWSER_TOOLS)),
+                ", ".join(policy_obs.get("unavailable_browser_tools") if isinstance(policy_obs.get("unavailable_browser_tools"), list) else list(_unavailable_browser_tools())),
                 "",
                 "TOOL USAGE GUIDE:",
                 "- browser.click: buttons, links, toggles, tabs, submit controls, checkboxes, radios.",
@@ -5590,8 +6052,22 @@ class Policy:
                 "- browser.select_dropdown: only when a concrete option text is known.",
                 "- browser.dropdown_options: inspect a select before choosing if the option is unclear.",
                 "- browser.extract: deterministic extraction from visible page content.",
-                "- browser.evaluate: JS/DOM inspection when normal tools are insufficient.",
                 "- browser.search: external web search, not in-page site search boxes.",
+                "",
+                "REASONING FIELD CONTRACT:",
+                "- You may include reasoning as a short operator note for humans.",
+                "- reasoning must be 1-2 short sentences, max about 220 characters total.",
+                "- reasoning must mention visible evidence or current page state and the next action or final answer.",
+                "- Good reasoning example: 'The comment form is already open and only the message field is still empty, so fill it and submit.'",
+                "- Bad reasoning example: 'I think this is probably the right thing to do next because it seems correct.'",
+                "- Do not include hidden reasoning, self-talk, generic filler, or unsupported guesses.",
+                "",
+                "PLAN MAINTENANCE CONTRACT:",
+                "- First infer a short local workflow for the current page before selecting actions.",
+                "- Keep that workflow stable across steps unless visible evidence shows it is blocked or no longer relevant.",
+                "- reasoning_trace.current_subgoal should name the current local milestone.",
+                "- reasoning_trace.plan should describe the next short sequence on this page, not the whole task history.",
+                "- If a form/filter/comment workflow is already active, prefer finishing it before exploring unrelated controls.",
                 "",
                 "REASONING TRACE CONTRACT:",
                 "- You may include reasoning_trace as a short JSON object with keys task_interpretation, success_state, current_subgoal, next_expected_proof, drift_risks, where_am_i, state_assessment, plan.",
@@ -5607,6 +6083,17 @@ class Policy:
                 "",
                 "WORKING STATE (JSON):",
                 json.dumps(policy_obs.get("working_state") if isinstance(policy_obs.get("working_state"), dict) else {}, ensure_ascii=False),
+                "",
+                *(
+                    [
+                        f"LLMJudgeEvaluator says score {policy_obs.get('state_score')}",
+                        "",
+                    ]
+                    if policy_obs.get("state_score") is not None
+                    else []
+                ),
+                "SCORE FEEDBACK (JSON):",
+                json.dumps(policy_obs.get("score_feedback") if isinstance(policy_obs.get("score_feedback"), dict) else {}, ensure_ascii=False),
                 "",
                 "LOCAL WORKFLOW CLOSURE (JSON):",
                 json.dumps(policy_obs.get("local_workflow_closure") if isinstance(policy_obs.get("local_workflow_closure"), dict) else {}, ensure_ascii=False),
@@ -5635,6 +6122,7 @@ class Policy:
                 "- If LOCAL WORKFLOW CLOSURE shows ready_to_commit=true and a visible commit control exists, strongly prefer finishing that local workflow before exploring unrelated controls.",
                 "- Use LOCAL HTML CONTEXT to understand which inputs and commit controls belong to the same active form or region.",
                 "- If multiple actions are returned, explain the local workflow in reasoning_trace.plan.",
+                "- If SCORE FEEDBACK is present and success=true or score=1.0, prefer finishing now unless the page visibly contradicts that signal.",
                 "",
                 "BROWSER SNAPSHOT:",
                 str(policy_obs.get("browser_state_snapshot") or "")[:3000],
@@ -5680,9 +6168,9 @@ class Policy:
                 "",
                 "Output schema examples:",
                 '{"type":"browser","tool_call":{"name":"browser.click","arguments":{"index":0}}}',
-                '{"type":"browser","reasoning_trace":{"task_interpretation":"Open the correct movie and submit a valid comment.","success_state":"A new comment is visibly posted on the target movie.","current_subgoal":"Finish the visible comment form.","next_expected_proof":"A post/submit action or the new comment appears.","drift_risks":"Opening related movies or share widgets.","where_am_i":"A movie detail page with a visible comment form.","state_assessment":"The form is ready and only needs local completion.","plan":"Fill the visible fields and submit without leaving this page."},"working_state":{"current_page_kind":"movie detail page","active_region":"comment form","active_workflow":"submit a valid movie comment","completed_fields":["name"],"pending_fields":["comment"],"completion_evidence_missing":["posted comment visible"],"next_milestone":"Submit the visible comment form.","completion_state":"awaiting_local_completion"},"tool_calls":[{"name":"browser.input","arguments":{"index":0,"text":"Jordan"}},{"name":"browser.input","arguments":{"index":1,"text":"Great pacing and atmosphere."}},{"name":"browser.click","arguments":{"index":2}}]}',
+                '{"type":"browser","reasoning":"The comment form is already open and only the message field is still missing, so complete it and submit on this page.","reasoning_trace":{"task_interpretation":"Open the correct movie and submit a valid comment.","success_state":"A new comment is visibly posted on the target movie.","current_subgoal":"Finish the visible comment form.","next_expected_proof":"A post/submit action or the new comment appears.","drift_risks":"Opening related movies or share widgets.","where_am_i":"A movie detail page with a visible comment form.","state_assessment":"The form is ready and only needs local completion.","plan":"Fill the visible fields and submit without leaving this page."},"working_state":{"current_page_kind":"movie detail page","active_region":"comment form","active_workflow":"submit a valid movie comment","completed_fields":["name"],"pending_fields":["comment"],"completion_evidence_missing":["posted comment visible"],"next_milestone":"Submit the visible comment form.","completion_state":"awaiting_local_completion"},"tool_calls":[{"name":"browser.input","arguments":{"index":0,"text":"Jordan"}},{"name":"browser.input","arguments":{"index":1,"text":"Great pacing and atmosphere."}},{"name":"browser.click","arguments":{"index":2}}]}',
                 '{"type":"browser","tool_call":{"name":"browser.done","arguments":{"content":"The total value is 2844."}}}',
-                '{"type":"final","done":true,"content":"The total value is 2844."}',
+                '{"type":"final","done":true,"content":"The total value is 2844.","reasoning":"The total value is already visible on the current page, so return it directly."}',
             ]
         else:
             user_parts = [
@@ -5705,8 +6193,22 @@ class Policy:
             "- browser.select_dropdown: only when a concrete option text is known.",
             "- browser.dropdown_options: inspect a select before choosing if the option is unclear.",
             "- browser.extract: deterministic extraction from visible page content.",
-            "- browser.evaluate: JS/DOM inspection when normal tools are insufficient.",
             "- browser.search: external web search, not in-page site search boxes.",
+            "",
+            "REASONING FIELD CONTRACT:",
+            "- You may include reasoning as a short operator note for humans.",
+            "- reasoning must be 1-2 short sentences, max about 220 characters total.",
+            "- reasoning must mention visible evidence or current page state and the next action or final answer.",
+            "- Good reasoning example: 'The filter panel is already visible and the apply button is in the same group, so finish this local filter sequence first.'",
+            "- Bad reasoning example: 'I will think step by step and try something that might work.'",
+            "- Do not include hidden reasoning, self-talk, generic filler, or unsupported guesses.",
+            "",
+            "PLAN MAINTENANCE CONTRACT:",
+            "- First infer a short local workflow for the current page before selecting actions.",
+            "- Keep that workflow stable across steps unless visible evidence shows it is blocked or no longer relevant.",
+            "- reasoning_trace.current_subgoal should name the current local milestone.",
+            "- reasoning_trace.plan should describe the next short sequence on this page, not the whole task history.",
+            "- If a form/filter/comment workflow is already active, prefer finishing it before exploring unrelated controls.",
             "",
             "REASONING TRACE CONTRACT:",
             "- You may include reasoning_trace as a short JSON object with keys task_interpretation, success_state, current_subgoal, next_expected_proof, drift_risks, where_am_i, state_assessment, plan.",
@@ -5722,6 +6224,17 @@ class Policy:
             "",
             "WORKING STATE (JSON):",
             json.dumps(policy_obs.get("working_state") if isinstance(policy_obs.get("working_state"), dict) else {}, ensure_ascii=False),
+            "",
+            *(
+                [
+                    f"LLMJudgeEvaluator says score {policy_obs.get('state_score')}",
+                    "",
+                ]
+                if policy_obs.get("state_score") is not None
+                else []
+            ),
+            "SCORE FEEDBACK (JSON):",
+            json.dumps(policy_obs.get("score_feedback") if isinstance(policy_obs.get("score_feedback"), dict) else {}, ensure_ascii=False),
             "",
             "LOCAL WORKFLOW CLOSURE (JSON):",
             json.dumps(policy_obs.get("local_workflow_closure") if isinstance(policy_obs.get("local_workflow_closure"), dict) else {}, ensure_ascii=False),
@@ -5748,6 +6261,7 @@ class Policy:
             "- If LOCAL WORKFLOW CLOSURE shows ready_to_commit=true and a visible commit control exists, strongly prefer finishing that local workflow before exploring unrelated controls.",
             "- Use LOCAL HTML CONTEXT to understand which inputs and commit controls belong to the same active form or region.",
             "- If multiple actions are returned, they must form one short local workflow and reasoning_trace.plan must say why.",
+            "- If SCORE FEEDBACK is present and success=true or score=1.0, prefer finishing now unless the page visibly contradicts that signal.",
             "",
             "BROWSER SNAPSHOT:",
             str(policy_obs.get("browser_state_snapshot") or "")[:3000],
@@ -5816,7 +6330,7 @@ class Policy:
             ),
             "",
             "UNAVAILABLE TOOLS:",
-            ", ".join(policy_obs.get("unavailable_browser_tools") if isinstance(policy_obs.get("unavailable_browser_tools"), list) else list(UNAVAILABLE_BROWSER_TOOLS)),
+            ", ".join(policy_obs.get("unavailable_browser_tools") if isinstance(policy_obs.get("unavailable_browser_tools"), list) else list(_unavailable_browser_tools())),
             "",
             "PREVIOUS STEP VERDICT:",
             json.dumps(policy_obs.get("previous_step_verdict") if isinstance(policy_obs.get("previous_step_verdict"), dict) else {}, ensure_ascii=False),
@@ -5825,8 +6339,6 @@ class Policy:
             if history_summary:
                 user_parts.extend(["", "HISTORY SUMMARY:", history_summary[:2000]])
             history_recent = policy_obs.get("history_recent") if isinstance(policy_obs.get("history_recent"), list) else []
-            if history_recent:
-                user_parts.extend(["", "HISTORY RECENT (JSON):", json.dumps(history_recent[:10], ensure_ascii=False)])
             recent_failures = [
                 item
                 for item in history_recent[-8:]
@@ -5893,10 +6405,10 @@ class Policy:
                 "",
                 "Output schema examples:",
                 '{"type":"browser","tool_call":{"name":"browser.click","arguments":{"index":0}}}',
-                '{"type":"browser","reasoning_trace":{"task_interpretation":"Use the current page controls to narrow results.","success_state":"The required filtered result is visible.","current_subgoal":"Apply the current filter set.","next_expected_proof":"An apply/search result change is visible.","drift_risks":"Opening unrelated result cards too early.","where_am_i":"A filter panel with visible controls.","state_assessment":"The target controls are already visible.","plan":"Complete the filter sequence locally before opening any result cards."},"working_state":{"current_page_kind":"filter results page","active_region":"filter panel","active_workflow":"apply the current filter set","completed_fields":["genre"],"pending_fields":["apply filters"],"completion_evidence_missing":["updated result set"],"next_milestone":"Apply the visible filter controls.","completion_state":"awaiting_local_completion"},"tool_calls":[{"name":"browser.select_dropdown","arguments":{"index":1,"text":"Comedy"}},{"name":"browser.click","arguments":{"index":2}}]}',
+                '{"type":"browser","reasoning":"The filter panel is already visible and the next useful step is to finish the local filter sequence before opening any result cards.","reasoning_trace":{"task_interpretation":"Use the current page controls to narrow results.","success_state":"The required filtered result is visible.","current_subgoal":"Apply the current filter set.","next_expected_proof":"An apply/search result change is visible.","drift_risks":"Opening unrelated result cards too early.","where_am_i":"A filter panel with visible controls.","state_assessment":"The target controls are already visible.","plan":"Complete the filter sequence locally before opening any result cards."},"working_state":{"current_page_kind":"filter results page","active_region":"filter panel","active_workflow":"apply the current filter set","completed_fields":["genre"],"pending_fields":["apply filters"],"completion_evidence_missing":["updated result set"],"next_milestone":"Apply the visible filter controls.","completion_state":"awaiting_local_completion"},"tool_calls":[{"name":"browser.select_dropdown","arguments":{"index":1,"text":"Comedy"}},{"name":"browser.click","arguments":{"index":2}}]}',
                 '{"type":"browser","tool_call":{"name":"browser.select_dropdown","arguments":{"index":1,"text":"Comedy"}}}',
                 '{"type":"browser","tool_call":{"name":"browser.done","arguments":{"content":"The total value is 2844."}}}',
-                '{"type":"final","done":true,"content":"The total value is 2844."}',
+                '{"type":"final","done":true,"content":"The total value is 2844.","reasoning":"The total value is already visible on the page, so the task can finish without another browser action."}',
                 "",
                 "Instructions:",
                 "- Output JSON only.",
@@ -5914,7 +6426,8 @@ class Policy:
             )
             if meta_enabled:
                 user_parts.insert(-5, '{"type":"meta","meta_tool":{"name":"META.FIND_ELEMENTS","arguments":{"role":"input","text":"search","limit":6}}}')
-                user_parts.insert(-5, '{"type":"meta","meta_tool":{"name":"META.VISION_QA","arguments":{"question":"Which visible control best applies the current filters?"}}}')
+                if "META.VISION_QA" in _obs_meta_tools():
+                    user_parts.insert(-5, '{"type":"meta","meta_tool":{"name":"META.VISION_QA","arguments":{"question":"Which visible control best applies the current filters?"}}}')
         user_text = "\n".join([part for part in user_parts if part is not None])[:45000]
         model = plan_model_name if (mode == "PLAN" or mode == "STUCK") else model_name
         self._debug_log(
@@ -6119,7 +6632,7 @@ class Policy:
         if t == "meta":
             mt = obj.get("meta_tool") if isinstance(obj.get("meta_tool"), dict) else {}
             name = str(mt.get("name") or obj.get("name") or "").strip().upper()
-            if name in META_TOOLS and (not allowed_tools or name in allowed_tools):
+            if name in _meta_tools() and (not allowed_tools or name in allowed_tools):
                 return {
                     "type": "meta",
                     "name": name,
@@ -7087,10 +7600,17 @@ class FSMOperator:
         if usage:
             usage_payload["usage"] = _merge_usage_dicts(
                 usage_payload.get("usage") if isinstance(usage_payload.get("usage"), dict) else {},
-                usage.get("usage") if isinstance(usage.get("usage"), dict) else {},
+                usage if isinstance(usage, dict) else {},
             )
-            if usage.get("model"):
-                policy_model_used = str(usage.get("model"))
+            usage_breakdown = usage_payload.get("usage_breakdown") if isinstance(usage_payload.get("usage_breakdown"), dict) else _usage_breakdown_template()
+            usage_breakdown["policy"] = _merge_usage_dicts(
+                usage_breakdown.get("policy") if isinstance(usage_breakdown.get("policy"), dict) else {},
+                usage if isinstance(usage, dict) else {},
+            )
+            usage_payload["usage_breakdown"] = usage_breakdown
+            call_breakdown = usage_payload.get("call_breakdown") if isinstance(usage_payload.get("call_breakdown"), dict) else _empty_call_breakdown()
+            call_breakdown["policy_llm_calls"] = int(call_breakdown.get("policy_llm_calls") or 0) + 1
+            usage_payload["call_breakdown"] = call_breakdown
         self._remember_reasoning_trace(state=state, decision=decision)
         self._remember_working_state(state=state, decision=decision)
         policy_reasoning = _candidate_text(decision.get("reasoning"), policy_reasoning)
@@ -7270,6 +7790,15 @@ class FSMOperator:
                         usage_payload.get("usage") if isinstance(usage_payload.get("usage"), dict) else {},
                         vision_result.get("usage") if isinstance(vision_result.get("usage"), dict) else {},
                     )
+                    usage_breakdown = usage_payload.get("usage_breakdown") if isinstance(usage_payload.get("usage_breakdown"), dict) else _usage_breakdown_template()
+                    usage_breakdown["vision"] = _merge_usage_dicts(
+                        usage_breakdown.get("vision") if isinstance(usage_breakdown.get("vision"), dict) else {},
+                        vision_result.get("usage") if isinstance(vision_result.get("usage"), dict) else {},
+                    )
+                    usage_payload["usage_breakdown"] = usage_breakdown
+                    call_breakdown = usage_payload.get("call_breakdown") if isinstance(usage_payload.get("call_breakdown"), dict) else _empty_call_breakdown()
+                    call_breakdown["vision_llm_calls"] = int(call_breakdown.get("vision_llm_calls") or 0) + 1
+                    usage_payload["call_breakdown"] = call_breakdown
                     helper_model = str(vision_result.get("model") or "").strip()
                     if helper_model:
                         usage_payload["helper_models"] = _dedupe_keep_order(
@@ -7299,7 +7828,7 @@ class FSMOperator:
                     text_ir=text_ir,
                     candidates=ranked,
                     history=history,
-                    screenshot_available=bool(_normalize_screenshot_data_url(screenshot)),
+                    screenshot_available=_screenshot_available(screenshot),
                 )
                 route_reason = self._maybe_promote_to_plan_from_capability_gap(
                     state=state,
@@ -7321,10 +7850,17 @@ class FSMOperator:
                 if usage:
                     usage_payload["usage"] = _merge_usage_dicts(
                         usage_payload.get("usage") if isinstance(usage_payload.get("usage"), dict) else {},
-                        usage.get("usage") if isinstance(usage.get("usage"), dict) else {},
+                        usage if isinstance(usage, dict) else {},
                     )
-                    if usage.get("model"):
-                        policy_model_used = str(usage.get("model"))
+                    usage_breakdown = usage_payload.get("usage_breakdown") if isinstance(usage_payload.get("usage_breakdown"), dict) else _usage_breakdown_template()
+                    usage_breakdown["policy"] = _merge_usage_dicts(
+                        usage_breakdown.get("policy") if isinstance(usage_breakdown.get("policy"), dict) else {},
+                        usage if isinstance(usage, dict) else {},
+                    )
+                    usage_payload["usage_breakdown"] = usage_breakdown
+                    call_breakdown = usage_payload.get("call_breakdown") if isinstance(usage_payload.get("call_breakdown"), dict) else _empty_call_breakdown()
+                    call_breakdown["policy_llm_calls"] = int(call_breakdown.get("policy_llm_calls") or 0) + 1
+                    usage_payload["call_breakdown"] = call_breakdown
                 self._remember_reasoning_trace(state=state, decision=decision)
                 self._remember_working_state(state=state, decision=decision)
                 policy_reasoning = _candidate_text(decision.get("reasoning"), policy_reasoning)
@@ -7462,6 +7998,16 @@ class FSMOperator:
                             usage_payload.get("usage") if isinstance(usage_payload.get("usage"), dict) else {},
                             result.get("usage") if isinstance(result.get("usage"), dict) else {},
                         )
+                        if meta_name == "META.VISION_QA":
+                            usage_breakdown = usage_payload.get("usage_breakdown") if isinstance(usage_payload.get("usage_breakdown"), dict) else _usage_breakdown_template()
+                            usage_breakdown["vision"] = _merge_usage_dicts(
+                                usage_breakdown.get("vision") if isinstance(usage_breakdown.get("vision"), dict) else {},
+                                result.get("usage") if isinstance(result.get("usage"), dict) else {},
+                            )
+                            usage_payload["usage_breakdown"] = usage_breakdown
+                            call_breakdown = usage_payload.get("call_breakdown") if isinstance(usage_payload.get("call_breakdown"), dict) else _empty_call_breakdown()
+                            call_breakdown["vision_llm_calls"] = int(call_breakdown.get("vision_llm_calls") or 0) + 1
+                            usage_payload["call_breakdown"] = call_breakdown
                         helper_model = str(result.get("model") or "").strip()
                         if helper_model:
                             usage_payload["helper_models"] = _dedupe_keep_order(
@@ -7493,7 +8039,7 @@ class FSMOperator:
                         text_ir=text_ir,
                         candidates=ranked,
                         history=history,
-                        screenshot_available=bool(_normalize_screenshot_data_url(screenshot)),
+                        screenshot_available=_screenshot_available(screenshot),
                     )
                     route_reason = self._maybe_promote_to_plan_from_capability_gap(
                         state=state,
@@ -7712,6 +8258,20 @@ class FSMOperator:
         if usage:
             out["usage"] = usage
             out["total_tokens"] = int(usage.get("total_tokens") or 0)
+        call_breakdown = usage_payload.get("call_breakdown") if isinstance(usage_payload.get("call_breakdown"), dict) else {}
+        if call_breakdown:
+            out["call_breakdown"] = {
+                "policy_llm_calls": int(call_breakdown.get("policy_llm_calls") or 0),
+                "obs_extract_llm_calls": int(call_breakdown.get("obs_extract_llm_calls") or 0),
+                "vision_llm_calls": int(call_breakdown.get("vision_llm_calls") or 0),
+            }
+        usage_breakdown = usage_payload.get("usage_breakdown") if isinstance(usage_payload.get("usage_breakdown"), dict) else {}
+        if usage_breakdown:
+            out["usage_breakdown"] = {
+                "policy": _merge_usage_dicts({}, usage_breakdown.get("policy") if isinstance(usage_breakdown.get("policy"), dict) else {}),
+                "obs_extract": _merge_usage_dicts({}, usage_breakdown.get("obs_extract") if isinstance(usage_breakdown.get("obs_extract"), dict) else {}),
+                "vision": _merge_usage_dicts({}, usage_breakdown.get("vision") if isinstance(usage_breakdown.get("vision"), dict) else {}),
+            }
         out["model"] = str(policy_model_used or model_name)
         helper_models = [str(m).strip() for m in list(usage_payload.get("helper_models") or []) if str(m).strip()]
         if helper_models:
@@ -7788,6 +8348,8 @@ class FSMOperator:
             "usage": usage_payload.get("usage") if isinstance(usage_payload.get("usage"), dict) else None,
             "model": policy_model_used,
             "helper_models": usage_payload.get("helper_models") if isinstance(usage_payload.get("helper_models"), list) else [],
+            "call_breakdown": usage_payload.get("call_breakdown") if isinstance(usage_payload.get("call_breakdown"), dict) else {},
+            "usage_breakdown": usage_payload.get("usage_breakdown") if isinstance(usage_payload.get("usage_breakdown"), dict) else {},
         }
         if include_reasoning and isinstance(state.memory.reasoning_trace, dict) and state.memory.reasoning_trace:
             out["reasoning_trace"] = dict(state.memory.reasoning_trace)
@@ -7883,7 +8445,11 @@ class FSMOperator:
         )
         obs_extract_usage = obs_extract.get("__usage") if isinstance(obs_extract.get("__usage"), dict) else {}
         obs_extract_model = str(obs_extract.get("__model") or "").strip() if isinstance(obs_extract, dict) else ""
-        usage_payload: Dict[str, Any] = {"helper_models": []}
+        usage_payload: Dict[str, Any] = {
+            "helper_models": [],
+            "call_breakdown": _empty_call_breakdown(),
+            "usage_breakdown": _usage_breakdown_template(),
+        }
         if obs_extract:
             text_ir = dict(text_ir)
             text_ir["llm_extract"] = {k: v for k, v in obs_extract.items() if not str(k).startswith("__")}
@@ -7910,7 +8476,7 @@ class FSMOperator:
             text_ir=text_ir,
             candidates=ranked,
             history=history,
-            screenshot_available=bool(_normalize_screenshot_data_url(screenshot)),
+            screenshot_available=_screenshot_available(screenshot),
         )
         if not direct_loop:
             route_reason = self._maybe_promote_to_plan_from_capability_gap(
@@ -7933,25 +8499,35 @@ class FSMOperator:
                     text_ir=text_ir,
                     candidates=ranked,
                     history=history,
-                    screenshot_available=bool(_normalize_screenshot_data_url(screenshot)),
+                    screenshot_available=_screenshot_available(screenshot),
                 )
         if obs_extract_usage:
             usage_payload["usage"] = _merge_usage_dicts(
                 usage_payload.get("usage") if isinstance(usage_payload.get("usage"), dict) else {},
                 obs_extract_usage,
             )
+            usage_breakdown = usage_payload.get("usage_breakdown") if isinstance(usage_payload.get("usage_breakdown"), dict) else _usage_breakdown_template()
+            usage_breakdown["obs_extract"] = _merge_usage_dicts(
+                usage_breakdown.get("obs_extract") if isinstance(usage_breakdown.get("obs_extract"), dict) else {},
+                obs_extract_usage,
+            )
+            usage_payload["usage_breakdown"] = usage_breakdown
         if obs_extract_model:
             usage_payload["helper_models"] = _dedupe_keep_order(
                 list(usage_payload.get("helper_models") or []) + [obs_extract_model],
                 8,
             )
+        if obs_extract_usage or obs_extract_model:
+            call_breakdown = usage_payload.get("call_breakdown") if isinstance(usage_payload.get("call_breakdown"), dict) else _empty_call_breakdown()
+            call_breakdown["obs_extract_llm_calls"] = int(call_breakdown.get("obs_extract_llm_calls") or 0) + 1
+            usage_payload["call_breakdown"] = call_breakdown
         default_model_name = _env_str("OPENAI_MODEL", "gpt-5.2") or "gpt-5.2"
         model_name = str(model_override or default_model_name)
         plan_model_name = str(model_override or _env_str("OPENAI_PLAN_MODEL", default_model_name) or default_model_name)
         policy_model_used = plan_model_name if state.mode in {"PLAN", "STUCK"} else model_name
         browser_allowed = {tool for tool in allowed if str(tool).startswith("browser.")}
         if not browser_allowed:
-            browser_allowed = set(SUPPORTED_BROWSER_TOOL_NAMES)
+            browser_allowed = set(_supported_browser_tool_names())
         return {
             "flags": flags,
             "route_reason": route_reason,
@@ -8494,8 +9070,8 @@ class FSMOperator:
     def _normalize_allowed(self, allowed_tools: Any) -> set[str]:
         out: set[str] = set()
         if not isinstance(allowed_tools, list):
-            out.update(SUPPORTED_BROWSER_TOOL_NAMES)
-            out.update(OBS_META_TOOLS)
+            out.update(_supported_browser_tool_names())
+            out.update(_obs_meta_tools())
             if self._allow_control_meta_tools():
                 out.update(CONTROL_META_TOOLS)
             return out
@@ -8507,10 +9083,10 @@ class FSMOperator:
                 raw_name = str((item.get("function") or {}).get("name") or "").strip()
             canonical = _canonical_allowed_tool_name(raw_name)
             if canonical:
-                if canonical.startswith("browser.") and canonical not in SUPPORTED_BROWSER_TOOL_NAMES:
+                if canonical.startswith("browser.") and canonical not in _supported_browser_tool_names():
                     continue
                 if canonical.startswith("META."):
-                    if canonical not in META_TOOLS:
+                    if canonical not in _meta_tools():
                         continue
                     if (not self._allow_control_meta_tools()) and canonical in CONTROL_META_TOOLS:
                         continue
@@ -8538,7 +9114,6 @@ class FSMOperator:
             "screenshotaction": "browser.screenshot",
             "sendkeysiwaaction": "browser.send_keys",
             "holdkeyaction": "browser.hold_key",
-            "evaluateaction": "browser.evaluate",
             "extractaction": "browser.extract",
         }
         return mapping.get(t_l, "")
@@ -9552,6 +10127,8 @@ class FSMOperator:
             return out
 
         if name == "browser.screenshot":
+            if not _use_vision():
+                return None
             file_path = _candidate_text(args.get("file_path"), args.get("file_name"), "")
             full_page = bool(args.get("full_page"))
             return {"type": "ScreenshotAction", "file_path": file_path, "full_page": full_page}
@@ -9563,14 +10140,6 @@ class FSMOperator:
         if name == "browser.hold_key":
             key = _candidate_text(args.get("key"), "Control")
             return {"type": "HoldKeyAction", "key": key}
-        if name == "browser.evaluate":
-            script = _candidate_text(args.get("script"), args.get("expression"))
-            if not script:
-                return None
-            out = {"type": "EvaluateAction", "script": script}
-            if "arg" in args:
-                out["arg"] = args.get("arg")
-            return out
         if name == "browser.extract":
             query = _candidate_text(args.get("query"), "")
             selector, _, _ = resolve_target(prefer_roles=set(), allow_unmatched_selector=True)

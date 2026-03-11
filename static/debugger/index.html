@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Operator Debugger</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1f50d;</text></svg>">
+  <link rel="stylesheet" href="/static/debugger/styles.css">
+</head>
+<body>
+  <div class="bg-decor" aria-hidden="true"></div>
+  <div class="app-shell">
+
+    <!-- ── Topbar ──────────────────────────────────────── -->
+    <header class="topbar panel">
+      <div class="topbar-title">
+        <h1>Operator Inspector</h1>
+        <div class="trace-row">
+          <p id="traceDirText">No trace loaded</p>
+          <button id="copyTraceDirBtn" class="btn tiny" title="Copy full trace dir">Copy path</button>
+        </div>
+      </div>
+      <div class="topbar-controls">
+        <label class="field">
+          <span>Trace Run</span>
+          <select id="tracePicker"></select>
+        </label>
+        <button id="loadTraceBtn" class="btn btn-primary">Load</button>
+        <button id="refreshBtn" class="btn btn-icon" title="Refresh data">&#x21bb;</button>
+      </div>
+    </header>
+
+    <!-- ── Run metrics ─────────────────────────────────── -->
+    <section id="runSummary" class="panel summary-strip"></section>
+
+    <!-- ── Three-pane workspace ────────────────────────── -->
+    <main class="workspace">
+
+      <!-- Left: Episodes -->
+      <aside class="pane pane-left panel relative" id="episodesPane">
+        <h2>Episodes</h2>
+        <div class="filters">
+          <label class="field compact">
+            <span>Use Case</span>
+            <select id="filterUseCase"></select>
+          </label>
+          <label class="field compact">
+            <span>Status</span>
+            <select id="filterStatus">
+              <option value="">All</option>
+              <option value="success">Success</option>
+              <option value="failure">Failure</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span>Failure Cat.</span>
+            <select id="filterFailureCategory"></select>
+          </label>
+        </div>
+        <div id="episodes" class="list"></div>
+      </aside>
+
+      <!-- Center: Step timeline -->
+      <section class="pane pane-center panel relative" id="stepsPane">
+        <div class="pane-header">
+          <h2>Steps</h2>
+          <div class="shortcut-hint">j/k step &middot; J/K episode &middot; 1-7 sections</div>
+        </div>
+        <div id="episodeSummary" class="episode-summary"></div>
+        <div class="step-nav">
+          <button id="prevStepBtn" class="btn btn-icon" title="Previous step (k)">&larr;</button>
+          <div id="stepPosition" class="step-pos">Step - / -</div>
+          <button id="nextStepBtn" class="btn btn-icon" title="Next step (j)">&rarr;</button>
+        </div>
+        <div id="steps" class="list timeline"></div>
+      </section>
+
+      <!-- Right: Inspector detail -->
+      <section class="pane pane-right panel">
+        <div id="stepHeadline" class="step-headline"></div>
+        <nav class="quick-sections" id="quickSections"></nav>
+
+        <details id="secReasoning" open>
+          <summary>Reasoning &amp; State</summary>
+          <div class="section-grid two">
+            <article>
+              <h3>Reasoning</h3>
+              <pre id="reasoningPre"></pre>
+            </article>
+            <article>
+              <h3>Agent Metrics</h3>
+              <pre id="metricsPre"></pre>
+            </article>
+            <article>
+              <h3>State In</h3>
+              <pre id="stateInPre"></pre>
+            </article>
+            <article>
+              <h3>State Out</h3>
+              <pre id="stateOutPre"></pre>
+            </article>
+          </div>
+        </details>
+
+        <details id="secActions" open>
+          <summary>Actions &amp; Execution</summary>
+          <div class="section-grid two">
+            <article>
+              <h3>Actions</h3>
+              <pre id="actionsPre"></pre>
+            </article>
+            <article>
+              <h3>Execution</h3>
+              <pre id="executionPre"></pre>
+            </article>
+          </div>
+        </details>
+
+        <details id="secAct" open>
+          <summary>/act Request &amp; Response</summary>
+          <div class="section-grid two">
+            <article>
+              <div class="article-head">
+                <h3>Request</h3>
+                <button class="btn tiny" data-copy-target="actRequestPre">Copy</button>
+              </div>
+              <pre id="actRequestPre"></pre>
+            </article>
+            <article>
+              <div class="article-head">
+                <h3>Response</h3>
+                <button class="btn tiny" data-copy-target="actResponsePre">Copy</button>
+              </div>
+              <pre id="actResponsePre"></pre>
+            </article>
+          </div>
+        </details>
+
+        <details id="secDiffs">
+          <summary>Diffs</summary>
+          <div class="section-grid two">
+            <article>
+              <h3>State Diff</h3>
+              <pre id="stateDiffPre"></pre>
+            </article>
+            <article>
+              <h3>HTML Diff</h3>
+              <pre id="htmlDiffPre"></pre>
+            </article>
+          </div>
+        </details>
+
+        <details id="secHtml">
+          <summary>HTML Before &amp; After</summary>
+          <div class="section-grid two sticky-compare">
+            <article>
+              <h3>Before HTML</h3>
+              <textarea id="htmlBeforeText" readonly></textarea>
+              <iframe id="htmlBeforeFrame" sandbox="allow-same-origin"></iframe>
+            </article>
+            <article>
+              <h3>After HTML</h3>
+              <textarea id="htmlAfterText" readonly></textarea>
+              <iframe id="htmlAfterFrame" sandbox="allow-same-origin"></iframe>
+            </article>
+          </div>
+        </details>
+
+        <details id="secShots" open>
+          <summary>Screenshots</summary>
+          <div class="section-grid two sticky-compare">
+            <article>
+              <h3>Before</h3>
+              <img id="shotBefore" alt="before screenshot">
+              <div id="shotBeforeEmpty" class="empty">No screenshot in trace.</div>
+            </article>
+            <article>
+              <h3>After</h3>
+              <img id="shotAfter" alt="after screenshot">
+              <div id="shotAfterEmpty" class="empty">No screenshot in trace.</div>
+            </article>
+          </div>
+        </details>
+
+        <details id="secReplay">
+          <summary>Replay</summary>
+          <div class="replay-controls">
+            <button class="btn btn-primary" id="replayStartBtn">Play</button>
+            <button class="btn" id="replayPauseBtn">Pause</button>
+            <button class="btn" id="replayResumeBtn">Resume</button>
+            <button class="btn" id="replayStepBtn">Step</button>
+            <button class="btn" id="replayResetBtn">Reset</button>
+          </div>
+          <pre id="replayStatusPre"></pre>
+        </details>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast container for notifications -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="/static/debugger/app.js"></script>
+</body>
+</html>

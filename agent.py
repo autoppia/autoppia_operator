@@ -6,7 +6,10 @@ import inspect
 import json
 import logging
 import os
+import re
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
@@ -70,8 +73,24 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _use_vision() -> bool:
+    return _env_bool("USE_VISION", False) or _env_bool("AGENT_USE_VISION", False)
+
+
+def _is_tool_enabled(name: str) -> bool:
+    canonical = _canonical_browser_tool_name(name)
+    if not canonical:
+        return False
+    if canonical == "browser.screenshot" and not _use_vision():
+        return False
+    return True
+
+
 _LOG_DECISIONS = _env_bool("AGENT_LOG_DECISIONS", False)
-_FSM_OPERATOR = FSMOperator(llm_call=openai_chat_completions, vision_call=openai_vision_chat_completions)
+_FSM_OPERATOR = FSMOperator(
+    llm_call=openai_chat_completions,
+    vision_call=(openai_vision_chat_completions if _use_vision() else None),
+)
 _LEGACY_OPERATOR = LegacyApifiedWebAgent(id=os.getenv("WEB_AGENT_ID", "1"), name="AutoppiaOperatorMain")
 
 
@@ -79,6 +98,92 @@ _LEGACY_OPERATOR = LegacyApifiedWebAgent(id=os.getenv("WEB_AGENT_ID", "1"), name
 def _log_trace(message: str) -> None:
     if _LOG_DECISIONS:
         logger.info(f"[AGENT_TRACE] {message}")
+
+
+def _payload_log_context(payload: dict[str, Any]) -> dict[str, Any]:
+    prompt = str(payload.get("prompt") or payload.get("task_prompt") or "")
+    html = str(payload.get("snapshot_html") or "")
+    history = payload.get("history") if isinstance(payload.get("history"), list) else []
+    allowed_tools = payload.get("allowed_tools") if isinstance(payload.get("allowed_tools"), list) else []
+    state_in = payload.get("state_in") if isinstance(payload.get("state_in"), dict) else {}
+    screenshot = payload.get("screenshot")
+    return {
+        "task_id": str(payload.get("task_id") or ""),
+        "step_index": int(payload.get("step_index") or 0),
+        "url": _normalize_demo_url(str(payload.get("url") or "")),
+        "prompt_len": len(prompt),
+        "html_len": len(html),
+        "history_len": len(history),
+        "allowed_tools_len": len(allowed_tools),
+        "state_keys": len(state_in),
+        "has_screenshot": bool(screenshot),
+    }
+
+
+def _log_act_start(payload: dict[str, Any]) -> dict[str, Any]:
+    ctx = _payload_log_context(payload)
+    logger.info(
+        "[ACT] start task_id=%s step=%s url=%s prompt_len=%s html_len=%s history_len=%s allowed_tools=%s state_keys=%s screenshot=%s",
+        ctx["task_id"],
+        ctx["step_index"],
+        ctx["url"],
+        ctx["prompt_len"],
+        ctx["html_len"],
+        ctx["history_len"],
+        ctx["allowed_tools_len"],
+        ctx["state_keys"],
+        int(bool(ctx["has_screenshot"])),
+    )
+    return ctx
+
+
+def _log_act_finish(ctx: dict[str, Any], started_at: float, response_payload: dict[str, Any]) -> None:
+    tool_calls = response_payload.get("tool_calls") if isinstance(response_payload.get("tool_calls"), list) else []
+    state_out = response_payload.get("state_out") if isinstance(response_payload.get("state_out"), dict) else {}
+    content = str(response_payload.get("content") or "") if isinstance(response_payload, dict) else ""
+    reasoning = str(response_payload.get("reasoning") or "") if isinstance(response_payload, dict) else ""
+    operator_metrics = (
+        (response_payload.get("metrics") or {}).get("operator")
+        if isinstance(response_payload.get("metrics"), dict)
+        else {}
+    )
+    duration_ms = int((operator_metrics or {}).get("duration_ms") or 0) or int((time.monotonic() - started_at) * 1000)
+    logger.info(
+        "[ACT] finish task_id=%s step=%s done=%s tool_calls=%s content_len=%s reasoning_len=%s state_out_keys=%s duration_ms=%s",
+        ctx.get("task_id", ""),
+        ctx.get("step_index", 0),
+        int(bool(response_payload.get("done"))),
+        len(tool_calls),
+        len(content),
+        len(reasoning),
+        len(state_out),
+        duration_ms,
+    )
+
+
+def _log_act_failure(ctx: dict[str, Any], started_at: float, exc: Exception) -> None:
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    logger.exception(
+        "[ACT] failure task_id=%s step=%s url=%s duration_ms=%s err_type=%s err=%s",
+        ctx.get("task_id", ""),
+        ctx.get("step_index", 0),
+        ctx.get("url", ""),
+        duration_ms,
+        type(exc).__name__,
+        str(exc),
+    )
+
+
+def _attach_operator_metrics(response_payload: dict[str, Any], *, started_at: float) -> dict[str, Any]:
+    if not isinstance(response_payload, dict):
+        return response_payload
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    metrics = response_payload.get("metrics") if isinstance(response_payload.get("metrics"), dict) else {}
+    operator_metrics = metrics.get("operator") if isinstance(metrics.get("operator"), dict) else {}
+    operator_metrics["duration_ms"] = int(duration_ms)
+    metrics["operator"] = operator_metrics
+    response_payload["metrics"] = metrics
+    return response_payload
 
 
 if not _AUTOPPIA_IWA_IMPORT_OK:
@@ -97,13 +202,15 @@ def _normalize_demo_url(raw_url: str | None) -> str:
             if not normalized.startswith("/"):
                 if "." in normalized or ":" in normalized:
                     parsed = urlsplit(f"http://{normalized}")
-                    return urlunsplit(("http", "localhost", parsed.path or "/", parsed.query, parsed.fragment))
+                    path = parsed.path or ""
+                    return urlunsplit(("http", "localhost", path, parsed.query, parsed.fragment))
                 normalized = f"/{normalized}"
             return f"http://localhost{normalized}"
         parsed = urlsplit(normalized)
-        return urlunsplit(("http", "localhost", parsed.path or "/", parsed.query, parsed.fragment))
+        path = parsed.path or ""
+        return urlunsplit(("http", "localhost", path, parsed.query, parsed.fragment))
     except Exception:
-        return "http://localhost/"
+        return "http://localhost"
 
 
 
@@ -128,9 +235,94 @@ def _is_request_user_input_action_type(action_type: Any) -> bool:
 
 def _sanitize_action_payload(action_payload: dict[str, Any]) -> dict[str, Any]:
     payload = dict(action_payload or {})
+    selector = _normalize_selector_payload(payload.get("selector"))
+    if isinstance(selector, dict):
+        payload["selector"] = selector
+    elif "selector" in payload:
+        payload.pop("selector", None)
     if _is_navigate_action_type(payload.get("type")):
         payload["url"] = _normalize_demo_url(payload.get("url"))
     return payload
+
+
+def _normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
+    if not isinstance(raw_selector, dict):
+        return None
+    selector = dict(raw_selector)
+    raw_type = str(selector.get("type") or "").strip()
+    sel_type = raw_type.lower()
+    case_sensitive = bool(selector.get("case_sensitive", False))
+
+    def first_text(*keys: str) -> str:
+        for key in keys:
+            value = _candidate_text(selector.get(key))
+            if value:
+                return value[:400]
+        return ""
+
+    def normalize_xpath(value: str) -> str:
+        cleaned = str(value or "").strip()
+        if cleaned.lower().startswith("xpath="):
+            cleaned = cleaned[6:].strip()
+        if cleaned.startswith("///"):
+            cleaned = "//" + cleaned.lstrip("/")
+        elif cleaned.startswith("/") and not cleaned.startswith("//"):
+            cleaned = cleaned.lstrip("/")
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
+
+    allowed_types = {"attributevalueselector", "tagcontainsselector", "xpathselector"}
+    if sel_type in {"text", "textselector", "textcontains", "textcontainsselector", "linktext", "partiallinktext"}:
+        value = first_text("value", "text", "label", "name", "query")
+        if not value:
+            return None
+        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
+    if sel_type in {"attribute", "attributevalueselector"}:
+        attribute = first_text("attribute", "attr", "name")
+        value = first_text("value", "text", "label")
+        if not attribute or not value:
+            return None
+        return {
+            "type": "attributeValueSelector",
+            "attribute": attribute,
+            "value": value,
+            "case_sensitive": case_sensitive,
+        }
+    if sel_type == "xpathselector":
+        value = normalize_xpath(first_text("value", "text", "xpath"))
+        if not value:
+            return None
+        return {"type": "xpathSelector", "value": value, "case_sensitive": case_sensitive}
+    if sel_type == "tagcontainsselector":
+        value = first_text("value", "text", "label")
+        if not value:
+            return None
+        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
+    if sel_type in {"id", "class", "name", "href", "placeholder", "aria-label", "aria_label", "title", "role", "value", "type"}:
+        value = first_text("value", "text", "label")
+        if not value:
+            return None
+        attribute = "aria-label" if sel_type == "aria_label" else raw_type
+        return {
+            "type": "attributeValueSelector",
+            "attribute": attribute,
+            "value": value,
+            "case_sensitive": case_sensitive,
+        }
+    if sel_type not in allowed_types:
+        attribute = first_text("attribute", "attr", "name")
+        value = first_text("value", "text", "label", "query")
+        if attribute and value:
+            return {
+                "type": "attributeValueSelector",
+                "attribute": attribute,
+                "value": value,
+                "case_sensitive": case_sensitive,
+            }
+        if value:
+            return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
+        return None
+    return dict(selector)
 
 
 
@@ -159,6 +351,21 @@ def _extract_result_text_from_action(action: dict[str, Any] | None) -> str | Non
     return _candidate_text(action) if isinstance(action, dict) else None
 
 
+def _task_from_payload(payload: dict[str, Any]) -> Task:
+    task_payload = {
+        "id": str(payload.get("task_id") or ""),
+        "url": _normalize_demo_url(str(payload.get("url") or "")),
+        "prompt": str(payload.get("prompt") or payload.get("task_prompt") or ""),
+        "web_project_id": payload.get("web_project_id"),
+    }
+    try:
+        if isinstance(Task, type):
+            return Task(**task_payload)
+    except Exception:
+        pass
+    return SimpleNamespace(**task_payload)
+
+
 def _canonical_browser_tool_name(raw_name: str) -> str:
     name = str(raw_name or "").strip().lower()
     if not name:
@@ -166,6 +373,8 @@ def _canonical_browser_tool_name(raw_name: str) -> str:
     if name == "user.request_input":
         return name
     suffix = name[8:] if name.startswith("browser.") else name
+    if suffix == "evaluate":
+        return ""
     alias = {
         "search": "search",
         "navigate": "navigate",
@@ -184,7 +393,6 @@ def _canonical_browser_tool_name(raw_name: str) -> str:
         "screenshot": "screenshot",
         "send_keys": "send_keys",
         "hold_key": "hold_key",
-        "evaluate": "evaluate",
         "extract": "extract",
         "done": "done",
     }
@@ -222,7 +430,6 @@ def _action_to_tool_call(action: dict[str, Any]) -> dict[str, Any] | None:
         "holdkeyaction": "browser.hold_key",
         "sendkeysaction": "browser.send_keys",
         "sendkeysiwaaction": "browser.send_keys",
-        "evaluateaction": "browser.evaluate",
         "extractaction": "browser.extract",
     }
     tool_name = mapping.get(action_type.lower())
@@ -230,6 +437,8 @@ def _action_to_tool_call(action: dict[str, Any]) -> dict[str, Any] | None:
         suffix = action_type[:-6] if action_type.endswith("Action") else action_type
         tool_name = f"browser.{suffix.strip().lower()}"
     tool_name = _canonical_browser_tool_name(tool_name)
+    if not _is_tool_enabled(tool_name):
+        return None
     return _normalize_tool_call_payload({"name": tool_name, "arguments": arguments})
 
 
@@ -239,7 +448,14 @@ def _normalize_tool_call_payload(tool_call: dict[str, Any]) -> dict[str, Any] | 
     name = _canonical_browser_tool_name(str(tool_call.get("name") or "").strip())
     if not name:
         return None
+    if not _is_tool_enabled(name):
+        return None
     arguments = dict(tool_call.get("arguments") or {}) if isinstance(tool_call.get("arguments"), dict) else {}
+    selector = _normalize_selector_payload(arguments.get("selector"))
+    if isinstance(selector, dict):
+        arguments["selector"] = selector
+    elif "selector" in arguments:
+        arguments.pop("selector", None)
     if name == "browser.select_dropdown":
         value = _candidate_text(arguments.get("text")) or _candidate_text(arguments.get("value"))
         if value:
@@ -349,6 +565,7 @@ class ApifiedWebAgent(IWebAgent):
             "protocol_version": IWA_ACT_PROTOCOL_VERSION,
             "act_endpoint": "/act",
             "step_endpoint": "/step",
+            "use_vision": _use_vision(),
             "supported_response_formats": ["tool_calls"],
             "supports_request_user_input": True,
             "supports_state_roundtrip": True,
@@ -378,18 +595,25 @@ class ApifiedWebAgent(IWebAgent):
         return normalized
 
     async def respond_from_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        task_id = str(payload.get("task_id") or "")
-        step_index = int(payload.get("step_index") or 0)
-        url = _normalize_demo_url(str(payload.get("url") or ""))
-        _log_trace(
-            f"/act start task_id={task_id} step_index={step_index} url={url} "
-            f"prompt_len={len(str(payload.get('prompt') or payload.get('task_prompt') or ''))} "
-            f"html_len={len(str(payload.get('snapshot_html') or ''))}"
-        )
-        raw_resp = await self.step_from_payload(payload)
-        normalized = self._normalize_actions(raw_resp, task_id=task_id, step_index=step_index)
-        allowed_tool_names = _normalize_allowed_tool_names(payload.get("allowed_tools"))
-        return _act_http_response(raw_resp if isinstance(raw_resp, dict) else {}, normalized, allowed_tool_names=allowed_tool_names)
+        ctx = _log_act_start(payload)
+        started_at = time.monotonic()
+        task_id = str(ctx.get("task_id") or "")
+        step_index = int(ctx.get("step_index") or 0)
+        try:
+            raw_resp = await self.step_from_payload(payload)
+            normalized = self._normalize_actions(raw_resp, task_id=task_id, step_index=step_index)
+            allowed_tool_names = _normalize_allowed_tool_names(payload.get("allowed_tools"))
+            response_payload = _act_http_response(
+                raw_resp if isinstance(raw_resp, dict) else {},
+                normalized,
+                allowed_tool_names=allowed_tool_names,
+            )
+            response_payload = _attach_operator_metrics(response_payload, started_at=started_at)
+            _log_act_finish(ctx, started_at, response_payload)
+            return response_payload
+        except Exception as exc:
+            _log_act_failure(ctx, started_at, exc)
+            raise
 
     async def act_from_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         runtime_impl = self._runtime_impl()
@@ -460,12 +684,39 @@ class ApifiedWebAgent(IWebAgent):
         if return_metrics:
             llm_usages = [dict(out["usage"])] if isinstance(out.get("usage"), dict) else []
             helper_models = [str(m).strip() for m in list(out.get("helper_models") or []) if str(m).strip()]
+            raw_call_breakdown = out.get("call_breakdown") if isinstance(out.get("call_breakdown"), dict) else {}
+            call_breakdown = {
+                "policy_llm_calls": int(raw_call_breakdown.get("policy_llm_calls") or 0),
+                "obs_extract_llm_calls": int(raw_call_breakdown.get("obs_extract_llm_calls") or 0),
+                "vision_llm_calls": int(raw_call_breakdown.get("vision_llm_calls") or 0),
+            }
+            explicit_llm_calls = sum(call_breakdown.values())
+            raw_usage_breakdown = out.get("usage_breakdown") if isinstance(out.get("usage_breakdown"), dict) else {}
+            usage_breakdown = {
+                "policy": {
+                    "prompt_tokens": int(((raw_usage_breakdown.get("policy") or {}).get("prompt_tokens") or 0)),
+                    "completion_tokens": int(((raw_usage_breakdown.get("policy") or {}).get("completion_tokens") or 0)),
+                    "total_tokens": int(((raw_usage_breakdown.get("policy") or {}).get("total_tokens") or 0)),
+                },
+                "obs_extract": {
+                    "prompt_tokens": int(((raw_usage_breakdown.get("obs_extract") or {}).get("prompt_tokens") or 0)),
+                    "completion_tokens": int(((raw_usage_breakdown.get("obs_extract") or {}).get("completion_tokens") or 0)),
+                    "total_tokens": int(((raw_usage_breakdown.get("obs_extract") or {}).get("total_tokens") or 0)),
+                },
+                "vision": {
+                    "prompt_tokens": int(((raw_usage_breakdown.get("vision") or {}).get("prompt_tokens") or 0)),
+                    "completion_tokens": int(((raw_usage_breakdown.get("vision") or {}).get("completion_tokens") or 0)),
+                    "total_tokens": int(((raw_usage_breakdown.get("vision") or {}).get("total_tokens") or 0)),
+                },
+            }
             out["metrics"] = {
                 "llm": {
-                    "llm_calls": len(llm_usages),
+                    "llm_calls": int(explicit_llm_calls or len(llm_usages)),
                     "llm_usages": llm_usages,
                     "model": model_name,
                     "helper_models": helper_models,
+                    "call_breakdown": call_breakdown,
+                    "usage_breakdown": usage_breakdown,
                 }
             }
         return out
@@ -496,6 +747,8 @@ def _collect_supported_tool_definitions() -> list[dict[str, Any]]:
         if not raw_name or raw_name == "done":
             continue
         namespaced = "user.request_input" if raw_name == "request_user_input" else f"browser.{raw_name}"
+        if not _is_tool_enabled(namespaced):
+            continue
         out.append(
             {
                 "name": namespaced,
@@ -520,7 +773,9 @@ def _normalize_allowed_tool_names(allowed_tools: Any) -> set[str]:
             if function_name:
                 raw_name = "user.request_input" if function_name == "request_user_input" else _canonical_browser_tool_name(f"browser.{function_name}")
         if raw_name:
-            out.add(_canonical_browser_tool_name(raw_name))
+            canonical = _canonical_browser_tool_name(raw_name)
+            if canonical and _is_tool_enabled(canonical):
+                out.add(canonical)
     return out
 
 
@@ -542,7 +797,7 @@ def _act_http_response(
             if not isinstance(raw_call, dict):
                 continue
             name = str(raw_call.get("name") or "").strip()
-            if not name or (allowed and name not in allowed):
+            if not name or not _is_tool_enabled(name) or (allowed and name not in allowed):
                 continue
             normalized_call = _normalize_tool_call_payload(raw_call)
             if isinstance(normalized_call, dict):
@@ -580,6 +835,10 @@ def _act_http_response(
         llm_metrics = out["metrics"].get("llm") if isinstance(out["metrics"].get("llm"), dict) else None
         if helper_models and isinstance(llm_metrics, dict):
             llm_metrics["helper_models"] = helper_models
+        if isinstance(raw_resp.get("call_breakdown"), dict) and isinstance(llm_metrics, dict):
+            llm_metrics["call_breakdown"] = raw_resp.get("call_breakdown")
+        if isinstance(raw_resp.get("usage_breakdown"), dict) and isinstance(llm_metrics, dict):
+            llm_metrics["usage_breakdown"] = raw_resp.get("usage_breakdown")
     if isinstance(raw_resp.get("usage"), dict):
         out["usage"] = raw_resp.get("usage")
     if isinstance(raw_resp.get("total_tokens"), int):
@@ -590,6 +849,10 @@ def _act_http_response(
         out["estimated_cost_usd"] = float(raw_resp.get("estimated_cost_usd"))
     if isinstance(raw_resp.get("helper_models"), list):
         out["helper_models"] = [str(m).strip() for m in raw_resp.get("helper_models") if str(m).strip()]
+    if isinstance(raw_resp.get("call_breakdown"), dict):
+        out["call_breakdown"] = raw_resp.get("call_breakdown")
+    if isinstance(raw_resp.get("usage_breakdown"), dict):
+        out["usage_breakdown"] = raw_resp.get("usage_breakdown")
     if isinstance(raw_resp.get("action_rationales"), list):
         out["action_rationales"] = raw_resp.get("action_rationales")
     return out
@@ -602,12 +865,22 @@ async def capabilities() -> dict[str, Any]:
 
 @app.post("/act", summary="Decide next agent actions")
 async def act(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    return await OPERATOR.respond_from_payload(payload)
+    try:
+        return await OPERATOR.respond_from_payload(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"act_failed:{type(exc).__name__}") from exc
 
 
 @app.post("/step", summary="Alias for /act")
 async def step(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    return await OPERATOR.respond_from_payload(payload)
+    try:
+        return await OPERATOR.respond_from_payload(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"step_failed:{type(exc).__name__}") from exc
 
 
 if __name__ == "__main__":

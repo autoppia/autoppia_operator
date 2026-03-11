@@ -98,11 +98,10 @@ Preferred browser tool naming follows browser-use conventions:
 - `browser.screenshot`
 - `browser.send_keys`
 - `browser.hold_key`
-- `browser.evaluate`
 - `browser.extract`
 - `browser.done`
 
-`browser.evaluate` and `browser.extract` now persist their returned value into execution traces via IWA `ActionExecutionResult.action_output`, so downstream evaluation and training logs can inspect those tool results.
+`browser.extract` persists its returned value into execution traces via IWA `ActionExecutionResult.action_output`, so downstream evaluation and training logs can inspect those tool results.
 
 Runtime constraints for the planner:
 - Up to `FSM_MAX_ACTIONS_PER_STEP` browser actions per step (default `3`, hard cap `5`).
@@ -165,6 +164,24 @@ Save full `/act` traces (request/response + metadata per step):
 ```bash
 python eval.py --model gpt-5.2 --web-project-id autocinema --all-use-cases --save-act-traces
 # optional: add --include-reasoning to request reasoning in each /act trace
+```
+
+Run the local operator debugger for one task/use case:
+
+```bash
+python scripts/debug_operator_run.py --web-project-id autocinema --use-case LOGIN --model gpt-5.2
+```
+
+Inspect an existing trace bundle without rerunning eval:
+
+```bash
+python scripts/debug_operator_run.py --reuse-trace data/debug_runs/_smoke_trace
+```
+
+Capture screenshots into the debug trace bundle:
+
+```bash
+python scripts/debug_operator_run.py --web-project-id autocinema --use-case LOGIN --capture-screenshot
 ```
 
 Task generation helper (writes the cache consumed by `eval.py`):

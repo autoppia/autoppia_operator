@@ -171,7 +171,7 @@ def test_act_http_response_normalizes_browser_select_tool_call_to_value(monkeypa
         {
             "name": "browser.select_dropdown",
             "arguments": {
-                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre"},
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre", "case_sensitive": False},
                 "text": "Comedy",
             },
         }
