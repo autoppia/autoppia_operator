@@ -4,7 +4,7 @@ import json
 from typing import Any, Dict
 import pytest
 
-from fsm_operator import (
+from src.operator.agents.fsm import (
     FSMOperator,
     MAX_INTERNAL_META_STEPS,
     AgentFormProgress,
@@ -3280,7 +3280,7 @@ def test_policy_obs_does_not_expose_browser_evaluate() -> None:
 
 
 def test_policy_obs_uses_crawler_routes_when_static_map_missing(monkeypatch: Any) -> None:
-    import fsm_operator as fsm
+    from src.operator import fsm_operator as fsm
 
     monkeypatch.setenv("FSM_USE_SITE_KNOWLEDGE", "1")
     monkeypatch.setenv("FSM_ENABLE_SITE_CRAWLER", "1")
@@ -3918,7 +3918,7 @@ def test_pre_done_verification_allows_informational_answer_from_page_evidence() 
     assert reason == "ok"
 
 
-def test_legacy_run_auto_finalizes_informational_task_when_page_fact_is_visible(monkeypatch: Any) -> None:
+def test_meta_loop_auto_finalizes_informational_task_when_page_fact_is_visible(monkeypatch: Any) -> None:
     monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     out = engine.run(

@@ -16,6 +16,15 @@ So the only hard requirements are:
 - `POST /act` returns canonical IWA payload:
   `{ "tool_calls": [...], "content": "...", "done": false, "state_out": {} }`
 
+## PM2 deploy commands
+
+Canonical PM2 entrypoints live under `deploy/pm2/`:
+
+```bash
+pm2 start deploy/pm2/operator.config.cjs
+pm2 start deploy/pm2/mcp.config.cjs
+```
+
 ### Sandbox dependencies / requirements.txt
 
 The subnet validator runs your repo inside a sandbox image with a fixed Python environment.
@@ -45,16 +54,18 @@ This is how the gateway correlates all model calls to a single evaluation episod
 
 ### Where it is implemented here
 
-- `llm_gateway.py`: minimal OpenAI-compatible client that:
+- `infra/llm_gateway.py`: minimal OpenAI-compatible client that:
   - reads `OPENAI_BASE_URL`
   - injects `IWA-Task-ID`
   - only uses `OPENAI_API_KEY` when you are **not** using the sandbox gateway
-- `agent.py`: calls `openai_chat_completions(task_id=..., ...)` so the header is always present.
+- `src/operator/entrypoint.py`: selects the active `ApifiedWebAgent` implementation.
+- `src/operator/api/server.py`: exposes the subnet HTTP contract.
+- `src/operator/agents/fsm/`: canonical FSM agent package. It owns the FSM runtime wrapper and the FSM internals used by the operator.
 
 
 ## Agent flow
 
-`POST /act` (`agent.py`) receives:
+`POST /act` (`src/operator/api/server.py`) receives:
 - `task_id`: used for `IWA-Task-ID` header
 - `prompt`: natural-language task
 - `url`: current page URL
@@ -62,7 +73,7 @@ This is how the gateway correlates all model calls to a single evaluation episod
 - `step_index`: current step number
 - `history`: last actions (best-effort)
 
-The API layer is intentionally thin: it forwards to `AutoppiaOperator` (class implementing `IWebAgent.act()` from IWA).
+The API layer is intentionally thin: it forwards to `AutoppiaOperator` selected in `src/operator/entrypoint.py`.
 
 Current canonical `/act` response keys:
 - `protocol_version` (currently `1.0`)
@@ -143,51 +154,59 @@ The planner can request tools before choosing an action:
 This repo includes a local evaluator:
 
 ```bash
-python eval.py --model gpt-5.2 --num-tasks 5 --distinct-use-cases
+python src/eval/runner.py --model gpt-5.2 --num-tasks 5 --distinct-use-cases
 ```
 
 List available web projects/use cases from the configured cache:
 
 ```bash
-python eval.py --list-web-projects
-python eval.py --list-use-cases --web-project-id autocinema
+python src/eval/runner.py --list-web-projects
+python src/eval/runner.py --list-use-cases --web-project-id autocinema
 ```
 
 Run one web project with all use cases:
 
 ```bash
-python eval.py --web-project-id autocinema --all-use-cases --tasks-per-use-case 1 --max-steps 15
+python src/eval/runner.py --web-project-id autocinema --all-use-cases --tasks-per-use-case 1 --max-steps 15
 ```
 
 Save full `/act` traces (request/response + metadata per step):
 
 ```bash
-python eval.py --model gpt-5.2 --web-project-id autocinema --all-use-cases --save-act-traces
+python src/eval/runner.py --model gpt-5.2 --web-project-id autocinema --all-use-cases --save-act-traces
 # optional: add --include-reasoning to request reasoning in each /act trace
 ```
 
 Run the local operator debugger for one task/use case:
 
 ```bash
-python scripts/debug_operator_run.py --web-project-id autocinema --use-case LOGIN --model gpt-5.2
+python src/eval/debugger/run_debug.py --web-project-id autocinema --use-case LOGIN --model gpt-5.2
+```
+
+Launch the standalone debugger server/UI:
+
+```bash
+operator-debugger --host 127.0.0.1 --port 18061
+# or without installation:
+python -m src.eval.debugger --host 127.0.0.1 --port 18061
 ```
 
 Inspect an existing trace bundle without rerunning eval:
 
 ```bash
-python scripts/debug_operator_run.py --reuse-trace data/debug_runs/_smoke_trace
+python src/eval/debugger/run_debug.py --reuse-trace data/debug_runs/_smoke_trace
 ```
 
 Capture screenshots into the debug trace bundle:
 
 ```bash
-python scripts/debug_operator_run.py --web-project-id autocinema --use-case LOGIN --capture-screenshot
+python src/eval/debugger/run_debug.py --web-project-id autocinema --use-case LOGIN --capture-screenshot
 ```
 
-Task generation helper (writes the cache consumed by `eval.py`):
+Task generation helper (writes the cache consumed by `src/eval/runner.py`):
 
 ```bash
-python scripts/generate_tasks.py --project-id autocinema --prompts-per-use-case 1
+python scripts/eval/generate_tasks.py --project-id autocinema --prompts-per-use-case 1
 ```
 
 Outputs are written to `data/` (gitignored).
@@ -198,13 +217,13 @@ Outputs are written to `data/` (gitignored).
 To compare multiple models/providers on the same task set, use:
 
 ```bash
-python scripts/compare_eval.py --runs openai:gpt-5.2 openai:gpt-4o-mini --num-tasks 5 --distinct-use-cases
+python scripts/eval/compare_eval.py --runs openai:gpt-5.2 openai:gpt-4o-mini --num-tasks 5 --distinct-use-cases
 ```
 
 Anthropic example (requires `ANTHROPIC_API_KEY` in your env):
 
 ```bash
-python scripts/compare_eval.py --runs anthropic:claude-sonnet-4 --num-tasks 5 --distinct-use-cases
+python scripts/eval/compare_eval.py --runs anthropic:claude-sonnet-4 --num-tasks 5 --distinct-use-cases
 ```
 
 Outputs:
@@ -226,7 +245,7 @@ Recommended orchestration-friendly flow (modular, no monolithic auto-pipeline):
 1) List S3 task-log objects
 
 ```bash
-python scripts/s3_list_task_logs.py \
+python scripts/training/s3_list_task_logs.py \
   --s3-bucket my-iwap-logs \
   --s3-prefix task-logs/ \
   --out data/training/s3_manifest.jsonl
@@ -235,7 +254,7 @@ python scripts/s3_list_task_logs.py \
 2) Normalize S3 payloads into cleaned trajectories
 
 ```bash
-python scripts/s3_normalize_trajectories.py \
+python scripts/training/s3_normalize_trajectories.py \
   --s3-bucket my-iwap-logs \
   --s3-prefix task-logs/ \
   --out-dir data/training/cleaned
@@ -244,7 +263,7 @@ python scripts/s3_normalize_trajectories.py \
 3) Export SFT files from cleaned trajectories
 
 ```bash
-python scripts/export_sft_from_cleaned.py \
+python scripts/training/export_sft_from_cleaned.py \
   --cleaned-jsonl data/training/cleaned/cleaned_trajectories.jsonl \
   --out-dir data/training/sft
 ```
@@ -252,7 +271,7 @@ python scripts/export_sft_from_cleaned.py \
 4) Export PPO bootstrap transitions from cleaned trajectories
 
 ```bash
-python scripts/export_ppo_bootstrap_from_cleaned.py \
+python scripts/training/export_ppo_bootstrap_from_cleaned.py \
   --cleaned-jsonl data/training/cleaned/cleaned_trajectories.jsonl \
   --out-jsonl data/training/ppo/ppo_bootstrap.jsonl
 ```
@@ -260,7 +279,7 @@ python scripts/export_ppo_bootstrap_from_cleaned.py \
 Alternative single command still exists if needed:
 
 ```bash
-python scripts/build_iwap_training_dataset.py \
+python scripts/training/build_iwap_training_dataset.py \
   --source iwap-api \
   --base-url http://127.0.0.1:8000 \
   --max-runs 200 \
@@ -274,7 +293,7 @@ Optional auth:
 or:
 
 ```bash
-python scripts/build_iwap_training_dataset.py \
+python scripts/training/build_iwap_training_dataset.py \
   --source s3 \
   --s3-bucket my-iwap-logs \
   --s3-prefix task-logs/ \
@@ -294,7 +313,7 @@ Core outputs:
 ### Collect PPO-style online rollouts (LLM exploration + StatefulEvaluator reward)
 
 ```bash
-python scripts/run_iwa_ppo_loop.py \
+python scripts/training/run_iwa_ppo_loop.py \
   --tasks-json data/tasks/tasks.json \
   --num-episodes 50 \
   --max-steps 25 \
@@ -306,10 +325,20 @@ Outputs (timestamped under `data/training/ppo/`):
 - `ppo_transitions.jsonl`
 - `ppo_summary.json`
 
+## Scripts layout
+
+`scripts/` is organized by responsibility:
+- `scripts/sn36_ops.py` and `scripts/deploy_check.py`: stable operator/runtime entrypoints used by repo gates and MCP.
+- `scripts/eval/`: task generation and eval comparison helpers.
+- `scripts/training/`: IWAP/S3 dataset prep, export, and fine-tuning helpers.
+- `scripts/sn36/`: shell helpers for miner submission and metagraph inspection.
+
+The old flat `scripts/` layout is intentionally gone. Use the categorized paths above.
+
 ## Repo self-check
 
 ```bash
-python check.py
+python qa/check_repo.py
 ```
 
 This validates entrypoints, endpoint shapes, and scans for obvious secrets.
@@ -328,7 +357,7 @@ This repo is ready for fork-and-iterate workflows with these defaults for subnet
 1. Copy env template:
 
 ```bash
-cp .env.template .env
+cp .env.example .env
 ```
 
 2. Fill local secrets only:
@@ -343,6 +372,7 @@ cp .env.template .env
 
 ```bash
 python scripts/sn36_ops.py preflight
+python scripts/sn36_ops.py deploy-smoke
 python scripts/sn36_ops.py eval --project-id autocinema
 python scripts/sn36_ops.py cycle --github-url <repo/tree/or/commit> --agent-name "<AGENT_NAME>" --submit
 ```
@@ -350,9 +380,9 @@ python scripts/sn36_ops.py cycle --github-url <repo/tree/or/commit> --agent-name
 4. Verify:
 
 ```bash
-python tools/bittensor_tools.py my-miner
-python tools/iwap_tools.py last-round
-python tools/iwap_tools.py season-tasks --season-id 36
+python mcp/bittensor_tools.py my-miner
+python mcp/iwap_tools.py last-round
+python mcp/iwap_tools.py season-tasks --season-id 36
 ```
 
 ### Production IWAP settings
@@ -381,7 +411,7 @@ Example:
   "mcpServers": {
     "miner_mcp": {
       "command": "python",
-      "args": ["/home/usuario1/autoppia/operator/autoppia_operator/tools/mcp_server.py"]
+      "args": ["/home/usuario1/autoppia/operator/autoppia_operator/mcp/server.py"]
     }
   }
 }
@@ -391,7 +421,7 @@ Example:
 
 - `SN36_*` must match local wallet state; wrong hotkey/coldkey names are the most common reason for blank `my-miner` output.
 - `IWAP_MOCK_DATA` (if set) overrides `IWAP_BASE_URL` and forces mock reads.
-- `tools/iwap_tools.py` uses:
+- `mcp/iwap_tools.py` uses:
   - mock path by default,
   - live path only when `--base-url` is present and `--prefer-live` is set.
 - Keep `IWAP_API_TOKEN` out of docs and commit history; set it only in local environment.
@@ -403,7 +433,7 @@ Recommended for users who want Codex to run the auto-mining loop:
 1) Install/prepare environment
 
 ```bash
-cp .env.template .env
+cp .env.example .env
 # Fill only local values:
 # SN36_COLDKEY, SN36_HOTKEY, (optional) IWAP_API_TOKEN, SMTP/RUNPOD vars
 ```
@@ -415,7 +445,7 @@ cp .env.template .env
   "mcpServers": {
     "miner_mcp": {
       "command": "python",
-      "args": ["/home/usuario1/autoppia/operator/autoppia_operator/tools/mcp_server.py"],
+      "args": ["/home/usuario1/autoppia/operator/autoppia_operator/mcp/server.py"],
       "env": {
         "SN36_COLDKEY": "<your-coldkey>",
         "SN36_HOTKEY": "<your-hotkey>",
@@ -431,9 +461,23 @@ cp .env.template .env
 3) Verify and start loop
 
 ```bash
-python tools/mcp_server.py --list-tools
+python mcp/server.py --list-tools
 python scripts/sn36_ops.py preflight
 python scripts/sn36_ops.py eval --project-id autocinema --success-threshold 0.70 --avg-score-threshold 0.60
 ```
 
 Then ask Codex to follow the SOP in [AGENTS.md](/home/usuario1/autoppia/operator/autoppia_operator/AGENTS.md) for `preflight → eval → cycle → submit → IWAP verification`.
+Validator-like deploy smoke:
+
+- Set `SUBNET_MINER_GITHUB_URL` in `.env` to a pinned miner URL:
+  - `https://github.com/<owner>/<repo>/tree/<ref>`
+  - `https://github.com/<owner>/<repo>/commit/<40-sha>`
+- Run:
+
+```bash
+python scripts/sn36_ops.py deploy-smoke
+```
+
+This clones the configured repo using subnet clone rules, starts `uvicorn main:app`, and checks `/health`, `/capabilities`, and `/act`.
+
+If `SUBNET_MINER_GITHUB_URL` or `SN36_GITHUB_URL` is set, `python scripts/sn36_ops.py preflight` will run this deploy smoke automatically.

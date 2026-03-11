@@ -32,6 +32,9 @@ OPERATOR_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(OPERATOR_ROOT))
 sys.path.insert(0, str(SCRIPT_DIR))
 
+from src.operator.support.utils import candidate_text as _shared_candidate_text
+from src.operator.support.utils import normalize_selector_payload as _shared_normalize_selector_payload
+
 # ── Load .env from autoppia_operator ────────────────────────────
 from dotenv import load_dotenv
 

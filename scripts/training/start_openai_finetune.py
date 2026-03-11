@@ -26,7 +26,7 @@ def _wait_for_job(client: OpenAI, job_id: str, poll_s: float = 20.0, timeout_s: 
 
 
 def main() -> None:
-    load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
     ap = argparse.ArgumentParser(description="Upload training file and start OpenAI fine-tune job")
     ap.add_argument("--train-file", required=True, help="Path to OpenAI chat-format JSONL")
     ap.add_argument("--base-model", default="gpt-4o-mini-2024-07-18")

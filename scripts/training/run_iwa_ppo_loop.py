@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-OPERATOR_ROOT = SCRIPT_DIR.parent
+OPERATOR_ROOT = SCRIPT_DIR.parents[1]
 if str(OPERATOR_ROOT) not in sys.path:
     sys.path.insert(0, str(OPERATOR_ROOT))
 
