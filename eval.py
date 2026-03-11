@@ -360,7 +360,7 @@ class _ScopedBackendDemoWebService(BackendDemoWebService):
             async with session.delete(endpoint, params=params) as response:
                 return response.status in (200, 202)
         except Exception:
-            return await super().reset_database(override_url=override_url, web_agent_id=web_agent_id)
+            return await super().reset_database(web_agent_id=web_agent_id)
 
 
 class _ScopedAsyncStatefulEvaluator(AsyncStatefulEvaluator):

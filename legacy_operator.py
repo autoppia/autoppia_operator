@@ -18,7 +18,7 @@ os.environ.setdefault("LLM_PROVIDER", "openai")
 from llm_gateway import openai_chat_completions, is_sandbox_gateway_base_url
 
 try:
-    from autoppia_iwa.src.web_agents.classes import IWebAgent
+    from autoppia_iwa.src.web_agents.classes import IWebAgent, TaskSolution
     from autoppia_iwa.src.data_generation.tasks.classes import Task
     from autoppia_iwa.src.execution.actions.base import BaseAction
     import autoppia_iwa.src.execution.actions.actions  # noqa: F401
@@ -28,6 +28,7 @@ except Exception:  # pragma: no cover
     IWebAgent = object  # type: ignore[assignment]
     Task = Any  # type: ignore[assignment]
     BaseAction = Any  # type: ignore[assignment]
+    TaskSolution = Any  # type: ignore[assignment]
     _AUTOPPIA_IWA_IMPORT_OK = False
     _AUTOPPIA_IWA_IMPORT_ERROR = "autoppia_iwa import failed in miner runtime"
 
@@ -2155,6 +2156,11 @@ class ApifiedWebAgent(IWebAgent):
                 f"raw_types={[str(x.get('type') or '') for x in actions if isinstance(x, dict)]}"
             )
         return out
+
+    async def solve_task(self, task: Task) -> "TaskSolution":
+        raise NotImplementedError(
+            "This agent is iterative and only supports POST /act; use step-by-step act() for execution."
+        )
 
     async def act_from_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         task_id = str(payload.get("task_id") or "")

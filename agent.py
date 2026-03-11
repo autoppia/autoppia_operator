@@ -29,7 +29,7 @@ try:
     from autoppia_iwa.src.data_generation.tasks.classes import Task
     from autoppia_iwa.src.execution.actions.base import BaseAction
     from autoppia_iwa.src.web_agents.act_protocol import ACT_PROTOCOL_VERSION as IWA_ACT_PROTOCOL_VERSION
-    from autoppia_iwa.src.web_agents.classes import IWebAgent
+    from autoppia_iwa.src.web_agents.classes import IWebAgent, TaskSolution
     import autoppia_iwa.src.execution.actions.actions  # noqa: F401
 
     _AUTOPPIA_IWA_IMPORT_OK = True
@@ -38,6 +38,7 @@ except Exception:  # pragma: no cover
     IWebAgent = object  # type: ignore[assignment]
     Task = Any  # type: ignore[assignment]
     BaseAction = Any  # type: ignore[assignment]
+    TaskSolution = Any  # type: ignore[assignment]
     IWA_ACT_PROTOCOL_VERSION = "1.0"
     _AUTOPPIA_IWA_IMPORT_OK = False
     _AUTOPPIA_IWA_IMPORT_ERROR = "autoppia_iwa import failed in miner runtime"
@@ -554,6 +555,11 @@ class ApifiedWebAgent(IWebAgent):
 
     async def step_from_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.act_from_payload(payload)
+
+    async def solve_task(self, task: Task) -> "TaskSolution":
+        raise NotImplementedError(
+            "This agent is iterative and only supports POST /act; use step-by-step act() for execution."
+        )
 
     @staticmethod
     def supported_tool_definitions() -> list[dict[str, Any]]:
