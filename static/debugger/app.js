@@ -13,19 +13,20 @@ const state = {
   replayStatus: null,
   replayPollHandle: null,
   loading: new Set(),
+  activeTab: 0,
 };
 
-const sectionOrder = [
-  "secReasoning",
-  "secActions",
-  "secAct",
-  "secDiffs",
-  "secHtml",
-  "secShots",
-  "secReplay",
+const tabOrder = [
+  "panelReasoning",
+  "panelActions",
+  "panelAct",
+  "panelDiffs",
+  "panelHtml",
+  "panelShots",
+  "panelReplay",
 ];
 
-const sectionLabels = [
+const tabLabels = [
   "Reasoning",
   "Actions",
   "/act",
@@ -87,33 +88,36 @@ function toast(message, type = "info") {
   const el = document.createElement("div");
   el.className = `toast ${type}`;
   el.textContent = message;
+  // Add progress bar
+  const progress = document.createElement("div");
+  progress.className = "toast-progress";
+  el.appendChild(progress);
   container.appendChild(el);
   setTimeout(() => {
     el.style.opacity = "0";
-    el.style.transform = "translateY(10px)";
+    el.style.transform = "translateY(-10px)";
     el.style.transition = "all 200ms ease";
     setTimeout(() => el.remove(), 220);
   }, 2800);
 }
 
-/* ── Loading indicators ────────────────────────────────────── */
+/* ── Loading indicators (thin bar) ─────────────────────────── */
 
 function showLoading(paneId) {
   state.loading.add(paneId);
   const pane = q(paneId);
-  if (!pane || pane.querySelector(".loading-overlay")) return;
-  const overlay = document.createElement("div");
-  overlay.className = "loading-overlay";
-  overlay.innerHTML = '<div class="spinner"></div>';
-  pane.appendChild(overlay);
+  if (!pane || pane.querySelector(".loading-bar")) return;
+  const bar = document.createElement("div");
+  bar.className = "loading-bar";
+  pane.appendChild(bar);
 }
 
 function hideLoading(paneId) {
   state.loading.delete(paneId);
   const pane = q(paneId);
   if (!pane) return;
-  const overlay = pane.querySelector(".loading-overlay");
-  if (overlay) overlay.remove();
+  const bar = pane.querySelector(".loading-bar");
+  if (bar) bar.remove();
 }
 
 /* ── API ───────────────────────────────────────────────────── */
@@ -142,6 +146,28 @@ function createChip(text, klass = "") {
   return span;
 }
 
+/* ── Copy button injection on pre blocks ───────────────────── */
+
+function injectCopyButtons() {
+  document.querySelectorAll(".code-wrap").forEach((wrap) => {
+    if (wrap.querySelector(".copy-float")) return;
+    const pre = wrap.querySelector("pre");
+    if (!pre) return;
+    const btn = document.createElement("button");
+    btn.className = "btn tiny copy-float";
+    btn.textContent = "Copy";
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      const text = pre.textContent || "";
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = "Copied!";
+        setTimeout(() => { btn.textContent = "Copy"; }, 1200);
+      });
+    };
+    wrap.appendChild(btn);
+  });
+}
+
 /* ── Render: run summary metrics ───────────────────────────── */
 
 function renderRunSummary() {
@@ -161,28 +187,61 @@ function renderRunSummary() {
   const avgScore = summary.avg_score;
 
   const metrics = [
-    ["Project", traceIndex.web_project_id || "-", null],
-    ["Provider", traceIndex.provider || "-", null],
-    ["Model", traceIndex.model || "-", null],
-    ["Episodes", episodes.length, null],
-    ["Max Steps", traceIndex.max_steps ?? "-", null],
-    ["Duration", summary.timing?.total_seconds != null ? `${summary.timing.total_seconds}s` : "-", null],
-    ["Avg Score", avgScore ?? "-", avgScore != null ? (avgScore >= 0.7 ? "score-ok" : avgScore >= 0.4 ? "score-warn" : "score-bad") : null],
-    ["Success", successRate ?? "-", successRate != null ? (successRate >= 0.7 ? "score-ok" : successRate >= 0.4 ? "score-warn" : "score-bad") : null],
+    ["Project", traceIndex.web_project_id || "-", null, "accent-orange"],
+    ["Model", traceIndex.model || "-", null, "accent-blue"],
+    ["Episodes", episodes.length, null, "accent-cyan"],
+    ["Max Steps", traceIndex.max_steps ?? "-", null, "accent-cyan"],
+    ["Provider", traceIndex.provider || "-", null, "accent-blue"],
+    ["Duration", summary.timing?.total_seconds != null ? `${summary.timing.total_seconds}s` : "-", null, "accent-warn"],
+    ["Avg Score", avgScore ?? "-", avgScore != null ? (avgScore >= 0.7 ? "score-ok" : avgScore >= 0.4 ? "score-warn" : "score-bad") : null, "accent-green", avgScore],
+    ["Success", successRate ?? "-", successRate != null ? (successRate >= 0.7 ? "score-ok" : successRate >= 0.4 ? "score-warn" : "score-bad") : null, "accent-green", successRate],
   ];
 
   box.innerHTML = "";
-  for (const [k, v, scoreClass] of metrics) {
+  for (const [k, v, scoreClass, accentClass, ringValue] of metrics) {
     const card = document.createElement("div");
-    card.className = "metric";
+    card.className = `metric ${accentClass || ""}`.trim();
     const title = document.createElement("div");
     title.className = "k";
     title.textContent = String(k);
-    const value = document.createElement("div");
-    value.className = `v ${scoreClass || ""}`.trim();
-    value.textContent = String(v);
     card.appendChild(title);
-    card.appendChild(value);
+
+    if (ringValue != null && typeof ringValue === "number") {
+      // Render progress ring
+      const wrap = document.createElement("div");
+      wrap.className = "metric-ring-wrap";
+
+      const pct = Math.min(1, Math.max(0, ringValue));
+      const r = 15;
+      const circumference = 2 * Math.PI * r;
+      const offset = circumference * (1 - pct);
+      const strokeColor = pct >= 0.7 ? "var(--ok)" : pct >= 0.4 ? "var(--warn)" : "var(--bad)";
+
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("class", "metric-ring");
+      svg.setAttribute("viewBox", "0 0 36 36");
+      svg.innerHTML = `
+        <circle class="ring-bg" cx="18" cy="18" r="${r}"/>
+        <circle class="ring-fg" cx="18" cy="18" r="${r}"
+          stroke="${strokeColor}"
+          stroke-dasharray="${circumference}"
+          stroke-dashoffset="${offset}"
+          transform="rotate(-90 18 18)"/>
+      `;
+      wrap.appendChild(svg);
+
+      const value = document.createElement("div");
+      value.className = `v ${scoreClass || ""}`.trim();
+      value.textContent = typeof v === "number" ? v.toFixed(2) : String(v);
+      wrap.appendChild(value);
+      card.appendChild(wrap);
+    } else {
+      const value = document.createElement("div");
+      value.className = `v ${scoreClass || ""}`.trim();
+      value.textContent = String(v);
+      card.appendChild(value);
+    }
+
     box.appendChild(card);
   }
 }
@@ -245,6 +304,13 @@ function applyEpisodeFilters() {
   const failureCategory = q("filterFailureCategory")?.value || "";
   const episodes = state.run?.episodes || [];
 
+  // Update active filter count indicator
+  const activeCount = [useCase, failureCategory].filter(Boolean).length;
+  const countEl = q("filterActiveCount");
+  if (countEl) {
+    countEl.textContent = activeCount > 0 ? `${activeCount} active` : "";
+  }
+
   state.filteredEpisodes = episodes.filter((ep) => {
     if (useCase && String(ep.use_case || "") !== useCase) return false;
     if (status === "success" && !ep.success) return false;
@@ -277,7 +343,7 @@ function renderEpisodes() {
   if (!episodes.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "No episodes match filters.";
+    empty.innerHTML = '<span class="empty-icon">&#x1f4cb;</span>No episodes match filters.';
     root.appendChild(empty);
     return;
   }
@@ -286,23 +352,46 @@ function renderEpisodes() {
     const item = document.createElement("article");
     item.className = `item ${ep.episode_task_id === state.selectedEpisodeId ? "active" : ""}`.trim();
 
+    // Episode item layout with status dot
+    const row = document.createElement("div");
+    row.className = "episode-item";
+
+    const dot = document.createElement("div");
+    dot.className = `status-dot ${ep.success ? "ok" : "bad"}`;
+
+    const content = document.createElement("div");
+    content.className = "episode-item-content";
+
     const title = document.createElement("strong");
     title.textContent = ep.use_case || ep.task_id || "episode";
 
     const meta = document.createElement("div");
     meta.className = "meta";
     const scoreStr = (ep.score ?? 0).toFixed(2);
-    meta.textContent = `score ${scoreStr}  \u00b7  ${ep.steps ?? 0} steps  \u00b7  ${ep.llm_calls ?? 0} llm`;
+    meta.textContent = `${scoreStr}  \u00b7  ${ep.steps ?? 0} steps  \u00b7  ${ep.llm_calls ?? 0} llm`;
+
+    // Inline score bar
+    const scoreBar = document.createElement("div");
+    scoreBar.className = "score-bar-inline";
+    const fill = document.createElement("div");
+    fill.className = "score-bar-inline-fill";
+    fill.style.width = `${Math.min(100, Math.max(0, (ep.score ?? 0) * 100))}%`;
+    scoreBar.appendChild(fill);
 
     const chips = document.createElement("div");
     chips.className = "chips";
-    chips.appendChild(createChip(ep.success ? "PASS" : "FAIL", ep.success ? "ok" : "bad"));
     if (ep.failure_category) chips.appendChild(createChip(ep.failure_category));
     if (ep.estimated_cost_usd) chips.appendChild(createChip(`$${Number(ep.estimated_cost_usd).toFixed(3)}`));
 
-    item.appendChild(title);
-    item.appendChild(meta);
-    item.appendChild(chips);
+    content.appendChild(title);
+    content.appendChild(meta);
+    content.appendChild(scoreBar);
+    if (chips.children.length) content.appendChild(chips);
+
+    row.appendChild(dot);
+    row.appendChild(content);
+    item.appendChild(row);
+
     item.onclick = () => void loadEpisode(ep.episode_task_id);
     root.appendChild(item);
   }
@@ -343,7 +432,7 @@ function renderSteps() {
   if (!summaries.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "Select an episode to view steps.";
+    empty.innerHTML = '<span class="empty-icon">&#x1f9e9;</span>Select an episode to view steps.';
     root.appendChild(empty);
     return;
   }
@@ -352,6 +441,10 @@ function renderSteps() {
     const s = summaries[idx];
     const item = document.createElement("article");
     item.className = `item ${idx === state.selectedStepIndex ? "active" : ""}`.trim();
+    item.setAttribute("data-step-num", String(idx));
+
+    const titleRow = document.createElement("div");
+    titleRow.style.cssText = "display:flex;align-items:center;gap:4px;";
 
     const title = document.createElement("strong");
     const normalized = normalizeActions(state.episode?.steps?.[idx] || {});
@@ -363,13 +456,17 @@ function renderSteps() {
       }
     }
     const actionLabel = actionTypes.length ? actionTypes.join(", ") : (s.done ? "done" : "-");
-    title.textContent = `Step ${idx}  \u2014  ${actionLabel}`;
+    title.textContent = actionLabel;
 
-    const meta = document.createElement("div");
-    meta.className = "meta";
+    // Score delta badge
     const scoreDelta = ((s.after_score ?? 0) - (s.before_score ?? 0));
-    const deltaStr = scoreDelta >= 0 ? `+${scoreDelta.toFixed(2)}` : scoreDelta.toFixed(2);
-    meta.textContent = `${(s.before_score ?? 0).toFixed(2)} \u2192 ${(s.after_score ?? 0).toFixed(2)} (${deltaStr})${s.exec_ok === false ? "  \u00b7  EXEC FAIL" : ""}`;
+    const deltaEl = document.createElement("span");
+    const deltaClass = scoreDelta > 0.001 ? "positive" : scoreDelta < -0.001 ? "negative" : "zero";
+    deltaEl.className = `score-delta ${deltaClass}`;
+    deltaEl.textContent = scoreDelta >= 0 ? `+${scoreDelta.toFixed(2)}` : scoreDelta.toFixed(2);
+
+    titleRow.appendChild(title);
+    titleRow.appendChild(deltaEl);
 
     // Score bar
     const scoreBar = document.createElement("div");
@@ -379,8 +476,7 @@ function renderSteps() {
     fill.style.width = `${Math.min(100, Math.max(0, (s.after_score ?? 0) * 100))}%`;
     scoreBar.appendChild(fill);
 
-    item.appendChild(title);
-    item.appendChild(meta);
+    item.appendChild(titleRow);
     item.appendChild(scoreBar);
     item.onclick = () => setStep(idx);
     root.appendChild(item);
@@ -397,7 +493,7 @@ function renderEpisodeSummary() {
   if (!state.episode) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "Select an episode.";
+    empty.innerHTML = '<span class="empty-icon">&#x1f50d;</span>Select an episode.';
     box.appendChild(empty);
     return;
   }
@@ -420,7 +516,7 @@ function renderEpisodeSummary() {
   if (traceFile) {
     const copyBtn = document.createElement("button");
     copyBtn.className = "btn tiny";
-    copyBtn.textContent = "Copy trace file";
+    copyBtn.textContent = "Copy trace";
     copyBtn.onclick = () => {
       void copyToClipboard(traceFile, "Trace file copied");
     };
@@ -433,7 +529,6 @@ function renderEpisodeSummary() {
   chips.appendChild(createChip(`score ${(ep.score ?? 0).toFixed(2)}`));
   chips.appendChild(createChip(`${ep.steps ?? 0} steps`));
   chips.appendChild(createChip(`${ep.task_seconds ?? 0}s`));
-  chips.appendChild(createChip(`${ep.operator_duration_ms ?? 0}ms op`));
   chips.appendChild(createChip(`${ep.llm_calls ?? 0} llm`));
   if (ep.estimated_cost_usd) chips.appendChild(createChip(`$${Number(ep.estimated_cost_usd).toFixed(3)}`));
   if (ep.failure_category) chips.appendChild(createChip(ep.failure_category, "bad"));
@@ -452,7 +547,7 @@ function renderStepHeadline() {
 
   const step = currentStep();
   if (!step) {
-    box.innerHTML = '<div class="empty">Select a step to inspect.</div>';
+    box.innerHTML = '<div class="empty"><span class="empty-icon">&#x1f50e;</span>Select a step to inspect.</div>';
     setText("stepPosition", "Step \u2014 / \u2014");
     return;
   }
@@ -484,7 +579,7 @@ function renderStepHeadline() {
 
   const urls = document.createElement("div");
   urls.className = "meta";
-  urls.textContent = `${before.url || "-"}\n\u2192 ${after.url || "-"}`;
+  urls.textContent = `${before.url || "-"} \u2192 ${after.url || "-"}`;
 
   box.appendChild(title);
   box.appendChild(meta);
@@ -583,28 +678,54 @@ function toggleImage(imgId, emptyId, src) {
   empty.classList.add("hidden");
 }
 
-/* ── Quick-section nav ─────────────────────────────────────── */
+/* ── Tab bar (replaces quick-sections + accordions) ────────── */
 
-function renderQuickSections() {
-  const nav = q("quickSections");
+function renderTabBar() {
+  const nav = q("tabBar");
   if (!nav) return;
   nav.innerHTML = "";
-  for (let i = 0; i < sectionOrder.length; i += 1) {
-    const id = sectionOrder[i];
+  for (let i = 0; i < tabOrder.length; i += 1) {
     const btn = document.createElement("button");
-    btn.className = "btn";
-    btn.textContent = `${i + 1} ${sectionLabels[i]}`;
-    btn.onclick = () => openSection(id);
+    btn.className = i === state.activeTab ? "active" : "";
+    const key = document.createElement("span");
+    key.className = "tab-key";
+    key.textContent = `${i + 1}`;
+    btn.appendChild(key);
+    btn.appendChild(document.createTextNode(tabLabels[i]));
+    btn.onclick = () => switchTab(i);
     nav.appendChild(btn);
+  }
+  updateTabPanels();
+}
+
+function switchTab(index) {
+  state.activeTab = Math.max(0, Math.min(index, tabOrder.length - 1));
+  // Update tab bar buttons
+  const nav = q("tabBar");
+  if (nav) {
+    const buttons = nav.querySelectorAll("button");
+    buttons.forEach((btn, i) => {
+      btn.className = i === state.activeTab ? "active" : "";
+    });
+  }
+  updateTabPanels();
+  // If switching to Replay, refresh status
+  if (tabOrder[state.activeTab] === "panelReplay") {
+    void refreshReplayStatus();
   }
 }
 
-function openSection(id) {
-  const el = q(id);
-  if (!el) return;
-  el.open = true;
-  el.scrollIntoView({ behavior: "smooth", block: "start" });
-  if (id === "secReplay") void refreshReplayStatus();
+function updateTabPanels() {
+  for (let i = 0; i < tabOrder.length; i += 1) {
+    const panel = q(tabOrder[i]);
+    if (panel) {
+      if (i === state.activeTab) {
+        panel.classList.add("active");
+      } else {
+        panel.classList.remove("active");
+      }
+    }
+  }
 }
 
 /* ── Step navigation ───────────────────────────────────────── */
@@ -748,8 +869,7 @@ async function refreshReplayStatus() {
 }
 
 function shouldPollReplay() {
-  const replayDetails = q("secReplay");
-  return Boolean(replayDetails?.open || state.replayStatus?.running);
+  return Boolean(tabOrder[state.activeTab] === "panelReplay" || state.replayStatus?.running);
 }
 
 function startReplayPolling() {
@@ -759,20 +879,39 @@ function startReplayPolling() {
   }, 1500);
 }
 
-/* ── Copy button handler ───────────────────────────────────── */
+/* ── Segmented control handler ─────────────────────────────── */
 
-function handleCopyClick(ev) {
-  const target = ev.target;
-  if (!(target instanceof HTMLElement)) return;
-  const copyId = target.getAttribute("data-copy-target");
-  if (!copyId) return;
-  const src = q(copyId);
-  if (!src) return;
-  const text = src.textContent || src.value || "";
-  navigator.clipboard.writeText(String(text)).then(() => {
-    const prev = target.textContent;
-    target.textContent = "Copied!";
-    setTimeout(() => { target.textContent = prev; }, 1200);
+function setupSegmentedControl() {
+  const control = q("statusSegmented");
+  const hiddenSelect = q("filterStatus");
+  if (!control || !hiddenSelect) return;
+
+  control.querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      control.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      hiddenSelect.value = btn.getAttribute("data-value") || "";
+      applyEpisodeFilters();
+    });
+  });
+}
+
+/* ── Filter popover ────────────────────────────────────────── */
+
+function setupFilterPopover() {
+  const toggleBtn = q("filterToggleBtn");
+  const popover = q("filterPopover");
+  if (!toggleBtn || !popover) return;
+
+  toggleBtn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    popover.classList.toggle("open");
+  });
+
+  document.addEventListener("click", (ev) => {
+    if (!popover.contains(ev.target) && ev.target !== toggleBtn) {
+      popover.classList.remove("open");
+    }
   });
 }
 
@@ -792,7 +931,6 @@ function setupListeners() {
   });
 
   q("filterUseCase")?.addEventListener("change", applyEpisodeFilters);
-  q("filterStatus")?.addEventListener("change", applyEpisodeFilters);
   q("filterFailureCategory")?.addEventListener("change", applyEpisodeFilters);
 
   q("prevStepBtn")?.addEventListener("click", () => setStep(state.selectedStepIndex - 1));
@@ -804,13 +942,8 @@ function setupListeners() {
   q("replayStepBtn")?.addEventListener("click", () => void postReplay("/api/replay/step"));
   q("replayResetBtn")?.addEventListener("click", () => void postReplay("/api/replay/reset"));
 
-  for (const sectionId of sectionOrder) {
-    q(sectionId)?.addEventListener("toggle", () => {
-      if (sectionId === "secReplay" && q("secReplay")?.open) void refreshReplayStatus();
-    });
-  }
-
-  document.addEventListener("click", handleCopyClick);
+  setupSegmentedControl();
+  setupFilterPopover();
 
   document.addEventListener("keydown", (ev) => {
     const tag = String(ev.target?.tagName || "").toLowerCase();
@@ -837,9 +970,9 @@ function setupListeners() {
       return;
     }
     const n = Number(ev.key);
-    if (Number.isInteger(n) && n >= 1 && n <= sectionOrder.length) {
+    if (Number.isInteger(n) && n >= 1 && n <= tabOrder.length) {
       ev.preventDefault();
-      openSection(sectionOrder[n - 1]);
+      switchTab(n - 1);
     }
   });
 }
@@ -847,7 +980,8 @@ function setupListeners() {
 /* ── Boot ──────────────────────────────────────────────────── */
 
 async function boot() {
-  renderQuickSections();
+  renderTabBar();
+  injectCopyButtons();
   setupListeners();
   startReplayPolling();
   await loadTraceCatalog();
@@ -857,5 +991,5 @@ async function boot() {
 
 void boot().catch((err) => {
   const root = q("stepHeadline");
-  if (root) root.innerHTML = `<div class="empty">Boot failed: ${String(err)}</div>`;
+  if (root) root.innerHTML = `<div class="empty"><span class="empty-icon">&#x26a0;</span>Boot failed: ${String(err)}</div>`;
 });
