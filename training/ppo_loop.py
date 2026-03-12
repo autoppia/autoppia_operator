@@ -99,7 +99,7 @@ class OperatorLLMPolicy:
         if self._agent is not None:
             return self._agent
 
-        from agent import AutoppiaOperator
+        from src.operator.agent import AutoppiaOperator
 
         self._agent = AutoppiaOperator(id="ppo", name="AutoppiaPPOPolicy")
         return self._agent

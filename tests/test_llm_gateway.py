@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 import pytest
 
-import llm_gateway
+from infra import llm_gateway
 
 
 def test_chutes_404_falls_back_to_openai(monkeypatch: pytest.MonkeyPatch) -> None:

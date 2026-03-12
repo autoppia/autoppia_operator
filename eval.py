@@ -157,8 +157,8 @@ from autoppia_iwa.src.demo_webs.classes import BackendEvent, WebProject
 from autoppia_iwa.src.demo_webs.config import demo_web_projects
 from autoppia_iwa.src.demo_webs.demo_webs_service import BackendDemoWebService
 from autoppia_iwa.src.execution.browser_executor import PlaywrightBrowserExecutor
-from llm_gateway import openai_chat_completions
-from pricing import estimate_cost_usd
+from infra.llm_gateway import openai_chat_completions
+from infra.pricing import estimate_cost_usd
 import autoppia_iwa.src.execution.actions.actions  # noqa: F401
 
 # Default task cache path

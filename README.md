@@ -54,10 +54,11 @@ This is how the gateway correlates all model calls to a single evaluation episod
 
 ### Where it is implemented here
 
-- `infra/llm_gateway.py`: minimal OpenAI-compatible client that:
+- `infra/llm_gateway.py`: canonical minimal OpenAI-compatible client that:
   - reads `OPENAI_BASE_URL`
   - injects `IWA-Task-ID`
   - only uses `OPENAI_API_KEY` when you are **not** using the sandbox gateway
+- `llm_gateway.py`: compatibility alias for older scripts/tests.
 - `src/operator/entrypoint.py`: selects the active `ApifiedWebAgent` implementation.
 - `src/operator/api/server.py`: exposes the subnet HTTP contract.
 - `src/operator/agents/fsm/`: canonical FSM agent package. It owns the FSM runtime wrapper and the FSM internals used by the operator.
