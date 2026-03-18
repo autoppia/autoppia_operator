@@ -1,6 +1,6 @@
 import math
 
-from pricing import estimate_cost_usd, price_for_model, _normalize_model
+from pricing import _normalize_model, estimate_cost_usd, price_for_model
 
 
 def test_normalize_model_strips_known_suffixes() -> None:

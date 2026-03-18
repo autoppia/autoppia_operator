@@ -76,9 +76,7 @@ def test_agent_run_as_main_calls_uvicorn(monkeypatch):
 
     captured = {}
     fake_uvicorn = types.ModuleType("uvicorn")
-    fake_uvicorn.run = lambda app, host, port, reload: captured.update(
-        {"app": app, "host": host, "port": port, "reload": reload}
-    )
+    fake_uvicorn.run = lambda app, host, port, reload: captured.update({"app": app, "host": host, "port": port, "reload": reload})
     monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
 
     runpy.run_path(str(path), run_name="__main__")

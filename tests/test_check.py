@@ -72,6 +72,7 @@ def test_call_act_returns_none_without_matching_route() -> None:
 
 def test_call_act_supports_sync_endpoint() -> None:
     """Call act supports sync endpoint."""
+
     def endpoint(payload):
         return {"actions": [{"type": "WaitAction"}], "payload": payload["task_id"]}
 

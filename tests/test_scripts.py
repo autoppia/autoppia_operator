@@ -173,9 +173,7 @@ def test_generate_tasks_load_operator_env_calls_dotenv(tmp_path: Path, monkeypat
 
     calls = []
 
-    fake_dotenv = SimpleNamespace(
-        load_dotenv=lambda path, override=True: calls.append((Path(path), override))
-    )
+    fake_dotenv = SimpleNamespace(load_dotenv=lambda path, override=True: calls.append((Path(path), override)))
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     env_path = tmp_path / ".env"

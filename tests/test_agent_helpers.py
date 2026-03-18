@@ -1,5 +1,4 @@
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
@@ -161,9 +160,7 @@ def test_act_from_payload_uses_llm_decision_and_falls_back_on_error(monkeypatch)
 
     success = asyncio.run(operator.act_from_payload(payload))
 
-    assert success["actions"] == [
-        {"type": "ClickAction", "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "buy", "case_sensitive": False}}
-    ]
+    assert success["actions"] == [{"type": "ClickAction", "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "buy", "case_sensitive": False}}]
 
     def broken_llm_decide(**kwargs):
         raise RuntimeError("provider failed")
@@ -461,6 +458,7 @@ def test_act_response_dispatch_and_agent_act(monkeypatch) -> None:
 
 def test_act_handlers_and_tool_error_branches(monkeypatch) -> None:
     """Act handlers and tool error branches."""
+
     def resp(actions, metrics=None):
         out = {"actions": actions}
         if metrics is not None:
@@ -538,7 +536,7 @@ def test_misc_agent_scoring_and_parsing_helpers(sample_html: str) -> None:
     assert agent._score_candidate("buy", candidates[0]) >= 0.0
     assert agent._rank_candidates("buy", candidates, max_candidates=3)
     assert isinstance(agent._bucket_candidates(candidates, "http://localhost/catalog?seed=7"), tuple)
-    assert agent._llm_json_recover("```json\n{\"action\":\"done\"}\n```") == {"action": "done"}
+    assert agent._llm_json_recover('```json\n{"action":"done"}\n```') == {"action": "done"}
 
     with pytest.raises(ValueError):
         agent._parse_llm_json(123)  # type: ignore[arg-type]
@@ -657,6 +655,7 @@ def test_summary_and_ir_cleanup_fallbacks(monkeypatch) -> None:
 
 def test_css_xpath_visible_text_error_paths(monkeypatch) -> None:
     """Css XPath visible text error paths."""
+
     class BrokenSoup:
         def __init__(self, html, parser):
             raise RuntimeError("parse boom")
@@ -736,6 +735,7 @@ def test_selector_builder_and_label_resolution_branches() -> None:
 
 def test_candidate_methods_and_action_handlers_cover_real_paths() -> None:
     """Candidate methods and action handlers cover real paths."""
+
     def resp(actions, metrics=None):
         out = {"actions": actions}
         if metrics is not None:
@@ -784,6 +784,7 @@ def test_candidate_methods_and_action_handlers_cover_real_paths() -> None:
 
 def test_operator_act_edge_paths(monkeypatch) -> None:
     """Operator act edge paths."""
+
     class NoCreateAction:
         pass
 

@@ -1,8 +1,9 @@
-from typing import Any
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
+
 import llm_gateway
 
 
@@ -341,6 +342,7 @@ def test_openai_gateway_formats_http_error_text_fallback(monkeypatch) -> None:
 
 def test_anthropic_gateway_messages_success(monkeypatch) -> None:
     """Anthropic gateway messages success."""
+
     class FakeResponse:
         def raise_for_status(self) -> None:
             return None
@@ -441,6 +443,7 @@ def test_openai_chat_completions_removes_temperature_on_unsupported_value(monkey
 
 def test_openai_chat_completions_reraises_unhandled_runtime_error(monkeypatch) -> None:
     """Openai chat completions reraises unhandled runtime error."""
+
     def fake_chat_completions(*, task_id: str, body: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("other failure")
 

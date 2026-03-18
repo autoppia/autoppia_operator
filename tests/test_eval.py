@@ -1,11 +1,11 @@
 import asyncio
+import importlib.util
 import json
 import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
 
-import importlib.util
 import pytest
 
 

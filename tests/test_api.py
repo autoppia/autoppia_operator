@@ -95,6 +95,4 @@ def test_act_endpoint_drops_unserializable_actions(monkeypatch) -> None:
     resp = client.post("/act", json=_payload())
 
     assert resp.status_code == 200
-    assert resp.json() == {
-        "actions": [{"type": "NavigateAction", "url": "http://localhost/checkout?seed=7"}]
-    }
+    assert resp.json() == {"actions": [{"type": "NavigateAction", "url": "http://localhost/checkout?seed=7"}]}
