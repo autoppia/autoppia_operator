@@ -2396,11 +2396,6 @@ def _task_from_payload(payload: dict[str, Any]) -> Task:
     return SimpleNamespace(**task_payload)
 
 
-@app.post(
-    "/act",
-    summary="Decide next agent actions",
-    responses={"500": {"description": "Internal server error"}, "400": {"description": "Bad request"}},
-)
 def _normalize_act_action(action: Any, task_id: str, step_index: int) -> dict[str, Any] | None:
     try:
         if isinstance(action, dict):
@@ -2412,6 +2407,11 @@ def _normalize_act_action(action: Any, task_id: str, step_index: int) -> dict[st
         return None
 
 
+@app.post(
+    "/act",
+    summary="Decide next agent actions",
+    responses={"500": {"description": "Internal server error"}, "400": {"description": "Bad request"}},
+)
 async def act(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     task_id = str(payload.get("task_id") or "")
     step_index = int(payload.get("step_index") or 0)
