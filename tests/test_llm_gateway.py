@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 
@@ -12,10 +12,10 @@ def test_chutes_404_falls_back_to_openai(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("CHUTES_MODEL_FALLBACK_TO_OPENAI", "1")
 
-    def _raise_404(*, task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    def _raise_404(*, task_id: str, body: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("OpenAI error (404): type=None code=None message=model_not_found")
 
-    def _openai_ok(*, task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    def _openai_ok(*, task_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return {
             "choices": [{"message": {"content": '{"type":"browser","tool_call":{"name":"browser.wait","arguments":{"time_seconds":1}}}'}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
@@ -42,7 +42,7 @@ def test_chutes_404_respects_disable_fallback(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("CHUTES_MODEL_FALLBACK_TO_OPENAI", "0")
 
-    def _raise_404(*, task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    def _raise_404(*, task_id: str, body: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("OpenAI error (404): type=None code=None message=model_not_found")
 
     monkeypatch.setattr(llm_gateway._chutes, "chat_completions", _raise_404)
@@ -56,10 +56,12 @@ def test_chutes_404_respects_disable_fallback(monkeypatch: pytest.MonkeyPatch) -
         )
 
 
-def test_openai_vision_chat_completions_uses_openai_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: Dict[str, Any] = {}
+def test_openai_vision_chat_completions_uses_openai_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
 
-    def _openai_ok(*, task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    def _openai_ok(*, task_id: str, body: dict[str, Any]) -> dict[str, Any]:
         seen["task_id"] = task_id
         seen["body"] = body
         return {
@@ -77,7 +79,13 @@ def test_openai_vision_chat_completions_uses_openai_gateway(monkeypatch: pytest.
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "describe the screenshot"},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8=", "detail": "low"}},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,aGVsbG8=",
+                            "detail": "low",
+                        },
+                    },
                 ],
             }
         ],

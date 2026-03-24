@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -36,17 +38,14 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
 
 
 def decode_json_blob(blob: bytes, *, key_hint: str = "") -> dict[str, Any]:
-    if not isinstance(blob, (bytes, bytearray)) or not blob:
+    if not isinstance(blob, bytes | bytearray) or not blob:
         raise ValueError("S3 object is empty")
 
     payload = bytes(blob)
     should_try_gzip = key_hint.endswith(".gz") or payload[:2] == b"\x1f\x8b"
     if should_try_gzip:
-        try:
+        with contextlib.suppress(Exception):
             payload = gzip.decompress(payload)
-        except Exception:
-            # already decompressed by caller/proxy
-            pass
 
     try:
         parsed = json.loads(payload.decode("utf-8"))
@@ -141,7 +140,7 @@ class S3TrajectorySource:
         if body is None:
             raise ValueError(f"S3 get_object returned no Body for {ref.uri}")
         data = body.read()
-        if not isinstance(data, (bytes, bytearray)):
+        if not isinstance(data, bytes | bytearray):
             raise ValueError(f"S3 get_object body for {ref.uri} is not bytes")
         return bytes(data)
 

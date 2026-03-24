@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 from importlib import import_module
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,7 +41,7 @@ async def capabilities() -> dict[str, Any]:
 
 
 @app.post("/act", summary="Decide next agent actions")
-async def act(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def act(payload: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
     try:
         return await _operator().respond_from_payload(payload)
     except HTTPException:
@@ -51,7 +51,7 @@ async def act(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 
 @app.post("/step", summary="Alias for /act")
-async def step(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def step(payload: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
     try:
         return await _operator().respond_from_payload(payload)
     except HTTPException:

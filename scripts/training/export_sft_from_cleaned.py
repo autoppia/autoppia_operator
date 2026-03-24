@@ -13,11 +13,7 @@ if str(OPERATOR_ROOT) not in sys.path:
 
 from training.exporters import export_sft, load_cleaned_trajectories
 
-
-DEFAULT_SYSTEM_PROMPT = (
-    "You are a web automation planner. Given a target URL and a natural-language task, "
-    "return only a JSON array of actions to complete the task."
-)
+DEFAULT_SYSTEM_PROMPT = "You are a web automation planner. Given a target URL and a natural-language task, return only a JSON array of actions to complete the task."
 
 
 def _args() -> argparse.Namespace:

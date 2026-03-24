@@ -14,7 +14,7 @@ Notes:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -53,11 +53,11 @@ def _normalize_model(model: str) -> str:
     return m
 
 
-def price_for_model(model: str) -> Optional[ModelPrice]:
+def price_for_model(model: str) -> ModelPrice | None:
     return _PRICES.get(_normalize_model(model))
 
 
-def estimate_cost_usd(model: str, usage: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+def estimate_cost_usd(model: str, usage: dict[str, Any]) -> tuple[float, dict[str, Any]]:
     p = price_for_model(model)
     pt = int(usage.get("prompt_tokens") or 0)
     ct = int(usage.get("completion_tokens") or 0)

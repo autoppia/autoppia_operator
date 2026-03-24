@@ -198,11 +198,7 @@ def _run_eval(
 
     passed = (success_rate >= success_threshold) and (avg_score >= avg_score_threshold)
 
-    print(
-        f"[sn36 eval] tasks={report.get('num_tasks', num_tasks)} "
-        f"success_rate={success_rate:.4f} avg_score={avg_score:.4f} "
-        f"pass={passed}"
-    )
+    print(f"[sn36 eval] tasks={report.get('num_tasks', num_tasks)} success_rate={success_rate:.4f} avg_score={avg_score:.4f} pass={passed}")
     return EvalGateResult(report=report, success_rate=success_rate, avg_score=avg_score, passed=passed)
 
 
@@ -254,11 +250,11 @@ def _iws_headers(token: str | None) -> dict[str, str]:
 def _extract_data(payload: Any) -> Any:
     if isinstance(payload, dict) and "data" in payload:
         data = payload.get("data")
-        if isinstance(data, (list, dict)):
+        if isinstance(data, list | dict):
             return data
     if isinstance(payload, dict) and "result" in payload:
         data = payload.get("result")
-        if isinstance(data, (list, dict)):
+        if isinstance(data, list | dict):
             return data
     return payload
 
@@ -509,7 +505,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     eval_cmd.add_argument("--task-cache", default=None)
     eval_cmd.add_argument("--task-concurrency", type=int, default=1)
     eval_cmd.add_argument("--success-threshold", type=float, default=DEFAULT_METRICS["success_threshold"])
-    eval_cmd.add_argument("--avg-score-threshold", type=float, default=DEFAULT_METRICS["avg_score_threshold"])
+    eval_cmd.add_argument(
+        "--avg-score-threshold",
+        type=float,
+        default=DEFAULT_METRICS["avg_score_threshold"],
+    )
     eval_cmd.add_argument("--out", default=str(ROOT / "data" / "sn36_eval_report.json"))
     eval_cmd.add_argument("--json", action="store_true", help="print parsed JSON with guardrail result")
     eval_cmd.set_defaults(func=cmd_eval)
@@ -568,9 +568,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     cycle.add_argument("--task-cache", default=None)
     cycle.add_argument("--task-concurrency", type=int, default=1)
     cycle.add_argument("--success-threshold", type=float, default=DEFAULT_METRICS["success_threshold"])
-    cycle.add_argument("--avg-score-threshold", type=float, default=DEFAULT_METRICS["avg_score_threshold"])
+    cycle.add_argument(
+        "--avg-score-threshold",
+        type=float,
+        default=DEFAULT_METRICS["avg_score_threshold"],
+    )
     cycle.add_argument("--out", default=str(ROOT / "data" / "sn36_cycle_eval.json"))
-    cycle.add_argument("--submit", action="store_true", help="submit commit through miner-cli after passing local eval")
+    cycle.add_argument(
+        "--submit",
+        action="store_true",
+        help="submit commit through miner-cli after passing local eval",
+    )
 
     cycle.add_argument("--iwap-url", default="")
     cycle.add_argument("--iwap-token", default=None)

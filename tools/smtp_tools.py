@@ -149,7 +149,12 @@ def _send_email(
     try:
         if config["use_ssl"]:
             context = ssl.create_default_context()
-            client = smtplib.SMTP_SSL(config["host"], config["port"], timeout=config["timeout"], context=context)
+            client = smtplib.SMTP_SSL(
+                config["host"],
+                config["port"],
+                timeout=config["timeout"],
+                context=context,
+            )
         else:
             client = smtplib.SMTP(config["host"], config["port"], timeout=config["timeout"])
         with client:
@@ -160,7 +165,10 @@ def _send_email(
             response = client.send_message(msg, from_addr=sender, to_addrs=recipients)
             # response is per recipient errors only, empty dict is success
             if response:
-                return {"ok": False, "error_map": {str(k): str(v) for k, v in response.items()}}
+                return {
+                    "ok": False,
+                    "error_map": {str(k): str(v) for k, v in response.items()},
+                }
             return {
                 "ok": True,
                 "message": "sent",
@@ -186,12 +194,22 @@ def _check_connection() -> dict[str, Any]:
         if config["use_ssl"]:
             with smtplib.SMTP_SSL(config["host"], config["port"], timeout=config["timeout"]) as client:
                 code = client.noop()[0]
-            return {"ok": True, "smtp_host": config["host"], "smtp_port": config["port"], "status_code": int(code)}
+            return {
+                "ok": True,
+                "smtp_host": config["host"],
+                "smtp_port": config["port"],
+                "status_code": int(code),
+            }
         with smtplib.SMTP(config["host"], config["port"], timeout=config["timeout"]) as client:
             code, _ = client.noop()
             if config["use_tls"] and code in {220, 250}:
                 client.starttls(context=ssl.create_default_context())
-            return {"ok": True, "smtp_host": config["host"], "smtp_port": config["port"], "status_code": int(code)}
+            return {
+                "ok": True,
+                "smtp_host": config["host"],
+                "smtp_port": config["port"],
+                "status_code": int(code),
+            }
     except Exception as exc:
         return {"ok": False, "error": _sanitize_error(exc)}
 
@@ -227,7 +245,12 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     send_cmd = subparsers.add_parser("send", help="send an email notification")
-    send_cmd.add_argument("--to", dest="to_addresses", default=",".join(_default_to()), help="comma-separated recipient list")
+    send_cmd.add_argument(
+        "--to",
+        dest="to_addresses",
+        default=",".join(_default_to()),
+        help="comma-separated recipient list",
+    )
     send_cmd.add_argument("--cc", default="", help="optional cc recipients")
     send_cmd.add_argument("--bcc", default="", help="optional bcc recipients")
     send_cmd.add_argument("--reply-to", default="", help="optional reply-to address")

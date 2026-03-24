@@ -17,12 +17,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 import subprocess
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
-
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 _DOTENV_LOADED = False
@@ -101,12 +101,20 @@ def _build_args(prefix: list[str], args: dict[str, Any], *, boolean_flags: set[s
 
 
 def _run_bittensor_tool(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-    cmd = [sys.executable, str(ROOT / "tools" / "bittensor_tools.py"), tool_name.replace(".", "_")]
+    cmd = [
+        sys.executable,
+        str(ROOT / "tools" / "bittensor_tools.py"),
+        tool_name.replace(".", "_"),
+    ]
     return _run_command(_build_args(cmd, args))
 
 
 def _run_iwap_tool(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-    cmd = [sys.executable, str(ROOT / "tools" / "iwap_tools.py"), tool_name.replace(".", "_")]
+    cmd = [
+        sys.executable,
+        str(ROOT / "tools" / "iwap_tools.py"),
+        tool_name.replace(".", "_"),
+    ]
     return _run_command(_build_args(cmd, args), timeout=180)
 
 
@@ -116,7 +124,11 @@ def _run_sn36_tool(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_runpod_tool(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-    cmd = [sys.executable, str(ROOT / "tools" / "runpod_tools.py"), tool_name.replace(".", "_")]
+    cmd = [
+        sys.executable,
+        str(ROOT / "tools" / "runpod_tools.py"),
+        tool_name.replace(".", "_"),
+    ]
     return _run_command(_build_args(cmd, args), timeout=600)
 
 
@@ -378,7 +390,10 @@ def build_tool_registry() -> dict[str, ToolSpec]:
                 "type": "object",
                 "properties": {
                     "provider": {"type": "string", "default": "chutes"},
-                    "model": {"type": "string", "default": "deepseek-ai/DeepSeek-V3-0324"},
+                    "model": {
+                        "type": "string",
+                        "default": "deepseek-ai/DeepSeek-V3-0324",
+                    },
                     "num_tasks": {"type": "integer", "default": 20},
                     "project_id": {"type": ["string", "null"], "default": None},
                     "use_case": {"type": ["string", "null"], "default": None},
@@ -392,7 +407,10 @@ def build_tool_registry() -> dict[str, ToolSpec]:
                     "distinct_use_cases": {"type": "boolean", "default": False},
                     "task_cache": {"type": ["string", "null"], "default": None},
                     "task_concurrency": {"type": "integer", "default": 1},
-                    "out": {"type": "string", "default": str(ROOT / "data" / "sn36_eval_report.json")},
+                    "out": {
+                        "type": "string",
+                        "default": str(ROOT / "data" / "sn36_eval_report.json"),
+                    },
                     "json": {"type": "boolean", "default": False},
                 },
             },
@@ -407,10 +425,22 @@ def build_tool_registry() -> dict[str, ToolSpec]:
                     "github_url": {"type": "string"},
                     "agent_name": {"type": "string"},
                     "agent_image": {"type": "string", "default": ""},
-                    "wallet_name": {"type": "string", "default": os.getenv("SN36_COLDKEY", "default")},
-                    "wallet_hotkey": {"type": "string", "default": os.getenv("SN36_HOTKEY", "default")},
-                    "network": {"type": "string", "default": os.getenv("SN36_NETWORK", "finney")},
-                    "netuid": {"type": "integer", "default": int(os.getenv("SN36_NETUID", "36"))},
+                    "wallet_name": {
+                        "type": "string",
+                        "default": os.getenv("SN36_COLDKEY", "default"),
+                    },
+                    "wallet_hotkey": {
+                        "type": "string",
+                        "default": os.getenv("SN36_HOTKEY", "default"),
+                    },
+                    "network": {
+                        "type": "string",
+                        "default": os.getenv("SN36_NETWORK", "finney"),
+                    },
+                    "netuid": {
+                        "type": "integer",
+                        "default": int(os.getenv("SN36_NETUID", "36")),
+                    },
                     "chain_endpoint": {"type": "string", "default": ""},
                     "season": {"type": "integer", "default": 0},
                     "target_round": {"type": "integer", "default": 0},
@@ -429,16 +459,31 @@ def build_tool_registry() -> dict[str, ToolSpec]:
                     "github_url": {"type": "string"},
                     "agent_name": {"type": "string"},
                     "agent_image": {"type": "string", "default": ""},
-                    "wallet_name": {"type": "string", "default": os.getenv("SN36_COLDKEY", "default")},
-                    "wallet_hotkey": {"type": "string", "default": os.getenv("SN36_HOTKEY", "default")},
-                    "network": {"type": "string", "default": os.getenv("SN36_NETWORK", "finney")},
-                    "netuid": {"type": "integer", "default": int(os.getenv("SN36_NETUID", "36"))},
+                    "wallet_name": {
+                        "type": "string",
+                        "default": os.getenv("SN36_COLDKEY", "default"),
+                    },
+                    "wallet_hotkey": {
+                        "type": "string",
+                        "default": os.getenv("SN36_HOTKEY", "default"),
+                    },
+                    "network": {
+                        "type": "string",
+                        "default": os.getenv("SN36_NETWORK", "finney"),
+                    },
+                    "netuid": {
+                        "type": "integer",
+                        "default": int(os.getenv("SN36_NETUID", "36")),
+                    },
                     "chain_endpoint": {"type": "string", "default": ""},
                     "season": {"type": "integer", "default": 0},
                     "target_round": {"type": "integer", "default": 0},
                     "cli_binary": {"type": "string", "default": "autoppia-miner-cli"},
                     "provider": {"type": "string", "default": "chutes"},
-                    "model": {"type": "string", "default": "deepseek-ai/DeepSeek-V3-0324"},
+                    "model": {
+                        "type": "string",
+                        "default": "deepseek-ai/DeepSeek-V3-0324",
+                    },
                     "num_tasks": {"type": "integer", "default": 20},
                     "project_id": {"type": ["string", "null"], "default": None},
                     "use_case": {"type": ["string", "null"], "default": None},
@@ -458,7 +503,10 @@ def build_tool_registry() -> dict[str, ToolSpec]:
                     "iwap_limit": {"type": "integer", "default": 20},
                     "include_unfinished": {"type": "boolean", "default": False},
                     "iwap_out": {"type": "string", "default": ""},
-                    "out": {"type": "string", "default": str(ROOT / "data" / "sn36_cycle_eval.json")},
+                    "out": {
+                        "type": "string",
+                        "default": str(ROOT / "data" / "sn36_cycle_eval.json"),
+                    },
                 },
                 "required": ["github_url", "agent_name"],
             },
@@ -470,7 +518,10 @@ def build_tool_registry() -> dict[str, ToolSpec]:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "base_url": {"type": "string", "default": os.getenv("IWAP_BASE_URL", "")},
+                    "base_url": {
+                        "type": "string",
+                        "default": os.getenv("IWAP_BASE_URL", ""),
+                    },
                     "token": {"type": "string", "default": ""},
                     "limit": {"type": "integer", "default": 20},
                     "include_unfinished": {"type": "boolean", "default": False},
@@ -507,7 +558,10 @@ def build_tool_registry() -> dict[str, ToolSpec]:
                     "gpu_type_id": {"type": "string"},
                     "gpu_count": {"type": "integer", "default": 1},
                     "template_id": {"type": ["string", "null"], "default": None},
-                    "docker_image": {"type": "string", "default": "runpod/pytorch:latest"},
+                    "docker_image": {
+                        "type": "string",
+                        "default": "runpod/pytorch:latest",
+                    },
                     "volume_in_gb": {"type": "integer", "default": 20},
                     "cloud_type": {"type": "string", "default": "SECURE"},
                     "allow_side_effects": {"type": "boolean", "default": False},
@@ -697,7 +751,11 @@ def _handle_request(raw: str, registry: dict[str, ToolSpec]) -> dict[str, Any] |
     if method == "tools/call":
         return _handle_tools_call(req_id, registry, params or {})
     if method == "ping":
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"ok": True, "status": "pong"}}
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"ok": True, "status": "pong"},
+        }
 
     return {
         "jsonrpc": "2.0",

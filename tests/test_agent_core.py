@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from agent_test_support import (
     _TASK_STATE,
-    _Candidate,
     _all_subgoals_done,
+    _Candidate,
+    _ensure_subgoal_memory,
     _extract_focus_terms,
     _host_label,
-    _ensure_subgoal_memory,
     _pick_fallback_candidate_id,
     _render_observation_result,
     _split_task_subgoals,
@@ -77,18 +77,32 @@ def test_extract_tables_and_entities_tools() -> None:
 
 def test_pick_fallback_candidate_prefers_matching_click_target() -> None:
     c0 = _Candidate(
-        selector={"type": "attributeValueSelector", "attribute": "href", "value": "https://autoppia.com/docs", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "href",
+            "value": "https://autoppia.com/docs",
+            "case_sensitive": False,
+        },
         text="Docs",
         tag="a",
         attrs={"href": "https://autoppia.com/docs"},
     )
     c1 = _Candidate(
-        selector={"type": "attributeValueSelector", "attribute": "href", "value": "https://autoppia.com/studio", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "href",
+            "value": "https://autoppia.com/studio",
+            "case_sensitive": False,
+        },
         text="Studio",
         tag="a",
         attrs={"href": "https://autoppia.com/studio"},
     )
-    decision = {"action": "click", "url": "https://autoppia.com/studio", "text": "open studio"}
+    decision = {
+        "action": "click",
+        "url": "https://autoppia.com/studio",
+        "text": "open studio",
+    }
     picked = _pick_fallback_candidate_id(candidates=[c0, c1], action="click", decision=decision)
     assert picked == 1
 

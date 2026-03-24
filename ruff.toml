@@ -1,0 +1,77 @@
+# Ruff config (canonical). Mirrors former [tool.ruff] in pyproject.toml.
+# Pre-commit: `ruff` uses `--fix`; unsafe fixes enabled below.
+
+line-length = 200
+target-version = "py311"
+src = [".", "src", "tests"]
+unsafe-fixes = true
+
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+]
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E402", "E501"]
+
+[lint.isort]
+known-first-party = ["agent", "autoppia_operator", "infra", "src", "training", "tools"]
+known-third-party = [
+    "PIL",
+    "aiohttp",
+    "bs4",
+    "dependency_injector",
+    "distutils",
+    "dotenv",
+    "faker",
+    "fastapi",
+    "flask",
+    "flask_cors",
+    "httpx",
+    "json_repair",
+    "jsonschema",
+    "loguru",
+    "lxml",
+    "matplotlib",
+    "networkx",
+    "openai",
+    "orjson",
+    "playwright",
+    "pydantic",
+    "pytest",
+    "requests",
+    "rich",
+    "tenacity",
+    "tiktoken",
+    "torch",
+    "transformers",
+    "typing_extensions",
+    "uvicorn",
+    "xmldiff",
+]
+combine-as-imports = true
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

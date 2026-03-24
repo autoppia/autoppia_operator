@@ -117,7 +117,10 @@ class OperatorLLMPolicy:
         response = self._run_async(agent.act_from_payload(req))
         actions = response.get("actions") if isinstance(response, dict) else []
         if not isinstance(actions, list) or not actions:
-            return PolicyDecision(action={"type": "WaitAction", "time_seconds": 1.0}, raw_response=response or {})
+            return PolicyDecision(
+                action={"type": "WaitAction", "time_seconds": 1.0},
+                raw_response=response or {},
+            )
 
         first = actions[0] if isinstance(actions[0], dict) else {"type": "WaitAction", "time_seconds": 1.0}
         return PolicyDecision(action=first, raw_response=response if isinstance(response, dict) else {})
@@ -129,7 +132,7 @@ def _to_task(task_payload: dict[str, Any]) -> Any:
     if "task" in task_payload and isinstance(task_payload.get("task"), dict):
         task_payload = task_payload["task"]
 
-    if hasattr(Task, "deserialize") and callable(getattr(Task, "deserialize")):
+    if hasattr(Task, "deserialize") and callable(Task.deserialize):
         try:
             return Task.deserialize(task_payload)
         except Exception:
@@ -227,9 +230,11 @@ class IWAStatefulPPOCollector:
         return created
 
     def run_episode(self, task: Any, *, episode_index: int) -> PPOEpisode:
-        from autoppia_iwa.src.evaluation.stateful_evaluator.evaluator import StatefulEvaluator
+        from autoppia_iwa.src.evaluation.stateful_evaluator.evaluator import (
+            StatefulEvaluator,
+        )
 
-        trajectory_id = f"ppo:{str(getattr(task, 'id', 'task'))}:{uuid.uuid4().hex[:12]}"
+        trajectory_id = f"ppo:{getattr(task, 'id', 'task')!s}:{uuid.uuid4().hex[:12]}"
         history: list[dict[str, Any]] = []
         transitions: list[PPOStepTransition] = []
         total_reward = 0.0
@@ -356,12 +361,8 @@ def export_ppo_collection(out_dir: Path, episodes: list[PPOEpisode]) -> dict[str
         "episodes": len(episodes),
         "steps": len(all_steps),
         "successes": sum(1 for ep in episodes if ep.final_success),
-        "avg_final_score": (
-            sum(ep.final_score for ep in episodes) / len(episodes) if episodes else 0.0
-        ),
-        "avg_total_reward": (
-            sum(ep.total_reward for ep in episodes) / len(episodes) if episodes else 0.0
-        ),
+        "avg_final_score": (sum(ep.final_score for ep in episodes) / len(episodes) if episodes else 0.0),
+        "avg_total_reward": (sum(ep.total_reward for ep in episodes) / len(episodes) if episodes else 0.0),
     }
 
     summary_path = out_dir / "ppo_summary.json"

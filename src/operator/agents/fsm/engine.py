@@ -1,17 +1,78 @@
 from __future__ import annotations
 
-from .utils import *
-from .state import *
-from .candidates import *
-from .observation import *
-from .meta_tools import *
-from .policy import *
+import contextlib
+import hashlib
+import json
+import os
+import re
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+from src.operator.agents.fsm import (
+    AgentState,
+    Candidate,
+    CandidateExtractor,
+    CandidateRanker,
+    FlagDetector,
+    ObsBuilder,
+)
+
+from .meta_tools import MetaToolExecutor, Router, Skills
+from .policy import Policy
+from .state import ProgressEffect
+from .utils import (
+    _REPO_ROOT,
+    CONTROL_META_TOOLS,
+    MAX_CHECKPOINTS,
+    MAX_INTERNAL_META_STEPS,
+    MAX_PENDING_ELEMENTS,
+    MAX_STR,
+    MAX_VISITED_URLS,
+    MAX_VISUAL_HINTS,
+    _action_type_for_tool,
+    _append_jsonl,
+    _best_page_evidence,
+    _candidate_text,
+    _canonical_allowed_tool_name,
+    _constraint_value_matches,
+    _content_supported_by_page_evidence,
+    _dedupe_keep_order,
+    _empty_call_breakdown,
+    _env_bool,
+    _env_int,
+    _env_str,
+    _looks_like_informational_task,
+    _looks_like_vague_informational_answer,
+    _merge_usage_dicts,
+    _meta_tools,
+    _norm_ws,
+    _normalize_reasoning_trace,
+    _normalize_use_case_info,
+    _normalize_working_state,
+    _obs_meta_tools,
+    _page_context_ready_for_informational_answer,
+    _query_map,
+    _runtime_page_evidence_ready,
+    _safe_url,
+    _sanitize_selector,
+    _screenshot_available,
+    _supported_browser_tool_names,
+    _task_constraints,
+    _usage_breakdown_template,
+    _use_vision,
+    _utc_now,
+    _vision_signature,
+    _with_query,
+)
+
 
 class FSMOperator:
     def __init__(
         self,
-        llm_call: Callable[..., Dict[str, Any]],
-        vision_call: Callable[..., Dict[str, Any]] | None = None,
+        llm_call: Callable[..., dict[str, Any]],
+        vision_call: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.flags = FlagDetector()
         self.extractor = CandidateExtractor()
@@ -26,7 +87,10 @@ class FSMOperator:
         self.debug_dir = str(os.getenv("FSM_POLICY_DEBUG_DIR", "") or "").strip()
         self.trace_json = _env_bool("FSM_TRACE_JSON", False)
         self.trace_dir = str(
-            os.getenv("FSM_TRACE_DIR", self.debug_dir or str((_REPO_ROOT / "data" / "fsm_traces").resolve()))
+            os.getenv(
+                "FSM_TRACE_DIR",
+                self.debug_dir or str((_REPO_ROOT / "data" / "fsm_traces").resolve()),
+            )
             or ""
         ).strip()
 
@@ -69,8 +133,8 @@ class FSMOperator:
         url: str,
         step_index: int,
         state: AgentState,
-        text_ir: Dict[str, Any],
-        flags: Dict[str, Any],
+        text_ir: dict[str, Any],
+        flags: dict[str, Any],
     ) -> tuple[bool, str, str]:
         if bool(flags.get("captcha_suspected")):
             return False, "", "Current page is blocked by a challenge."
@@ -86,7 +150,11 @@ class FSMOperator:
                     flags=flags,
                 )
                 if ok:
-                    return True, best_page_evidence, "Current page contains a concrete answer."
+                    return (
+                        True,
+                        best_page_evidence,
+                        "Current page contains a concrete answer.",
+                    )
             return False, "", "Current page does not yet show a concrete answer."
         if state.mode == "REPORT" and state.memory.facts:
             content = _candidate_text(state.memory.facts[0])
@@ -95,15 +163,19 @@ class FSMOperator:
         return False, "", "Current page is not yet sufficient to conclude completion."
 
     def _obs_extract_signature(self, *, dom_hash: str, url: str) -> str:
-        raw = json.dumps({"dom_hash": str(dom_hash or "")[:64], "url": str(url or "")[:240]}, ensure_ascii=True, sort_keys=True)
+        raw = json.dumps(
+            {"dom_hash": str(dom_hash or "")[:64], "url": str(url or "")[:240]},
+            ensure_ascii=True,
+            sort_keys=True,
+        )
         return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
     def _should_obs_extract(
         self,
         *,
         state: AgentState,
-        flags: Dict[str, Any],
-        text_ir: Dict[str, Any],
+        flags: dict[str, Any],
+        text_ir: dict[str, Any],
         url: str,
     ) -> bool:
         mode = self._obs_extract_mode()
@@ -129,15 +201,19 @@ class FSMOperator:
         *,
         prompt: str,
         url: str,
-        text_ir: Dict[str, Any],
-        candidates: List[Candidate],
-    ) -> List[Dict[str, Any]]:
-        candidate_lines: List[str] = []
+        text_ir: dict[str, Any],
+        candidates: list[Candidate],
+    ) -> list[dict[str, Any]]:
+        candidate_lines: list[str] = []
         for cand in candidates[:40]:
-            label = _candidate_text(cand.text, cand.field_hint, cand.href, cand.group_label, cand.region_label)
-            candidate_lines.append(
-                f"[{cand.id}] role={cand.role} kind={cand.field_kind or cand.region_kind or cand.type} label={label[:140]} context={cand.context[:180]}"
+            label = _candidate_text(
+                cand.text,
+                cand.field_hint,
+                cand.href,
+                cand.group_label,
+                cand.region_label,
             )
+            candidate_lines.append(f"[{cand.id}] role={cand.role} kind={cand.field_kind or cand.region_kind or cand.type} label={label[:140]} context={cand.context[:180]}")
         user_payload = {
             "task": str(prompt or "")[:1200],
             "url": str(url or "")[:400],
@@ -147,22 +223,13 @@ class FSMOperator:
             "html_excerpt": str(text_ir.get("html_excerpt") or "")[:6000],
             "candidates": candidate_lines[:40],
         }
-        system = (
-            "You extract structured browser observations from HTML for a separate policy model. "
-            "Return strict JSON only with keys: "
-            "page_kind, summary, regions, forms, facts, primary_candidate_ids. "
-            "regions must be a list of objects with kind, label, candidate_ids. "
-            "forms must be a list of objects with label, fields, commit_ids. "
-            "facts must be short strings for visible metrics, totals, or key-value facts already present on the page. "
-            "primary_candidate_ids should identify the most likely commit/apply/save/search/open targets visible right now. "
-            "Do not choose the next action. Do not narrate. Be concise and structural."
-        )
+        system = "You extract structured browser observations from HTML for a separate policy model. Return strict JSON only with keys: page_kind, summary, regions, forms, facts, primary_candidate_ids. regions must be a list of objects with kind, label, candidate_ids. forms must be a list of objects with label, fields, commit_ids. facts must be short strings for visible metrics, totals, or key-value facts already present on the page. primary_candidate_ids should identify the most likely commit/apply/save/search/open targets visible right now. Do not choose the next action. Do not narrate. Be concise and structural."
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
         ]
 
-    def _safe_json_load(self, raw: Any) -> Dict[str, Any]:
+    def _safe_json_load(self, raw: Any) -> dict[str, Any]:
         text = str(raw or "").strip()
         if not text:
             return {}
@@ -177,7 +244,7 @@ class FSMOperator:
                     return {}
         return {}
 
-    def _normalize_obs_extract_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_obs_extract_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             return {}
         normalized = {
@@ -210,13 +277,7 @@ class FSMOperator:
             )
         normalized["facts"] = [str(x)[:180] for x in list(payload.get("facts") or [])[:8] if str(x).strip()]
         normalized["primary_candidate_ids"] = [str(x)[:120] for x in list(payload.get("primary_candidate_ids") or [])[:12] if str(x).strip()]
-        if not (
-            normalized["summary"]
-            or normalized["regions"]
-            or normalized["forms"]
-            or normalized["facts"]
-            or normalized["primary_candidate_ids"]
-        ):
+        if not (normalized["summary"] or normalized["regions"] or normalized["forms"] or normalized["facts"] or normalized["primary_candidate_ids"]):
             return {}
         return normalized
 
@@ -226,11 +287,11 @@ class FSMOperator:
         task_id: str,
         prompt: str,
         url: str,
-        flags: Dict[str, Any],
+        flags: dict[str, Any],
         state: AgentState,
-        text_ir: Dict[str, Any],
-        candidates: List[Candidate],
-    ) -> Dict[str, Any]:
+        text_ir: dict[str, Any],
+        candidates: list[Candidate],
+    ) -> dict[str, Any]:
         if not self._should_obs_extract(state=state, flags=flags, text_ir=text_ir, url=url):
             return state.memory.obs_extract_payload if isinstance(state.memory.obs_extract_payload, dict) else {}
         model_name = _env_str("OPENAI_OBS_MODEL", "gpt-4o-mini") or "gpt-4o-mini"
@@ -262,7 +323,7 @@ class FSMOperator:
         clean_payload["__usage"] = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
         return clean_payload
 
-    def _debug_log(self, task_id: str, payload: Dict[str, Any]) -> None:
+    def _debug_log(self, task_id: str, payload: dict[str, Any]) -> None:
         if not self.debug_dir and not self.trace_json:
             return
         try:
@@ -273,7 +334,7 @@ class FSMOperator:
         except Exception:
             return
 
-    def _state_delta(self, before: AgentState, after: AgentState) -> Dict[str, Any]:
+    def _state_delta(self, before: AgentState, after: AgentState) -> dict[str, Any]:
         return {
             "mode": {"from": before.mode, "to": after.mode},
             "stall_count": {
@@ -284,7 +345,10 @@ class FSMOperator:
                 "from": int(before.counters.repeat_action_count or 0),
                 "to": int(after.counters.repeat_action_count or 0),
             },
-            "facts_count": {"from": len(before.memory.facts), "to": len(after.memory.facts)},
+            "facts_count": {
+                "from": len(before.memory.facts),
+                "to": len(after.memory.facts),
+            },
             "frontier_urls_count": {
                 "from": len(before.frontier.pending_urls),
                 "to": len(after.frontier.pending_urls),
@@ -299,7 +363,7 @@ class FSMOperator:
             },
         }
 
-    def _active_region_debug(self, *, state: AgentState) -> Dict[str, Any]:
+    def _active_region_debug(self, *, state: AgentState) -> dict[str, Any]:
         return {
             "region_id": str(state.focus_region.region_id or "")[:120],
             "region_kind": str(state.focus_region.region_kind or "")[:40],
@@ -310,16 +374,15 @@ class FSMOperator:
     def _last_effect_label(
         self,
         *,
-        history: List[Dict[str, Any]],
-        flags: Dict[str, Any],
+        history: list[dict[str, Any]],
+        flags: dict[str, Any],
         done: bool = False,
     ) -> str:
         if done:
             return "COMPLETED"
         last = history[-1] if history else {}
-        if isinstance(last, dict):
-            if not bool(last.get("exec_ok", True)) or bool(_candidate_text(last.get("error"))):
-                return "BLOCKED"
+        if isinstance(last, dict) and (not bool(last.get("exec_ok", True)) or bool(_candidate_text(last.get("error")))):
+            return "BLOCKED"
         if bool(flags.get("url_changed")):
             return "ADVANCED"
         if bool(flags.get("dom_changed")):
@@ -331,7 +394,7 @@ class FSMOperator:
     def _predict_expected_effect(
         self,
         *,
-        action: Dict[str, Any],
+        action: dict[str, Any],
         candidate: Candidate | None,
     ) -> str:
         action_type = str(action.get("type") or "").strip()
@@ -364,8 +427,8 @@ class FSMOperator:
         self,
         *,
         expected_effect: str,
-        flags: Dict[str, Any],
-        history: List[Dict[str, Any]],
+        flags: dict[str, Any],
+        history: list[dict[str, Any]],
     ) -> bool:
         if not expected_effect:
             return False
@@ -382,7 +445,7 @@ class FSMOperator:
             return bool(flags.get("dom_changed")) or not bool(flags.get("no_visual_progress"))
         return False
 
-    def _no_progress_score(self, *, state: AgentState, flags: Dict[str, Any], history: List[Dict[str, Any]]) -> int:
+    def _no_progress_score(self, *, state: AgentState, flags: dict[str, Any], history: list[dict[str, Any]]) -> int:
         score = 0
         score += max(0, int(state.counters.stall_count or 0))
         score += max(0, int(state.counters.repeat_action_count or 0))
@@ -409,9 +472,9 @@ class FSMOperator:
         self,
         *,
         step_index: int,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         state: AgentState,
-        flags: Dict[str, Any],
+        flags: dict[str, Any],
     ) -> None:
         if not history:
             state.progress.last_effect = ""
@@ -426,11 +489,15 @@ class FSMOperator:
         region_id = str(state.focus_region.region_id or state.form_progress.active_group_id or "")[:120]
         error = str(last.get("error") or "")[:220]
         expected_effect = str(state.progress.pending_expected_effect or "")[:40]
-        expected_effect_met = self._expected_effect_met(
-            expected_effect=expected_effect,
-            flags=flags,
-            history=history,
-        ) if expected_effect else False
+        expected_effect_met = (
+            self._expected_effect_met(
+                expected_effect=expected_effect,
+                flags=flags,
+                history=history,
+            )
+            if expected_effect
+            else False
+        )
         prev_effect = state.progress.recent_effects[-1] if state.progress.recent_effects else None
         prev_region_id = str(prev_effect.region_id or "") if isinstance(prev_effect, ProgressEffect) else ""
         prev_target_id = str(prev_effect.target_id or "") if isinstance(prev_effect, ProgressEffect) else ""
@@ -449,7 +516,7 @@ class FSMOperator:
             exec_ok=bool(last.get("exec_ok", last.get("success", True))),
             error=error,
         )
-        state.progress.recent_effects = (state.progress.recent_effects + [effect])[-16:]
+        state.progress.recent_effects = ([*state.progress.recent_effects, effect])[-16:]
         state.progress.pending_expected_effect = ""
         state.progress.pending_expected_target_id = ""
         state.progress.pending_expected_region_id = ""
@@ -464,15 +531,19 @@ class FSMOperator:
             state.progress.region_attempts[region_id] = int(state.progress.region_attempts.get(region_id) or 0) + 1
             if label in {"NO_VISIBLE_CHANGE", "BLOCKED"} and int(state.progress.region_attempts.get(region_id) or 0) >= 2:
                 state.progress.blocked_regions = _dedupe_keep_order(
-                    state.progress.blocked_regions + [region_id],
+                    [*state.progress.blocked_regions, region_id],
                     MAX_PENDING_ELEMENTS,
                 )
         pattern = ""
         action_type = str(action.get("type") or "").strip()
-        if label in {"ADVANCED", "LOCAL_PROGRESS"} and action_type in {"TypeAction", "SelectDropDownOptionAction", "ClickAction"}:
+        if label in {"ADVANCED", "LOCAL_PROGRESS"} and action_type in {
+            "TypeAction",
+            "SelectDropDownOptionAction",
+            "ClickAction",
+        }:
             pattern = f"{action_type.lower()}_progress"
             state.progress.successful_patterns = _dedupe_keep_order(
-                state.progress.successful_patterns + [pattern],
+                [*state.progress.successful_patterns, pattern],
                 32,
             )
         elif (label in {"NO_VISIBLE_CHANGE", "BLOCKED"} or (expected_effect and not expected_effect_met)) and action_type:
@@ -482,15 +553,15 @@ class FSMOperator:
             elif expected_effect and not expected_effect_met:
                 pattern = f"{action_type.lower()}_expected_{expected_effect}_miss"
             state.progress.failed_patterns = _dedupe_keep_order(
-                state.progress.failed_patterns + [pattern],
+                [*state.progress.failed_patterns, pattern],
                 32,
             )
 
     def _store_expected_effect(
         self,
         *,
-        action: Dict[str, Any],
-        ranked_candidates: List[Candidate],
+        action: dict[str, Any],
+        ranked_candidates: list[Candidate],
         state: AgentState,
     ) -> None:
         candidate = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
@@ -498,20 +569,14 @@ class FSMOperator:
         state.progress.pending_expected_effect = expected_effect[:40]
         state.progress.pending_expected_action_type = str(action.get("type") or "")[:80]
         state.progress.pending_expected_target_id = str(action.get("_element_id") or action.get("element_id") or "")[:120]
-        state.progress.pending_expected_region_id = str(
-            (candidate.region_id if candidate is not None else "") or state.focus_region.region_id or ""
-        )[:120]
+        state.progress.pending_expected_region_id = str((candidate.region_id if candidate is not None else "") or state.focus_region.region_id or "")[:120]
 
-    def _apply_stagnation_policy(self, *, state: AgentState, flags: Dict[str, Any]) -> None:
+    def _apply_stagnation_policy(self, *, state: AgentState, flags: dict[str, Any]) -> None:
         no_progress_score = int(state.progress.no_progress_score or 0)
         region_id = str(state.focus_region.region_id or "").strip()
-        if region_id and (
-            no_progress_score >= 6
-            or int(state.progress.consecutive_no_effect_steps or 0) >= 2
-            or region_id in set(state.progress.blocked_regions)
-        ):
+        if region_id and (no_progress_score >= 6 or int(state.progress.consecutive_no_effect_steps or 0) >= 2 or region_id in set(state.progress.blocked_regions)):
             state.focus_region.recent_region_ids = _dedupe_keep_order(
-                state.focus_region.recent_region_ids + [region_id],
+                [*state.focus_region.recent_region_ids, region_id],
                 MAX_PENDING_ELEMENTS,
             )
             state.focus_region.region_id = ""
@@ -520,7 +585,7 @@ class FSMOperator:
             state.focus_region.region_context = ""
             state.focus_region.candidate_ids = []
             state.memory.checkpoints = _dedupe_keep_order(
-                state.memory.checkpoints + [f"release_region:{region_id}"],
+                [*state.memory.checkpoints, f"release_region:{region_id}"],
                 MAX_CHECKPOINTS,
             )
         if no_progress_score >= 7 and state.mode in {"NAV", "EXTRACT"}:
@@ -530,7 +595,7 @@ class FSMOperator:
         self,
         *,
         state: AgentState,
-        policy_obs: Dict[str, Any],
+        policy_obs: dict[str, Any],
         route_reason: str,
     ) -> str:
         page_obs = policy_obs.get("page_observations") if isinstance(policy_obs.get("page_observations"), dict) else {}
@@ -550,31 +615,19 @@ class FSMOperator:
             mode = "auto"
         return mode
 
-    def _default_vision_question(self, *, prompt: str, state: AgentState, text_ir: Dict[str, Any]) -> str:
+    def _default_vision_question(self, *, prompt: str, state: AgentState, text_ir: dict[str, Any]) -> str:
         control_groups = text_ir.get("control_groups") if isinstance(text_ir.get("control_groups"), list) else []
         cards = text_ir.get("cards") if isinstance(text_ir.get("cards"), list) else []
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
         active_group_label = str(state.form_progress.active_group_label or "").strip()
         if active_group_label and last_action_type == "selectdropdownoptionaction":
-            return (
-                "Focus on the currently visible control group "
-                f"'{active_group_label[:120]}'. "
-                "After the current selection, which visible candidate ids are the best follow-up controls? "
-                "Prefer apply/search/submit or the next related control, and avoid repeating the same select."
-            )
+            return f"Focus on the currently visible control group '{active_group_label[:120]}'. After the current selection, which visible candidate ids are the best follow-up controls? Prefer apply/search/submit or the next related control, and avoid repeating the same select."
         if control_groups and cards:
-            return (
-                "Given the screenshot and task, which visible candidate ids are the best next targets? "
-                "Prefer current-page controls or apply/submit actions over unrelated cards unless the target item is clearly identified."
-            )
+            return "Given the screenshot and task, which visible candidate ids are the best next targets? Prefer current-page controls or apply/submit actions over unrelated cards unless the target item is clearly identified."
         if control_groups:
-            return (
-                "Given the screenshot and task, which visible controls or buttons best advance the task on the current page?"
-            )
+            return "Given the screenshot and task, which visible controls or buttons best advance the task on the current page?"
         if cards:
-            return (
-                "Given the screenshot and task, which visible candidate ids correspond to the most relevant item or item action?"
-            )
+            return "Given the screenshot and task, which visible candidate ids correspond to the most relevant item or item action?"
         if state.mode in {"PLAN", "STUCK"}:
             return "Describe the visible UI and identify the best visible next target from the candidate list."
         return "Which visible candidate ids best match the next useful action for this task?"
@@ -584,8 +637,8 @@ class FSMOperator:
         *,
         screenshot: Any,
         state: AgentState,
-        flags: Dict[str, Any],
-        text_ir: Dict[str, Any],
+        flags: dict[str, Any],
+        text_ir: dict[str, Any],
         question: str,
         url: str,
     ) -> bool:
@@ -613,9 +666,7 @@ class FSMOperator:
             return True
         if str(flags.get("loop_level") or "none") == "high":
             return True
-        if int(state.counters.stall_count or 0) >= 2 or int(state.counters.repeat_action_count or 0) >= 1:
-            return True
-        return False
+        return bool(int(state.counters.stall_count or 0) >= 2 or int(state.counters.repeat_action_count or 0) >= 1)
 
     def _pre_done_verification(
         self,
@@ -623,9 +674,9 @@ class FSMOperator:
         step_index: int,
         state: AgentState,
         prompt: str,
-        text_ir: Dict[str, Any],
+        text_ir: dict[str, Any],
         content: str,
-        flags: Dict[str, Any],
+        flags: dict[str, Any],
     ) -> tuple[bool, str]:
         text = _candidate_text(content)
         if not text:
@@ -668,16 +719,16 @@ class FSMOperator:
         url: str,
         step_index: int,
         state: AgentState,
-        text_ir: Dict[str, Any],
-        candidates: List[Candidate],
-        ranked: List[Candidate],
-        policy_obs: Dict[str, Any],
+        text_ir: dict[str, Any],
+        candidates: list[Candidate],
+        ranked: list[Candidate],
+        policy_obs: dict[str, Any],
         browser_allowed: set[str],
         model_name: str,
-        usage_payload: Dict[str, Any],
+        usage_payload: dict[str, Any],
         policy_model_used: str,
-    ) -> tuple[List[Dict[str, Any]], bool, str, str, str]:
-        chosen_actions: List[Dict[str, Any]] = []
+    ) -> tuple[list[dict[str, Any]], bool, str, str, str]:
+        chosen_actions: list[dict[str, Any]] = []
         done = False
         content = ""
         policy_reasoning = ""
@@ -754,30 +805,30 @@ class FSMOperator:
         task_id: str,
         prompt: str,
         web_project_id: str,
-        use_case: Dict[str, str],
+        use_case: dict[str, str],
         url: str,
         html: str,
         step_index: int,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         screenshot: Any,
         state: AgentState,
-        flags: Dict[str, Any],
-        text_ir: Dict[str, Any],
-        candidates: List[Candidate],
-        ranked: List[Candidate],
-        policy_obs: Dict[str, Any],
+        flags: dict[str, Any],
+        text_ir: dict[str, Any],
+        candidates: list[Candidate],
+        ranked: list[Candidate],
+        policy_obs: dict[str, Any],
         allowed: set[str],
         model_name: str,
         plan_model_name: str,
-        usage_payload: Dict[str, Any],
+        usage_payload: dict[str, Any],
         policy_model_used: str,
         route_reason: str,
-    ) -> tuple[List[Dict[str, Any]], bool, str, str, str, List[str]]:
-        chosen_actions: List[Dict[str, Any]] = []
+    ) -> tuple[list[dict[str, Any]], bool, str, str, str, list[str]]:
+        chosen_actions: list[dict[str, Any]] = []
         done = False
         content = ""
         policy_reasoning = ""
-        meta_exec_trace: List[str] = []
+        meta_exec_trace: list[str] = []
         step_vision_signatures: set[str] = set()
 
         pre_action, pre_done, pre_content, pre_note = self._deterministic_pre_action(
@@ -896,7 +947,7 @@ class FSMOperator:
                     helper_model = str(vision_result.get("model") or "").strip()
                     if helper_model:
                         usage_payload["helper_models"] = _dedupe_keep_order(
-                            list(usage_payload.get("helper_models") or []) + [helper_model],
+                            [*list(usage_payload.get("helper_models") or []), helper_model],
                             8,
                         )
                 ranked = self.ranker.rank(
@@ -961,7 +1012,10 @@ class FSMOperator:
                 dtype = str(decision.get("type") or "").strip().lower()
                 if dtype == "final":
                     final_content = _candidate_text(decision.get("content"), "Task completed.")
-                    can_early_finish = bool(state.memory.facts) and state.mode in {"REPORT", "DONE"}
+                    can_early_finish = bool(state.memory.facts) and state.mode in {
+                        "REPORT",
+                        "DONE",
+                    }
                     ok, done_reason = self._pre_done_verification(
                         step_index=step_index,
                         state=state,
@@ -975,11 +1029,7 @@ class FSMOperator:
                     elif not ok:
                         meta_exec_trace.append(f"BLOCK_DONE:{done_reason}")
                         best_page_evidence = _best_page_evidence(prompt, text_ir)
-                        if (
-                            _looks_like_informational_task(prompt)
-                            and best_page_evidence
-                            and _runtime_page_evidence_ready(prompt, url, text_ir, step_index=step_index)
-                        ):
+                        if _looks_like_informational_task(prompt) and best_page_evidence and _runtime_page_evidence_ready(prompt, url, text_ir, step_index=step_index):
                             ok2, reason2 = self._pre_done_verification(
                                 step_index=step_index,
                                 state=state,
@@ -996,16 +1046,35 @@ class FSMOperator:
                                 break
                             meta_exec_trace.append(f"BLOCK_DONE:{reason2}")
                         if best_page_evidence:
-                            decision = {"type": "meta", "name": "META.EXTRACT_FACTS", "arguments": {"schema": "generic"}}
+                            decision = {
+                                "type": "meta",
+                                "name": "META.EXTRACT_FACTS",
+                                "arguments": {"schema": "generic"},
+                            }
                             dtype = "meta"
-                        elif state.mode in {"NAV", "PLAN"} and not _looks_like_informational_task(prompt):
-                            decision = {"type": "meta", "name": "META.EXTRACT_LINKS", "arguments": {"kind": "all_links"}}
+                        elif state.mode in {
+                            "NAV",
+                            "PLAN",
+                        } and not _looks_like_informational_task(prompt):
+                            decision = {
+                                "type": "meta",
+                                "name": "META.EXTRACT_LINKS",
+                                "arguments": {"kind": "all_links"},
+                            }
                             dtype = "meta"
                         elif len(state.memory.facts) < 2:
-                            decision = {"type": "meta", "name": "META.EXTRACT_FACTS", "arguments": {"schema": "generic"}}
+                            decision = {
+                                "type": "meta",
+                                "name": "META.EXTRACT_FACTS",
+                                "arguments": {"schema": "generic"},
+                            }
                             dtype = "meta"
                         else:
-                            decision = {"type": "meta", "name": "META.SEARCH_TEXT", "arguments": {"query": prompt[:80]}}
+                            decision = {
+                                "type": "meta",
+                                "name": "META.SEARCH_TEXT",
+                                "arguments": {"query": prompt[:80]},
+                            }
                             dtype = "meta"
                     else:
                         done = True
@@ -1038,9 +1107,7 @@ class FSMOperator:
                     meta_name = str(decision.get("name") or "")
                     meta_args = decision.get("arguments") if isinstance(decision.get("arguments"), dict) else {}
                     if meta_name == "META.VISION_QA":
-                        vision_question = str(
-                            meta_args.get("question") or self._default_vision_question(prompt=prompt, state=state, text_ir=text_ir)
-                        )
+                        vision_question = str(meta_args.get("question") or self._default_vision_question(prompt=prompt, state=state, text_ir=text_ir))
                         if not self._should_auto_vision(
                             screenshot=screenshot,
                             state=state,
@@ -1105,7 +1172,7 @@ class FSMOperator:
                         helper_model = str(result.get("model") or "").strip()
                         if helper_model:
                             usage_payload["helper_models"] = _dedupe_keep_order(
-                                list(usage_payload.get("helper_models") or []) + [helper_model],
+                                [*list(usage_payload.get("helper_models") or []), helper_model],
                                 8,
                             )
                     if meta_name == "META.SET_MODE":
@@ -1171,7 +1238,12 @@ class FSMOperator:
                 meta_exec_trace.append(f"EMERGENCY_RECOVERY:{stuck_note}")
 
         if not done and not chosen_actions:
-            fallback = self.policy._fallback(prompt=prompt, mode=state.mode, policy_obs=policy_obs, allowed_tools=allowed)
+            fallback = self.policy._fallback(
+                prompt=prompt,
+                mode=state.mode,
+                policy_obs=policy_obs,
+                allowed_tools=allowed,
+            )
             if str(fallback.get("type") or "") == "final":
                 done = True
                 content = _candidate_text(fallback.get("content"), "Task complete.")
@@ -1188,21 +1260,28 @@ class FSMOperator:
                 if fallback_action is not None:
                     chosen_actions = [fallback_action]
 
-        return chosen_actions, done, content, policy_reasoning, policy_model_used, meta_exec_trace
+        return (
+            chosen_actions,
+            done,
+            content,
+            policy_reasoning,
+            policy_model_used,
+            meta_exec_trace,
+        )
 
     def _finalize_chosen_action(
         self,
         *,
         done: bool,
         direct_loop: bool,
-        chosen_actions: List[Dict[str, Any]] | None,
+        chosen_actions: list[dict[str, Any]] | None,
         prompt: str,
-        history: List[Dict[str, Any]],
-        ranked: List[Candidate],
+        history: list[dict[str, Any]],
+        ranked: list[Candidate],
         state: AgentState,
         step_index: int,
-    ) -> tuple[List[Dict[str, Any]], str, Dict[str, Any] | None]:
-        actions: List[Dict[str, Any]] = []
+    ) -> tuple[list[dict[str, Any]], str, dict[str, Any] | None]:
+        actions: list[dict[str, Any]] = []
         browser_tool_name = ""
         chosen_actions = list(chosen_actions or [])
         if done or not chosen_actions:
@@ -1258,7 +1337,12 @@ class FSMOperator:
             actions.append(chosen_action)
             browser_tool_name = str(self._tool_name_for_action(chosen_action))
             if not direct_loop:
-                self._remember_form_progress_from_action(prompt=prompt, action=chosen_action, ranked_candidates=ranked, state=state)
+                self._remember_form_progress_from_action(
+                    prompt=prompt,
+                    action=chosen_action,
+                    ranked_candidates=ranked,
+                    state=state,
+                )
                 self._store_expected_effect(action=chosen_action, ranked_candidates=ranked, state=state)
             simulated_history.append({"step": int(step_index), "action": chosen_action, "exec_ok": True})
         chosen_action = actions[-1] if actions else None
@@ -1270,7 +1354,7 @@ class FSMOperator:
         state.last_action_element_id = str(chosen_action.get("_element_id") or "")[:120]
         if state.last_action_element_id and int(state.counters.repeat_action_count or 0) >= 2:
             state.blocklist.element_ids = _dedupe_keep_order(
-                state.blocklist.element_ids + [state.last_action_element_id],
+                [*state.blocklist.element_ids, state.last_action_element_id],
                 MAX_PENDING_ELEMENTS,
             )
             state.blocklist.until_step = max(state.blocklist.until_step, int(step_index) + 2)
@@ -1285,25 +1369,25 @@ class FSMOperator:
         mode_out: str,
         direct_loop: bool,
         prompt: str,
-        text_ir: Dict[str, Any],
-        policy_obs: Dict[str, Any],
+        text_ir: dict[str, Any],
+        policy_obs: dict[str, Any],
         state_before: AgentState,
         state: AgentState,
-        meta_exec_trace: List[str],
-        chosen_action: Dict[str, Any] | None,
-        actions: List[Dict[str, Any]],
+        meta_exec_trace: list[str],
+        chosen_action: dict[str, Any] | None,
+        actions: list[dict[str, Any]],
         done: bool,
         content: str,
         browser_tool_name: str,
         include_reasoning: bool,
         policy_reasoning: str,
-        ranked: List[Candidate],
-        flags: Dict[str, Any],
-        history: List[Dict[str, Any]],
-        usage_payload: Dict[str, Any],
+        ranked: list[Candidate],
+        flags: dict[str, Any],
+        history: list[dict[str, Any]],
+        usage_payload: dict[str, Any],
         policy_model_used: str,
         model_name: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         final_content = _candidate_text(content)
         if done and not final_content:
             final_content = "Task completed."
@@ -1319,23 +1403,21 @@ class FSMOperator:
                     current_page = final_content
                     decision_text = f"Return final answer now: {final_content}"
                 else:
-                    current_page = best_fact or _candidate_text((text_ir.get("likely_answers") or [""])[0] if isinstance(text_ir.get("likely_answers"), list) else "") or "Current page answer not clear yet."
+                    current_page = (
+                        best_fact or _candidate_text((text_ir.get("likely_answers") or [""])[0] if isinstance(text_ir.get("likely_answers"), list) else "") or "Current page answer not clear yet."
+                    )
                 if not done and chosen_action is not None:
                     decision_text = f"Take browser action sequence ending with: {browser_tool_name or str(chosen_action.get('type') or 'action')}"
                 elif not done:
                     decision_text = "No safe browser action selected."
-                reasoning = (
-                    f"Goal: {goal}. "
-                    f"Current page: {current_page}. "
-                    f"Decision: {decision_text}."
-                )[:600]
+                reasoning = (f"Goal: {goal}. Current page: {current_page}. Decision: {decision_text}.")[:600]
 
         selected_candidate = None
         if chosen_action is not None:
             selected_candidate = self._candidate_for_action(action=chosen_action, ranked_candidates=ranked)
         last_effect = self._last_effect_label(history=history, flags=flags, done=done)
         no_progress_score = self._no_progress_score(state=state, flags=flags, history=history)
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "protocol_version": "1.0",
             "actions": actions,
             "done": bool(done),
@@ -1362,9 +1444,18 @@ class FSMOperator:
         usage_breakdown = usage_payload.get("usage_breakdown") if isinstance(usage_payload.get("usage_breakdown"), dict) else {}
         if usage_breakdown:
             out["usage_breakdown"] = {
-                "policy": _merge_usage_dicts({}, usage_breakdown.get("policy") if isinstance(usage_breakdown.get("policy"), dict) else {}),
-                "obs_extract": _merge_usage_dicts({}, usage_breakdown.get("obs_extract") if isinstance(usage_breakdown.get("obs_extract"), dict) else {}),
-                "vision": _merge_usage_dicts({}, usage_breakdown.get("vision") if isinstance(usage_breakdown.get("vision"), dict) else {}),
+                "policy": _merge_usage_dicts(
+                    {},
+                    usage_breakdown.get("policy") if isinstance(usage_breakdown.get("policy"), dict) else {},
+                ),
+                "obs_extract": _merge_usage_dicts(
+                    {},
+                    usage_breakdown.get("obs_extract") if isinstance(usage_breakdown.get("obs_extract"), dict) else {},
+                ),
+                "vision": _merge_usage_dicts(
+                    {},
+                    usage_breakdown.get("vision") if isinstance(usage_breakdown.get("vision"), dict) else {},
+                ),
             }
         out["model"] = str(policy_model_used or model_name)
         helper_models = [str(m).strip() for m in list(usage_payload.get("helper_models") or []) if str(m).strip()]
@@ -1394,7 +1485,7 @@ class FSMOperator:
         )
         return out
 
-    def _remember_reasoning_trace(self, *, state: AgentState, decision: Dict[str, Any]) -> None:
+    def _remember_reasoning_trace(self, *, state: AgentState, decision: dict[str, Any]) -> None:
         trace = _normalize_reasoning_trace(decision.get("reasoning_trace"))
         if not trace:
             return
@@ -1403,7 +1494,7 @@ class FSMOperator:
         if next_expected:
             state.progress.pending_expected_effect = next_expected[:40]
 
-    def _remember_working_state(self, *, state: AgentState, decision: Dict[str, Any]) -> None:
+    def _remember_working_state(self, *, state: AgentState, decision: dict[str, Any]) -> None:
         ws = _normalize_working_state(decision.get("working_state"))
         if ws:
             state.memory.working_state = ws
@@ -1416,12 +1507,12 @@ class FSMOperator:
         url: str,
         step_index: int,
         state: AgentState,
-        text_ir: Dict[str, Any],
-        flags: Dict[str, Any],
+        text_ir: dict[str, Any],
+        flags: dict[str, Any],
         include_reasoning: bool,
-        usage_payload: Dict[str, Any],
+        usage_payload: dict[str, Any],
         policy_model_used: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         done, content, policy_reasoning = self._completion_only_result(
             prompt=prompt,
             url=url,
@@ -1466,16 +1557,16 @@ class FSMOperator:
         task_id: str,
         prompt: str,
         web_project_id: str,
-        use_case: Dict[str, str],
+        use_case: dict[str, str],
         url: str,
         html: str,
         screenshot: Any,
         step_index: int,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         state: AgentState,
         allowed: set[str],
         model_override: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         direct_loop = _env_bool("FSM_DIRECT_LOOP", True)
         flags = self.flags.detect(snapshot_html=html, url=url, history=history, state=state)
         state.counters.stall_count = int(flags.get("stall_count_suggested") or 0)
@@ -1539,7 +1630,7 @@ class FSMOperator:
         )
         obs_extract_usage = obs_extract.get("__usage") if isinstance(obs_extract.get("__usage"), dict) else {}
         obs_extract_model = str(obs_extract.get("__model") or "").strip() if isinstance(obs_extract, dict) else ""
-        usage_payload: Dict[str, Any] = {
+        usage_payload: dict[str, Any] = {
             "helper_models": [],
             "call_breakdown": _empty_call_breakdown(),
             "usage_breakdown": _usage_breakdown_template(),
@@ -1608,7 +1699,7 @@ class FSMOperator:
             usage_payload["usage_breakdown"] = usage_breakdown
         if obs_extract_model:
             usage_payload["helper_models"] = _dedupe_keep_order(
-                list(usage_payload.get("helper_models") or []) + [obs_extract_model],
+                [*list(usage_payload.get("helper_models") or []), obs_extract_model],
                 8,
             )
         if obs_extract_usage or obs_extract_model:
@@ -1637,7 +1728,7 @@ class FSMOperator:
             "browser_allowed": browser_allowed,
         }
 
-    def run(self, *, payload: Dict[str, Any], model_override: str = "") -> Dict[str, Any]:
+    def run(self, *, payload: dict[str, Any], model_override: str = "") -> dict[str, Any]:
         prompt = str(payload.get("prompt") or payload.get("task_prompt") or "")
         web_project_id = _candidate_text(payload.get("web_project_id"))
         use_case = _normalize_use_case_info(payload.get("use_case"))
@@ -1694,9 +1785,9 @@ class FSMOperator:
         policy_model_used = prepared["policy_model_used"]
         direct_loop = prepared["direct_loop"]
         browser_allowed = prepared["browser_allowed"]
-        meta_exec_trace: List[str] = []
+        meta_exec_trace: list[str] = []
         policy_reasoning = ""
-        chosen_actions: List[Dict[str, Any]] = []
+        chosen_actions: list[dict[str, Any]] = []
         done = False
         content = ""
         if completion_only:
@@ -1729,7 +1820,14 @@ class FSMOperator:
                 policy_model_used=policy_model_used,
             )
         else:
-            chosen_actions, done, content, policy_reasoning, policy_model_used, meta_exec_trace = self._run_meta_loop(
+            (
+                chosen_actions,
+                done,
+                content,
+                policy_reasoning,
+                policy_model_used,
+                meta_exec_trace,
+            ) = self._run_meta_loop(
                 task_id=task_id,
                 prompt=prompt,
                 web_project_id=web_project_id,
@@ -1766,7 +1864,10 @@ class FSMOperator:
 
         state.last_url = str(url or "")[:MAX_STR]
         state.last_dom_hash = str(flags.get("dom_hash") or "")[:64]
-        state.blocklist.until_step = max(state.blocklist.until_step, int(step_index) + 1 if state.blocklist.element_ids else state.blocklist.until_step)
+        state.blocklist.until_step = max(
+            state.blocklist.until_step,
+            int(step_index) + 1 if state.blocklist.element_ids else state.blocklist.until_step,
+        )
         if done:
             state.mode = "DONE"
         mode_out = state.mode
@@ -1803,24 +1904,25 @@ class FSMOperator:
         prompt: str,
         url: str,
         step_index: int,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         state: AgentState,
-        flags: Dict[str, Any],
-        ranked_candidates: List[Candidate],
+        flags: dict[str, Any],
+        ranked_candidates: list[Candidate],
         allowed: set[str],
-    ) -> tuple[Dict[str, Any] | None, bool, str, str]:
+    ) -> tuple[dict[str, Any] | None, bool, str, str]:
         def allow(name: str) -> bool:
             return (not allowed) or (name in allowed)
 
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
-        recent_errors = [
-            str(item.get("error") or "").lower()
-            for item in history[-4:]
-            if isinstance(item, dict) and str(item.get("error") or "").strip()
-        ]
+        recent_errors = [str(item.get("error") or "").lower() for item in history[-4:] if isinstance(item, dict) and str(item.get("error") or "").strip()]
         if bool(flags.get("cookie_banner")) or (bool(flags.get("modal_dialog")) and not bool(flags.get("interactive_modal_form"))):
             if allow("browser.send_keys") and any("intercepts pointer events" in err for err in recent_errors):
-                return {"type": "SendKeysIWAAction", "keys": "Escape"}, False, "", "popup_escape"
+                return (
+                    {"type": "SendKeysIWAAction", "keys": "Escape"},
+                    False,
+                    "",
+                    "popup_escape",
+                )
             skills, _ = self._ensure_support_tools()
             popup_result = skills.solve_popups(candidates=ranked_candidates)
             primary_id = str(popup_result.get("primary_element_id") or "").strip()
@@ -1830,9 +1932,23 @@ class FSMOperator:
                         continue
                     selector = _sanitize_selector(cand.selector)
                     if isinstance(selector, dict):
-                        return {"type": "ClickAction", "selector": selector, "_element_id": cand.id}, False, "", "popup_click"
+                        return (
+                            {
+                                "type": "ClickAction",
+                                "selector": selector,
+                                "_element_id": cand.id,
+                            },
+                            False,
+                            "",
+                            "popup_click",
+                        )
             if allow("browser.send_keys"):
-                return {"type": "SendKeysIWAAction", "keys": "Escape"}, False, "", "popup_escape"
+                return (
+                    {"type": "SendKeysIWAAction", "keys": "Escape"},
+                    False,
+                    "",
+                    "popup_escape",
+                )
 
         recent_wait_only = True
         wait_steps = 0
@@ -1848,13 +1964,7 @@ class FSMOperator:
                 continue
             recent_wait_only = False
             break
-        if (
-            last_action_type == "waitaction"
-            and int(step_index) >= 1
-            and recent_wait_only
-            and wait_steps >= 1
-            and not _task_constraints(prompt)
-        ):
+        if last_action_type == "waitaction" and int(step_index) >= 1 and recent_wait_only and wait_steps >= 1 and not _task_constraints(prompt):
             return None, True, "Task completed.", "wait_only_complete"
 
         # Give async side effects one short cycle to land before declaring stuck.
@@ -1868,20 +1978,25 @@ class FSMOperator:
             recent = state.memory.checkpoints[-1] if state.memory.checkpoints else ""
             if recent != checkpoint:
                 state.memory.checkpoints = _dedupe_keep_order(
-                    state.memory.checkpoints + [checkpoint],
+                    [*state.memory.checkpoints, checkpoint],
                     MAX_CHECKPOINTS,
                 )
-                return {"type": "WaitAction", "time_seconds": 1.0}, False, "", "post_action_wait"
+                return (
+                    {"type": "WaitAction", "time_seconds": 1.0},
+                    False,
+                    "",
+                    "post_action_wait",
+                )
 
         return None, False, "", ""
 
-    def _typed_values_from_history(self, history: List[Dict[str, Any]]) -> List[str]:
-        out: List[str] = []
+    def _typed_values_from_history(self, history: list[dict[str, Any]]) -> list[str]:
+        out: list[str] = []
         for item in history:
             if not isinstance(item, dict):
                 continue
             action_raw = item.get("action")
-            action: Dict[str, Any] = action_raw if isinstance(action_raw, dict) else {}
+            action: dict[str, Any] = action_raw if isinstance(action_raw, dict) else {}
             action_type = str(action.get("type") or "")
             if not action_type and isinstance(action_raw, str):
                 action_type = str(action_raw)
@@ -1945,7 +2060,7 @@ class FSMOperator:
         self,
         *,
         candidate: Candidate,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         state: AgentState,
     ) -> bool:
         remembered = self._remembered_value_for_candidate(candidate=candidate, state=state)
@@ -2015,7 +2130,12 @@ class FSMOperator:
                 next_password = self._next_password_value(prompt=prompt, candidate=candidate, state=state)
                 if self._field_value_is_usable(value=next_password, candidate=candidate):
                     return next_password
-            if field_kind in {"username", "email", "password", "confirm_password"} and self._field_value_is_usable(value=inferred, candidate=candidate):
+            if field_kind in {
+                "username",
+                "email",
+                "password",
+                "confirm_password",
+            } and self._field_value_is_usable(value=inferred, candidate=candidate):
                 return inferred
         remembered = self._remembered_value_for_candidate(candidate=candidate, state=state) if candidate is not None else ""
         if candidate is not None and self._field_value_is_usable(value=normalized, candidate=candidate):
@@ -2037,15 +2157,13 @@ class FSMOperator:
         input_type = str(candidate.input_type or "").strip().lower()
         if role not in {"input", "textarea"}:
             return False
-        if input_type in {"checkbox", "radio", "submit", "button", "reset", "image", "hidden", "file"}:
-            return False
-        return True
+        return input_type not in {"checkbox", "radio", "submit", "button", "reset", "image", "hidden", "file"}
 
     def _next_password_value(self, *, prompt: str, candidate: Candidate | None, state: AgentState) -> str:
         _, passwords = self._extract_credentials(prompt)
         if not passwords:
             return ""
-        used_values: List[str] = []
+        used_values: list[str] = []
         if candidate is not None:
             remembered = self._remembered_value_for_candidate(candidate=candidate, state=state)
             if remembered:
@@ -2061,7 +2179,7 @@ class FSMOperator:
                 return normalized
         return self._normalized_field_value(passwords[0])
 
-    def _extract_credentials(self, prompt: str) -> tuple[List[str], List[str]]:
+    def _extract_credentials(self, prompt: str) -> tuple[list[str], list[str]]:
         text = str(prompt or "")
         identifiers = _dedupe_keep_order(
             re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text),
@@ -2074,11 +2192,18 @@ class FSMOperator:
         ):
             value = next((g for g in hit.groups() if g), "")
             value = _norm_ws(value).strip(" \t\r\n'\"`.,;:!?")
-            if value and value.lower() not in {"and", "then", "attempt", "retry", "with", "to"}:
+            if value and value.lower() not in {
+                "and",
+                "then",
+                "attempt",
+                "retry",
+                "with",
+                "to",
+            }:
                 identifiers.append(value[:120])
         for token in re.findall(r"<(?:username|user|email|signup_username|signup_email)>", text, flags=re.I):
             identifiers.append(token[:120])
-        passwords: List[str] = []
+        passwords: list[str] = []
         for hit in re.finditer(
             r"\b(?:password|pass|pwd)\b\s*(?:equals|=|is|:)?\s*(?:'([^']+)'|\"([^\"]+)\"|(<[^>]+>)|([^\s,;]+))",
             text,
@@ -2086,7 +2211,13 @@ class FSMOperator:
         ):
             value = next((g for g in hit.groups() if g), "")
             value = _norm_ws(value).strip(" \t\r\n'\"`.,;:!?")
-            if value and value.lower() not in {"and", "then", "attempt", "retry", "with"}:
+            if value and value.lower() not in {
+                "and",
+                "then",
+                "attempt",
+                "retry",
+                "with",
+            }:
                 passwords.append(value[:80])
         for token in re.findall(r"<(?:password|pass|pwd|signup_password)>", text, flags=re.I):
             passwords.append(token[:80])
@@ -2109,8 +2240,8 @@ class FSMOperator:
             return str(email_match.group(1) or "").strip().lower()
         return "example.com"
 
-    def _quoted_values(self, prompt: str) -> List[str]:
-        out: List[str] = []
+    def _quoted_values(self, prompt: str) -> list[str]:
+        out: list[str] = []
         for pattern in (r"'([^']*)'", r'"([^"]*)"'):
             for hit in re.finditer(pattern, str(prompt or "")):
                 value = _norm_ws(hit.group(1) or "")
@@ -2127,7 +2258,16 @@ class FSMOperator:
 
     def _uses_signup_placeholders(self, prompt: str) -> bool:
         text = str(prompt or "").lower()
-        return any(term in text for term in ("register", "sign up", "signup", "create account", "create an account"))
+        return any(
+            term in text
+            for term in (
+                "register",
+                "sign up",
+                "signup",
+                "create account",
+                "create an account",
+            )
+        )
 
     def _benchmark_placeholder_for_field(self, *, field_kind: str, prompt: str) -> str:
         kind = str(field_kind or "").strip().lower()
@@ -2187,7 +2327,7 @@ class FSMOperator:
                 out.add(canonical)
         return out
 
-    def _tool_name_for_action(self, action: Dict[str, Any]) -> str:
+    def _tool_name_for_action(self, action: dict[str, Any]) -> str:
         t = str(action.get("type") or "")
         t_l = t.lower()
         mapping = {
@@ -2212,7 +2352,7 @@ class FSMOperator:
         }
         return mapping.get(t_l, "")
 
-    def _candidate_for_action(self, *, action: Dict[str, Any], ranked_candidates: List[Candidate]) -> Candidate | None:
+    def _candidate_for_action(self, *, action: dict[str, Any], ranked_candidates: list[Candidate]) -> Candidate | None:
         element_id = str(action.get("_element_id") or "")
         if element_id:
             for cand in ranked_candidates:
@@ -2234,7 +2374,7 @@ class FSMOperator:
                 return cand
         return None
 
-    def _same_group_candidates(self, *, target: Candidate, ranked_candidates: List[Candidate]) -> List[Candidate]:
+    def _same_group_candidates(self, *, target: Candidate, ranked_candidates: list[Candidate]) -> list[Candidate]:
         if target.group_id:
             return [cand for cand in ranked_candidates if cand.group_id == target.group_id and cand.id != target.id]
         target_context = _norm_ws(target.context)
@@ -2242,7 +2382,13 @@ class FSMOperator:
             return []
         return [cand for cand in ranked_candidates if _norm_ws(cand.context) == target_context and cand.id != target.id]
 
-    def _remember_active_group(self, *, target: Candidate, ranked_candidates: List[Candidate], state: AgentState) -> None:
+    def _remember_active_group(
+        self,
+        *,
+        target: Candidate,
+        ranked_candidates: list[Candidate],
+        state: AgentState,
+    ) -> None:
         context = _norm_ws(target.context)
         if not context and not target.group_id:
             return
@@ -2265,18 +2411,18 @@ class FSMOperator:
         state.focus_region.candidate_ids = _dedupe_keep_order(related_ids, MAX_PENDING_ELEMENTS)
         if focus_region_id:
             state.focus_region.recent_region_ids = _dedupe_keep_order(
-                state.focus_region.recent_region_ids + [focus_region_id],
+                [*state.focus_region.recent_region_ids, focus_region_id],
                 MAX_PENDING_ELEMENTS,
             )
 
-    def _candidate_constraint_keys(self, *, candidate: Candidate, task_constraints: Dict[str, str]) -> set[str]:
+    def _candidate_constraint_keys(self, *, candidate: Candidate, task_constraints: dict[str, str]) -> set[str]:
         return self.ranker._candidate_constraint_keys(cand=candidate, task_constraints=task_constraints)
 
     def _record_constraint_progress(
         self,
         *,
         prompt: str,
-        action: Dict[str, Any],
+        action: dict[str, Any],
         target: Candidate | None,
         state: AgentState,
     ) -> None:
@@ -2290,7 +2436,7 @@ class FSMOperator:
             expected = str(task_constraints.get(key) or "")
             if _constraint_value_matches(expected, action_text) or _constraint_value_matches(expected, target.text):
                 state.progress.satisfied_constraints = _dedupe_keep_order(
-                    state.progress.satisfied_constraints + [key],
+                    [*state.progress.satisfied_constraints, key],
                     32,
                 )
 
@@ -2298,7 +2444,15 @@ class FSMOperator:
         prompt_text = str(prompt or "")
         if not self._candidate_accepts_typed_text(candidate=candidate):
             return ""
-        blob = " ".join([candidate.text, candidate.context, candidate.href, candidate.field_hint, candidate.field_kind]).lower()
+        blob = " ".join(
+            [
+                candidate.text,
+                candidate.context,
+                candidate.href,
+                candidate.field_hint,
+                candidate.field_kind,
+            ]
+        ).lower()
         quoted_values = self._quoted_values(prompt_text)
         emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", prompt_text)
         identifiers, passwords = self._extract_credentials(prompt_text)
@@ -2325,13 +2479,21 @@ class FSMOperator:
                 return explicit_constraints["user"]
             return self._generated_value_for_field(field_kind="username", prompt=prompt_text)
         if field_kind == "name" or "name" in blob:
-            m_not = re.search(r"\bname\b[^.]{0,100}\bnot\b[^'\"<]*['\"]([^'\"]+)['\"]", prompt_text, flags=re.I)
+            m_not = re.search(
+                r"\bname\b[^.]{0,100}\bnot\b[^'\"<]*['\"]([^'\"]+)['\"]",
+                prompt_text,
+                flags=re.I,
+            )
             if m_not:
                 banned = _norm_ws(m_not.group(1))
                 if banned.lower() != "autouser":
                     return "AutoUser"
                 return "ExampleUser"
-            m_eq = re.search(r"\bname\b[^.]{0,100}\b(?:equals|is|=)\s*['\"]([^'\"]+)['\"]", prompt_text, flags=re.I)
+            m_eq = re.search(
+                r"\bname\b[^.]{0,100}\b(?:equals|is|=)\s*['\"]([^'\"]+)['\"]",
+                prompt_text,
+                flags=re.I,
+            )
             if m_eq:
                 val = _norm_ws(m_eq.group(1))
                 if val:
@@ -2345,7 +2507,11 @@ class FSMOperator:
                 return _norm_ws(m_movie.group(1))[:80]
             return "search"
         if any(k in blob for k in ("rating", "score")):
-            m_num = re.search(r"\b(?:rating|score)\b[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)", prompt_text, flags=re.I)
+            m_num = re.search(
+                r"\b(?:rating|score)\b[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)",
+                prompt_text,
+                flags=re.I,
+            )
             if m_num:
                 return m_num.group(1)
             return "4.0"
@@ -2360,7 +2526,7 @@ class FSMOperator:
             return self._generated_value_for_field(field_kind=field_kind or "text", prompt=prompt_text)
         return "autoppia"
 
-    def _selector_signature(self, selector: Dict[str, Any] | None) -> str:
+    def _selector_signature(self, selector: dict[str, Any] | None) -> str:
         selector = _sanitize_selector(selector)
         if not isinstance(selector, dict):
             return ""
@@ -2369,7 +2535,7 @@ class FSMOperator:
         except Exception:
             return ""
 
-    def _typed_selector_signatures_from_history(self, history: List[Dict[str, Any]]) -> set[str]:
+    def _typed_selector_signatures_from_history(self, history: list[dict[str, Any]]) -> set[str]:
         out: set[str] = set()
         for item in history:
             if not isinstance(item, dict):
@@ -2390,7 +2556,7 @@ class FSMOperator:
                 out.add(sig)
         return out
 
-    def _selected_selector_signatures_from_history(self, history: List[Dict[str, Any]]) -> set[str]:
+    def _selected_selector_signatures_from_history(self, history: list[dict[str, Any]]) -> set[str]:
         out: set[str] = set()
         for item in history:
             if not isinstance(item, dict):
@@ -2411,7 +2577,7 @@ class FSMOperator:
                 out.add(sig)
         return out
 
-    def _typed_candidate_ids_from_history(self, history: List[Dict[str, Any]]) -> set[str]:
+    def _typed_candidate_ids_from_history(self, history: list[dict[str, Any]]) -> set[str]:
         out: set[str] = set()
         for item in history:
             if not isinstance(item, dict):
@@ -2436,12 +2602,12 @@ class FSMOperator:
                 out.add(candidate_id)
         return out
 
-    def _typed_selector_signatures(self, history: List[Dict[str, Any]], state: AgentState) -> set[str]:
+    def _typed_selector_signatures(self, history: list[dict[str, Any]], state: AgentState) -> set[str]:
         out = set(self._typed_selector_signatures_from_history(history))
         out.update(state.form_progress.typed_selector_sigs)
         return out
 
-    def _typed_candidate_ids(self, history: List[Dict[str, Any]], state: AgentState) -> set[str]:
+    def _typed_candidate_ids(self, history: list[dict[str, Any]], state: AgentState) -> set[str]:
         out = set(self._typed_candidate_ids_from_history(history))
         out.update(state.form_progress.typed_candidate_ids)
         return out
@@ -2455,14 +2621,35 @@ class FSMOperator:
             return True
         if cand.role == "select":
             return False
-        if cand.role == "input" and str(cand.input_type or "").strip().lower() in {"submit", "button", "image", "reset"}:
+        if cand.role == "input" and str(cand.input_type or "").strip().lower() in {
+            "submit",
+            "button",
+            "image",
+            "reset",
+        }:
             return True
         if cand.role not in {"button", "input"}:
             return False
         blob = " ".join([cand.text, cand.field_hint]).lower()
         return any(
             k in blob
-            for k in ("submit", "save", "apply", "find", "search", "filter", "go", "continue", "send", "sign up", "signup", "register", "login", "sign in", "create account")
+            for k in (
+                "submit",
+                "save",
+                "apply",
+                "find",
+                "search",
+                "filter",
+                "go",
+                "continue",
+                "send",
+                "sign up",
+                "signup",
+                "register",
+                "login",
+                "sign in",
+                "create account",
+            )
         )
 
     def _is_search_or_filter_input(self, cand: Candidate) -> bool:
@@ -2472,17 +2659,14 @@ class FSMOperator:
         self,
         *,
         prompt: str,
-        ranked_candidates: List[Candidate],
+        ranked_candidates: list[Candidate],
         target: Candidate | None,
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         task_ops = self.ranker._task_operation_hints(prompt)
         if task_ops.intersection({"create", "update"}) or "delete" not in task_ops:
             return None
-        has_password_input_visible = any(
-            cand.role == "input" and cand.field_kind in {"password", "confirm_password"}
-            for cand in ranked_candidates
-        )
+        has_password_input_visible = any(cand.role == "input" and cand.field_kind in {"password", "confirm_password"} for cand in ranked_candidates)
         if has_password_input_visible:
             return None
         if target is not None and target.role not in {"input", "select"}:
@@ -2497,45 +2681,53 @@ class FSMOperator:
                     continue
                 if cand.ui_state == "active":
                     continue
-                return {"type": "ClickAction", "selector": cand.selector, "_element_id": cand.id}
+                return {
+                    "type": "ClickAction",
+                    "selector": cand.selector,
+                    "_element_id": cand.id,
+                }
         for cand in ranked_candidates:
             if cand.id in state.blocklist.element_ids:
                 continue
             if cand.role in {"button", "link"}:
-                return {"type": "ClickAction", "selector": cand.selector, "_element_id": cand.id}
+                return {
+                    "type": "ClickAction",
+                    "selector": cand.selector,
+                    "_element_id": cand.id,
+                }
         return None
 
     def _guard_delete_task_against_unrelated_form_edits(
         self,
         *,
-        action: Dict[str, Any] | None,
+        action: dict[str, Any] | None,
         prompt: str,
-        ranked_candidates: List[Candidate],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict):
             return action
         task_ops = self.ranker._task_operation_hints(prompt)
         if task_ops.intersection({"create", "update"}) or "delete" not in task_ops:
             return action
-        if str(action.get("type") or "") not in {"TypeAction", "SelectDropDownOptionAction"}:
+        if str(action.get("type") or "") not in {
+            "TypeAction",
+            "SelectDropDownOptionAction",
+        }:
             return action
-        has_password_input_visible = any(
-            cand.role == "input" and cand.field_kind in {"password", "confirm_password"}
-            for cand in ranked_candidates
-        )
+        has_password_input_visible = any(cand.role == "input" and cand.field_kind in {"password", "confirm_password"} for cand in ranked_candidates)
         if has_password_input_visible:
             return action
         mutation_candidates = [
-            cand
-            for cand in ranked_candidates
-            if self.ranker._candidate_action_tags(cand).intersection({"delete"})
-            and cand.id not in state.blocklist.element_ids
-            and cand.role in {"button", "link"}
+            cand for cand in ranked_candidates if self.ranker._candidate_action_tags(cand).intersection({"delete"}) and cand.id not in state.blocklist.element_ids and cand.role in {"button", "link"}
         ]
         if mutation_candidates:
             best = mutation_candidates[0]
-            return {"type": "ClickAction", "selector": best.selector, "_element_id": best.id}
+            return {
+                "type": "ClickAction",
+                "selector": best.selector,
+                "_element_id": best.id,
+            }
         if any(cand.role in {"button", "link"} for cand in ranked_candidates):
             target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
             if target is not None and target.role in {"input", "select"}:
@@ -2552,12 +2744,12 @@ class FSMOperator:
     def _guard_submit_without_inputs(
         self,
         *,
-        action: Dict[str, Any] | None,
+        action: dict[str, Any] | None,
         prompt: str,
-        history: List[Dict[str, Any]],
-        ranked_candidates: List[Candidate],
+        history: list[dict[str, Any]],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict) or str(action.get("type") or "") != "ClickAction":
             return action
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
@@ -2573,9 +2765,7 @@ class FSMOperator:
             if self._is_search_or_filter_input(cand):
                 continue
             sig = self._selector_signature(cand.selector)
-            if (
-                cand.id in typed_candidate_ids or (sig and sig in typed_sigs)
-            ) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
+            if (cand.id in typed_candidate_ids or (sig and sig in typed_sigs)) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
                 continue
             text = self._infer_input_text(prompt=prompt, candidate=cand)
             if not text:
@@ -2589,7 +2779,7 @@ class FSMOperator:
         sel_sig = self._selector_signature(target.selector)
         if sel_sig:
             state.form_progress.submit_attempt_sigs = _dedupe_keep_order(
-                state.form_progress.submit_attempt_sigs + [sel_sig],
+                [*state.form_progress.submit_attempt_sigs, sel_sig],
                 MAX_PENDING_ELEMENTS * 2,
             )
         return action
@@ -2597,12 +2787,12 @@ class FSMOperator:
     def _guard_missing_group_inputs(
         self,
         *,
-        action: Dict[str, Any] | None,
+        action: dict[str, Any] | None,
         prompt: str,
-        history: List[Dict[str, Any]],
-        ranked_candidates: List[Candidate],
+        history: list[dict[str, Any]],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict):
             return action
         action_type = str(action.get("type") or "")
@@ -2618,7 +2808,7 @@ class FSMOperator:
         group_context = _norm_ws(state.form_progress.active_group_context)
         group_candidate_ids = set(state.form_progress.active_group_candidate_ids)
 
-        missing_inputs: List[Candidate] = []
+        missing_inputs: list[Candidate] = []
         for cand in ranked_candidates:
             if cand.role != "input":
                 continue
@@ -2627,17 +2817,11 @@ class FSMOperator:
             if self._is_search_or_filter_input(cand):
                 continue
             cand_sig = self._selector_signature(cand.selector)
-            if (
-                cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)
-            ) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
+            if (cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
                 continue
             if group_id or group_context or group_candidate_ids:
                 same_group = False
-                if group_id and cand.group_id == group_id:
-                    same_group = True
-                elif group_context and _norm_ws(cand.context) == group_context:
-                    same_group = True
-                elif cand.id in group_candidate_ids:
+                if (group_id and cand.group_id == group_id) or (group_context and _norm_ws(cand.context) == group_context) or cand.id in group_candidate_ids:
                     same_group = True
                 if not same_group:
                     continue
@@ -2646,22 +2830,14 @@ class FSMOperator:
                 continue
             missing_inputs.append(cand)
         if not missing_inputs:
-            target_group_candidates: List[Candidate] = []
+            target_group_candidates: list[Candidate] = []
             for cand in ranked_candidates:
-                if group_id and cand.group_id == group_id:
-                    target_group_candidates.append(cand)
-                elif group_context and _norm_ws(cand.context) == group_context:
-                    target_group_candidates.append(cand)
-                elif group_candidate_ids and cand.id in group_candidate_ids:
+                if (group_id and cand.group_id == group_id) or (group_context and _norm_ws(cand.context) == group_context) or (group_candidate_ids and cand.id in group_candidate_ids):
                     target_group_candidates.append(cand)
             typed_kinds = {
                 cand.field_kind
                 for cand in target_group_candidates
-                if cand.field_kind
-                and (
-                    cand.id in typed_candidate_ids
-                    or (self._selector_signature(cand.selector) and self._selector_signature(cand.selector) in typed_sigs)
-                )
+                if cand.field_kind and (cand.id in typed_candidate_ids or (self._selector_signature(cand.selector) and self._selector_signature(cand.selector) in typed_sigs))
             }
             required_kinds = {kind for kind in prompt_needs if any(c.field_kind == kind for c in target_group_candidates)}
             if "password" in required_kinds and any(c.field_kind == "confirm_password" for c in target_group_candidates):
@@ -2713,12 +2889,12 @@ class FSMOperator:
     def _guard_redundant_type_action(
         self,
         *,
-        action: Dict[str, Any] | None,
+        action: dict[str, Any] | None,
         prompt: str,
-        history: List[Dict[str, Any]],
-        ranked_candidates: List[Candidate],
+        history: list[dict[str, Any]],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict) or str(action.get("type") or "") != "TypeAction":
             return action
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
@@ -2727,9 +2903,9 @@ class FSMOperator:
         typed_sigs = self._typed_selector_signatures(history, state)
         typed_candidate_ids = self._typed_candidate_ids(history, state)
         target_sig = self._selector_signature(target.selector)
-        already_typed_target = (
-            (target.id in typed_candidate_ids) or (bool(target_sig) and target_sig in typed_sigs)
-        ) and self._candidate_has_usable_typed_value(candidate=target, history=history, state=state)
+        already_typed_target = ((target.id in typed_candidate_ids) or (bool(target_sig) and target_sig in typed_sigs)) and self._candidate_has_usable_typed_value(
+            candidate=target, history=history, state=state
+        )
         if not already_typed_target:
             return action
         same_group = self._same_group_candidates(target=target, ranked_candidates=ranked_candidates)
@@ -2755,9 +2931,7 @@ class FSMOperator:
             if self._is_search_or_filter_input(cand):
                 continue
             cand_sig = self._selector_signature(cand.selector)
-            if (
-                cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)
-            ) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
+            if (cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
                 continue
             text = self._infer_input_text(prompt=prompt, candidate=cand)
             if not text:
@@ -2786,11 +2960,11 @@ class FSMOperator:
     def _guard_redundant_select_action(
         self,
         *,
-        action: Dict[str, Any] | None,
-        history: List[Dict[str, Any]],
-        ranked_candidates: List[Candidate],
+        action: dict[str, Any] | None,
+        history: list[dict[str, Any]],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict) or str(action.get("type") or "") != "SelectDropDownOptionAction":
             return action
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
@@ -2841,11 +3015,11 @@ class FSMOperator:
     def _promote_click_input_to_type(
         self,
         *,
-        action: Dict[str, Any] | None,
+        action: dict[str, Any] | None,
         prompt: str,
-        ranked_candidates: List[Candidate],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict):
             return action
         if str(action.get("type") or "") != "ClickAction":
@@ -2869,13 +3043,13 @@ class FSMOperator:
     def _browser_action_from_tool_call(
         self,
         *,
-        tool_call: Dict[str, Any],
-        ranked_candidates: List[Candidate],
+        tool_call: dict[str, Any],
+        ranked_candidates: list[Candidate],
         state: AgentState,
         prompt: str,
         allowed: set[str],
         current_url: str = "",
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
         normalized_allowed.discard("")
         name = _canonical_allowed_tool_name(str(tool_call.get("name") or "").strip().lower())
@@ -2888,7 +3062,7 @@ class FSMOperator:
         if not action_type:
             return None
 
-        def resolve_target(*, prefer_roles: set[str], allow_unmatched_selector: bool) -> tuple[Dict[str, Any] | None, str, int | None]:
+        def resolve_target(*, prefer_roles: set[str], allow_unmatched_selector: bool) -> tuple[dict[str, Any] | None, str, int | None]:
             selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
             element_id = str(args.get("element_id") or args.get("_element_id") or "")
             raw_index = args.get("index")
@@ -2927,14 +3101,14 @@ class FSMOperator:
             if not isinstance(selector, dict):
                 return None
             selected_candidate = self._candidate_for_action(
-                action={"type": "ClickAction", "selector": selector, "_element_id": element_id},
+                action={
+                    "type": "ClickAction",
+                    "selector": selector,
+                    "_element_id": element_id,
+                },
                 ranked_candidates=ranked_candidates,
             )
-            if (
-                selected_candidate is not None
-                and selected_candidate.href
-                and ((not normalized_allowed) or ("browser.navigate" in normalized_allowed))
-            ):
+            if selected_candidate is not None and selected_candidate.href and ((not normalized_allowed) or ("browser.navigate" in normalized_allowed)):
                 normalized_href = self._normalize_url_for_session(
                     target_url=selected_candidate.href,
                     current_url=current_url,
@@ -2957,7 +3131,12 @@ class FSMOperator:
                         ):
                             same_visible_link = True
                 if normalized_href and not same_visible_link:
-                    return {"type": "NavigateAction", "url": normalized_href, "go_back": False, "go_forward": False}
+                    return {
+                        "type": "NavigateAction",
+                        "url": normalized_href,
+                        "go_back": False,
+                        "go_forward": False,
+                    }
             if ((not normalized_allowed) or ("browser.navigate" in normalized_allowed)) and str(selector.get("type") or "") == "attributeValueSelector":
                 attr = str(selector.get("attribute") or "").strip().lower()
                 raw_val = str(selector.get("value") or "").strip()
@@ -2984,7 +3163,12 @@ class FSMOperator:
                             ):
                                 same_visible_selector_link = True
                     if normalized_sel_href and not same_visible_selector_link:
-                        return {"type": "NavigateAction", "url": normalized_sel_href, "go_back": False, "go_forward": False}
+                        return {
+                            "type": "NavigateAction",
+                            "url": normalized_sel_href,
+                            "go_back": False,
+                            "go_forward": False,
+                        }
             out = {"type": "ClickAction", "selector": selector}
             if element_id:
                 out["_element_id"] = element_id
@@ -3028,18 +3212,19 @@ class FSMOperator:
                             same_visible_link = True
                         else:
                             cand_parts = urlsplit(cand_url)
-                            if (
-                                cand_parts.scheme == target_parts.scheme
-                                and cand_parts.netloc == target_parts.netloc
-                                and ((cand_parts.path or "/") == (target_parts.path or "/"))
-                            ):
+                            if cand_parts.scheme == target_parts.scheme and cand_parts.netloc == target_parts.netloc and ((cand_parts.path or "/") == (target_parts.path or "/")):
                                 same_visible_link = True
                     if same_visible_link and isinstance(cand.selector, dict):
                         out = {"type": "ClickAction", "selector": cand.selector}
                         if cand.id:
                             out["_element_id"] = cand.id
                         return out
-            return {"type": "NavigateAction", "url": nav_url, "go_back": False, "go_forward": False}
+            return {
+                "type": "NavigateAction",
+                "url": nav_url,
+                "go_back": False,
+                "go_forward": False,
+            }
 
         if name == "browser.input":
             text = _candidate_text(args.get("text"), args.get("value"))
@@ -3054,7 +3239,11 @@ class FSMOperator:
             if not isinstance(selector, dict):
                 return None
             resolved = self._candidate_for_action(
-                action={"type": "TypeAction", "selector": selector, "_element_id": element_id},
+                action={
+                    "type": "TypeAction",
+                    "selector": selector,
+                    "_element_id": element_id,
+                },
                 ranked_candidates=ranked_candidates,
             )
             if resolved is not None and resolved.role != "input":
@@ -3070,7 +3259,11 @@ class FSMOperator:
             resolved_candidate = resolved
             if resolved_candidate is None:
                 resolved_candidate = self._candidate_for_action(
-                    action={"type": "TypeAction", "selector": selector, "_element_id": element_id},
+                    action={
+                        "type": "TypeAction",
+                        "selector": selector,
+                        "_element_id": element_id,
+                    },
                     ranked_candidates=ranked_candidates,
                 )
             if resolved_candidate is not None and not self._candidate_accepts_typed_text(candidate=resolved_candidate):
@@ -3081,11 +3274,7 @@ class FSMOperator:
                         out["_element_id"] = element_id
                     return out
                 fallback_candidate = next(
-                    (
-                        cand
-                        for cand in ranked_candidates
-                        if cand.id not in state.blocklist.element_ids and self._candidate_accepts_typed_text(candidate=cand)
-                    ),
+                    (cand for cand in ranked_candidates if cand.id not in state.blocklist.element_ids and self._candidate_accepts_typed_text(candidate=cand)),
                     None,
                 )
                 if fallback_candidate is None:
@@ -3120,7 +3309,7 @@ class FSMOperator:
             direction = str(args.get("direction") or "down").strip().lower()
             raw_amount = args.get("amount")
             amount = 650
-            if isinstance(raw_amount, (int, float)):
+            if isinstance(raw_amount, int | float):
                 amount = int(raw_amount)
             else:
                 raw_text = str(raw_amount or "").strip().lower()
@@ -3157,7 +3346,11 @@ class FSMOperator:
             if not isinstance(selector, dict):
                 return None
             resolved = self._candidate_for_action(
-                action={"type": "SelectDropDownOptionAction", "selector": selector, "_element_id": element_id},
+                action={
+                    "type": "SelectDropDownOptionAction",
+                    "selector": selector,
+                    "_element_id": element_id,
+                },
                 ranked_candidates=ranked_candidates,
             )
             if resolved is None or resolved.role != "select":
@@ -3179,7 +3372,11 @@ class FSMOperator:
             )
             if redirected is not None:
                 return redirected
-            out = {"type": "SelectDropDownOptionAction", "selector": selector, "text": text}
+            out = {
+                "type": "SelectDropDownOptionAction",
+                "selector": selector,
+                "text": text,
+            }
             if element_id:
                 out["_element_id"] = element_id
             return out
@@ -3195,7 +3392,10 @@ class FSMOperator:
             return out
 
         if name == "browser.hover":
-            selector, element_id, _ = resolve_target(prefer_roles={"button", "link", "input", "select"}, allow_unmatched_selector=True)
+            selector, element_id, _ = resolve_target(
+                prefer_roles={"button", "link", "input", "select"},
+                allow_unmatched_selector=True,
+            )
             selector = _sanitize_selector(selector if isinstance(selector, dict) else None)
             if not isinstance(selector, dict):
                 return None
@@ -3204,7 +3404,12 @@ class FSMOperator:
                 out["_element_id"] = element_id
             return out
 
-        if name in {"browser.dblclick", "browser.rightclick", "browser.middleclick", "browser.tripleclick"}:
+        if name in {
+            "browser.dblclick",
+            "browser.rightclick",
+            "browser.middleclick",
+            "browser.tripleclick",
+        }:
             selector, element_id, _ = resolve_target(prefer_roles={"button", "link", "input"}, allow_unmatched_selector=True)
             selector = _sanitize_selector(selector if isinstance(selector, dict) else None)
             if not isinstance(selector, dict):
@@ -3225,7 +3430,11 @@ class FSMOperator:
                 return None
             file_path = _candidate_text(args.get("file_path"), args.get("file_name"), "")
             full_page = bool(args.get("full_page"))
-            return {"type": "ScreenshotAction", "file_path": file_path, "full_page": full_page}
+            return {
+                "type": "ScreenshotAction",
+                "file_path": file_path,
+                "full_page": full_page,
+            }
 
         if name == "browser.send_keys":
             keys = _candidate_text(args.get("keys"), "Enter")
@@ -3243,23 +3452,21 @@ class FSMOperator:
             if "include_html" in args:
                 out["include_html"] = bool(args.get("include_html"))
             if "max_chars" in args:
-                try:
+                with contextlib.suppress(Exception):
                     out["max_chars"] = int(args.get("max_chars") or 0)
-                except Exception:
-                    pass
             return out
         return None
 
     def _resolve_selector_and_element_id(
         self,
         *,
-        selector: Dict[str, Any] | None,
+        selector: dict[str, Any] | None,
         element_id: str,
-        ranked_candidates: List[Candidate],
+        ranked_candidates: list[Candidate],
         state: AgentState,
         prefer_roles: set[str],
         allow_unmatched_selector: bool = True,
-    ) -> tuple[Dict[str, Any] | None, str]:
+    ) -> tuple[dict[str, Any] | None, str]:
         selector = _sanitize_selector(selector)
         if element_id:
             for cand in ranked_candidates:
@@ -3298,7 +3505,7 @@ class FSMOperator:
             return None, ""
         return selector, element_id
 
-    def _candidate_by_index(self, candidates: List[Candidate], raw_index: Any) -> Candidate | None:
+    def _candidate_by_index(self, candidates: list[Candidate], raw_index: Any) -> Candidate | None:
         try:
             index = int(raw_index)
         except (TypeError, ValueError):
@@ -3310,8 +3517,8 @@ class FSMOperator:
     def _candidate_id_for_selector(
         self,
         *,
-        selector: Dict[str, Any],
-        ranked_candidates: List[Candidate],
+        selector: dict[str, Any],
+        ranked_candidates: list[Candidate],
         prefer_roles: set[str] | None = None,
     ) -> str:
         selector = _sanitize_selector(selector)
@@ -3371,7 +3578,7 @@ class FSMOperator:
         step_index: int,
         state: AgentState,
         allowed: set[str],
-    ) -> tuple[Dict[str, Any] | None, bool, str, str]:
+    ) -> tuple[dict[str, Any] | None, bool, str, str]:
         normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
         normalized_allowed.discard("")
 
@@ -3380,17 +3587,13 @@ class FSMOperator:
 
         if state.last_action_element_id:
             state.blocklist.element_ids = _dedupe_keep_order(
-                state.blocklist.element_ids + [state.last_action_element_id],
+                [*state.blocklist.element_ids, state.last_action_element_id],
                 MAX_PENDING_ELEMENTS,
             )
             state.blocklist.until_step = max(state.blocklist.until_step, int(step_index) + 2)
 
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
-        if (
-            last_action_type in {"clickaction", "typeaction", "selectdropdownoptionaction"}
-            and allow("browser.wait")
-            and int(state.counters.stall_count or 0) <= 3
-        ):
+        if last_action_type in {"clickaction", "typeaction", "selectdropdownoptionaction"} and allow("browser.wait") and int(state.counters.stall_count or 0) <= 3:
             return (
                 {"type": "WaitAction", "time_seconds": 1.2},
                 False,
@@ -3408,7 +3611,13 @@ class FSMOperator:
             )
         if allow("browser.scroll"):
             return (
-                {"type": "ScrollAction", "direction": "down", "up": False, "down": True, "amount": 700},
+                {
+                    "type": "ScrollAction",
+                    "direction": "down",
+                    "up": False,
+                    "down": True,
+                    "amount": 700,
+                },
                 False,
                 "",
                 "last_resort_scroll",
@@ -3419,11 +3628,11 @@ class FSMOperator:
         self,
         *,
         prompt: str,
-        ranked_candidates: List[Candidate],
+        ranked_candidates: list[Candidate],
         state: AgentState,
         allowed: set[str],
         current_url: str,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
         normalized_allowed.discard("")
 
@@ -3433,22 +3642,24 @@ class FSMOperator:
         focus_region_id = str(state.focus_region.region_id or "").strip()
         focus_region_context = _norm_ws(state.focus_region.region_context)
         focus_candidate_ids = set(state.focus_region.candidate_ids)
-        local_ranked: List[Candidate] = []
-        escape_ranked: List[Candidate] = []
-        global_ranked: List[Candidate] = []
+        local_ranked: list[Candidate] = []
+        escape_ranked: list[Candidate] = []
+        global_ranked: list[Candidate] = []
         for cand in ranked_candidates:
             same_region = False
-            if focus_region_id and cand.region_id and cand.region_id == focus_region_id:
-                same_region = True
-            elif focus_region_id and focus_region_id in set(cand.region_ancestor_ids or []):
-                same_region = True
-            elif focus_region_context and _norm_ws(cand.context) == focus_region_context:
-                same_region = True
-            elif focus_candidate_ids and cand.id in focus_candidate_ids:
+            if (
+                (focus_region_id and cand.region_id and cand.region_id == focus_region_id)
+                or (focus_region_id and focus_region_id in set(cand.region_ancestor_ids or []))
+                or (focus_region_context and _norm_ws(cand.context) == focus_region_context)
+                or (focus_candidate_ids and cand.id in focus_candidate_ids)
+            ):
                 same_region = True
             if same_region:
                 blob = " ".join([cand.text, cand.field_hint, cand.group_label, cand.context]).lower()
-                if str(cand.field_kind or "").strip().lower() != "pager" and re.search(r"\b(save|submit|apply|continue|confirm|close|done|cancel|back)\b", blob):
+                if str(cand.field_kind or "").strip().lower() != "pager" and re.search(
+                    r"\b(save|submit|apply|continue|confirm|close|done|cancel|back)\b",
+                    blob,
+                ):
                     escape_ranked.append(cand)
                 else:
                     local_ranked.append(cand)
@@ -3460,33 +3671,61 @@ class FSMOperator:
                 if cand.id not in visual_hints or cand.id in state.blocklist.element_ids:
                     continue
                 if cand.role in {"link", "button"} and allow("browser.click"):
-                    return {"type": "ClickAction", "selector": cand.selector, "_element_id": cand.id}
+                    return {
+                        "type": "ClickAction",
+                        "selector": cand.selector,
+                        "_element_id": cand.id,
+                    }
                 if cand.role == "input" and allow("browser.input"):
                     text = self._infer_input_text(prompt=prompt, candidate=cand)
                     if text:
-                        return {"type": "TypeAction", "selector": cand.selector, "text": text[:220], "_element_id": cand.id}
+                        return {
+                            "type": "TypeAction",
+                            "selector": cand.selector,
+                            "text": text[:220],
+                            "_element_id": cand.id,
+                        }
                 if cand.role == "select" and allow("browser.select_dropdown"):
                     text = self._infer_input_text(prompt=prompt, candidate=cand)
                     if text:
-                        return {"type": "SelectDropDownOptionAction", "selector": cand.selector, "text": text, "_element_id": cand.id}
+                        return {
+                            "type": "SelectDropDownOptionAction",
+                            "selector": cand.selector,
+                            "text": text,
+                            "_element_id": cand.id,
+                        }
 
         ordered_candidates = local_ranked[:10] + escape_ranked[:8] + global_ranked[:10]
         for cand in ordered_candidates:
             if cand.id in state.blocklist.element_ids:
                 continue
             if cand.role in {"link", "button"} and allow("browser.click"):
-                return {"type": "ClickAction", "selector": cand.selector, "_element_id": cand.id}
+                return {
+                    "type": "ClickAction",
+                    "selector": cand.selector,
+                    "_element_id": cand.id,
+                }
             if cand.role == "input" and allow("browser.input"):
                 text = self._infer_input_text(prompt=prompt, candidate=cand)
                 if text:
-                    return {"type": "TypeAction", "selector": cand.selector, "text": text[:220], "_element_id": cand.id}
+                    return {
+                        "type": "TypeAction",
+                        "selector": cand.selector,
+                        "text": text[:220],
+                        "_element_id": cand.id,
+                    }
             if cand.role == "select" and allow("browser.select_dropdown"):
                 text = self._infer_input_text(prompt=prompt, candidate=cand)
                 if text:
-                    return {"type": "SelectDropDownOptionAction", "selector": cand.selector, "text": text, "_element_id": cand.id}
+                    return {
+                        "type": "SelectDropDownOptionAction",
+                        "selector": cand.selector,
+                        "text": text,
+                        "_element_id": cand.id,
+                    }
         return None
 
-    def _action_signature(self, action: Dict[str, Any]) -> str:
+    def _action_signature(self, action: dict[str, Any]) -> str:
         t = str(action.get("type") or "").strip()
         selector = ""
         if isinstance(action.get("selector"), dict):
@@ -3502,8 +3741,8 @@ class FSMOperator:
         self,
         *,
         prompt: str,
-        action: Dict[str, Any],
-        ranked_candidates: List[Candidate],
+        action: dict[str, Any],
+        ranked_candidates: list[Candidate],
         state: AgentState,
     ) -> None:
         if not isinstance(action, dict):
@@ -3521,14 +3760,14 @@ class FSMOperator:
             typed_value = self._normalized_field_value(action.get("text"))
             if cand_id:
                 state.form_progress.typed_candidate_ids = _dedupe_keep_order(
-                    state.form_progress.typed_candidate_ids + [cand_id],
+                    [*state.form_progress.typed_candidate_ids, cand_id],
                     MAX_PENDING_ELEMENTS * 2,
                 )
                 if typed_value:
                     state.form_progress.typed_values_by_candidate[cand_id] = typed_value
             if sel_sig:
                 state.form_progress.typed_selector_sigs = _dedupe_keep_order(
-                    state.form_progress.typed_selector_sigs + [sel_sig],
+                    [*state.form_progress.typed_selector_sigs, sel_sig],
                     MAX_PENDING_ELEMENTS * 2,
                 )
                 if typed_value:
@@ -3537,9 +3776,7 @@ class FSMOperator:
         if action_type == "ClickAction":
             cand_id = element_id
             if cand_id and cand_id in state.form_progress.typed_candidate_ids:
-                state.form_progress.typed_candidate_ids = [
-                    x for x in state.form_progress.typed_candidate_ids if x != cand_id
-                ]
+                state.form_progress.typed_candidate_ids = [x for x in state.form_progress.typed_candidate_ids if x != cand_id]
             return
         if action_type == "SelectDropDownOptionAction":
             return

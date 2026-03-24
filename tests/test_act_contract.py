@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from src.operator import agent
-from src.operator import fsm_operator
+from src.operator import agent, fsm_operator
 
 
 def test_act_http_response_is_canonical_single_step(monkeypatch) -> None:
@@ -11,7 +10,14 @@ def test_act_http_response_is_canonical_single_step(monkeypatch) -> None:
         return {
             "protocol_version": "1.0",
             "actions": [
-                {"type": "ClickAction", "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "go"}},
+                {
+                    "type": "ClickAction",
+                    "selector": {
+                        "type": "attributeValueSelector",
+                        "attribute": "id",
+                        "value": "go",
+                    },
+                },
                 {"type": "DoneAction", "reason": "finished"},
             ],
             "reasoning": "pick next",
@@ -69,7 +75,9 @@ def test_act_http_response_sets_done_from_done_action(monkeypatch) -> None:
     assert body["tool_calls"] == []
 
 
-def test_act_http_response_sets_done_and_result_from_done_action_content(monkeypatch) -> None:
+def test_act_http_response_sets_done_and_result_from_done_action_content(
+    monkeypatch,
+) -> None:
     async def _fake_act_from_payload(payload):
         return {
             "actions": [{"type": "DoneAction", "content": "Portfolio value is $120"}],
@@ -135,16 +143,22 @@ def test_act_http_response_passthroughs_canonical_tool_calls(monkeypatch) -> Non
     assert body["state_out"] == {"phase": "navigate"}
 
 
-def test_act_http_response_normalizes_browser_select_tool_call_to_value(monkeypatch) -> None:
+def test_act_http_response_normalizes_browser_select_tool_call_to_value(
+    monkeypatch,
+) -> None:
     async def _fake_act_from_payload(payload):
         return {
             "protocol_version": "1.0",
             "tool_calls": [
-                    {
-                        "name": "browser.select_dropdown",
-                        "arguments": {
-                            "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre"},
-                            "text": "Comedy",
+                {
+                    "name": "browser.select_dropdown",
+                    "arguments": {
+                        "selector": {
+                            "type": "attributeValueSelector",
+                            "attribute": "id",
+                            "value": "genre",
+                        },
+                        "text": "Comedy",
                     },
                 }
             ],
@@ -172,7 +186,12 @@ def test_act_http_response_normalizes_browser_select_tool_call_to_value(monkeypa
         {
             "name": "browser.select_dropdown",
             "arguments": {
-                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre", "case_sensitive": False},
+                "selector": {
+                    "type": "attributeValueSelector",
+                    "attribute": "id",
+                    "value": "genre",
+                    "case_sensitive": False,
+                },
                 "text": "Comedy",
             },
         }
@@ -186,7 +205,19 @@ def test_act_http_response_passthroughs_metrics_and_usage(monkeypatch) -> None:
             "tool_calls": [{"name": "browser.scroll", "arguments": {"direction": "down"}}],
             "done": False,
             "state_out": {"mode": "NAV"},
-            "metrics": {"llm": {"llm_calls": 1, "llm_usages": [{"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}], "model": "gpt-5.2"}},
+            "metrics": {
+                "llm": {
+                    "llm_calls": 1,
+                    "llm_usages": [
+                        {
+                            "prompt_tokens": 11,
+                            "completion_tokens": 7,
+                            "total_tokens": 18,
+                        }
+                    ],
+                    "model": "gpt-5.2",
+                }
+            },
             "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
             "total_tokens": 18,
             "model": "gpt-5.2",
@@ -233,7 +264,12 @@ def test_step_endpoint_aliases_act_behavior(monkeypatch) -> None:
     async def _fake_step_from_payload(payload):
         return {
             "protocol_version": "1.0",
-            "tool_calls": [{"name": "browser.navigate", "arguments": {"url": "https://example.com"}}],
+            "tool_calls": [
+                {
+                    "name": "browser.navigate",
+                    "arguments": {"url": "https://example.com"},
+                }
+            ],
             "content": "navigating",
             "done": False,
             "state_out": {"phase": "nav"},
@@ -260,7 +296,16 @@ def test_step_endpoint_aliases_act_behavior(monkeypatch) -> None:
 def test_agent_step_method_aliases_act(monkeypatch) -> None:
     captured = {}
 
-    async def _fake_act(*, task, snapshot_html, screenshot=None, url, step_index, history=None, state=None):
+    async def _fake_act(
+        *,
+        task,
+        snapshot_html,
+        screenshot=None,
+        url,
+        step_index,
+        history=None,
+        state=None,
+    ):
         captured["task"] = task
         captured["snapshot_html"] = snapshot_html
         captured["screenshot"] = screenshot

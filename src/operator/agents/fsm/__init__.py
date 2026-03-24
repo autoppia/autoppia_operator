@@ -15,12 +15,17 @@ from src.operator.api.act_protocol import (
 )
 from src.operator.runtime.fsm_adapter import run_fsm_operator
 
-from .utils import MAX_INTERNAL_META_STEPS
-from .state import AgentFormProgress, AgentState, FlagDetector
 from .candidates import Candidate, CandidateExtractor, CandidateRanker
-from .observation import ObsBuilder
-from .site_knowledge import _build_site_knowledge, _crawl_site_routes, _load_static_site_maps, _load_task_cache_site_index
 from .engine import FSMOperator
+from .observation import ObsBuilder
+from .site_knowledge import (
+    _build_site_knowledge,
+    _crawl_site_routes,
+    _load_static_site_maps,
+    _load_task_cache_site_index,
+)
+from .state import AgentFormProgress, AgentState, FlagDetector
+from .utils import MAX_INTERNAL_META_STEPS
 
 os.environ.setdefault("LLM_PROVIDER", "openai")
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[4] / ".env", override=False)
@@ -40,18 +45,19 @@ class ApifiedWebAgent(BaseApifiedWebAgent):
         model_override = str(payload.get("model") or "").strip()
         return run_fsm_operator(_FSM_OPERATOR, payload, model_override=model_override)
 
+
 __all__ = [
-    "FSMOperator",
     "MAX_INTERNAL_META_STEPS",
+    "_FSM_OPERATOR",
     "AgentFormProgress",
     "AgentState",
+    "ApifiedWebAgent",
     "Candidate",
     "CandidateExtractor",
     "CandidateRanker",
+    "FSMOperator",
     "FlagDetector",
     "ObsBuilder",
-    "ApifiedWebAgent",
-    "_FSM_OPERATOR",
     "_build_site_knowledge",
     "_crawl_site_routes",
     "_load_static_site_maps",

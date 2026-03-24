@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
-
+import contextlib
 import re
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
+from typing import Any
 
 try:
     from bs4 import BeautifulSoup  # type: ignore
@@ -203,11 +202,7 @@ def _ensure_subgoal_memory(task_id: str, task: str) -> dict[str, Any] | None:
 
     subgoals = []
     for idx, subgoal_text in enumerate(_split_task_subgoals(task)):
-        tokens = [
-            token
-            for token in re.findall(r"[a-z0-9]{3,}", subgoal_text.lower())
-            if token not in {"then", "open", "goto", "navigate", "click", "finish"}
-        ]
+        tokens = [token for token in re.findall(r"[a-z0-9]{3,}", subgoal_text.lower()) if token not in {"then", "open", "goto", "navigate", "click", "finish"}]
         subgoals.append(
             {
                 "id": idx,
@@ -353,13 +348,31 @@ def _all_subgoals_done(mem: dict[str, Any] | None) -> bool:
 
 def _task_is_info_seeking(task: str) -> bool:
     text = str(task or "").lower()
-    markers = {"what", "which", "tell", "list", "summary", "summarize", "information", "details", "find"}
+    markers = {
+        "what",
+        "which",
+        "tell",
+        "list",
+        "summary",
+        "summarize",
+        "information",
+        "details",
+        "find",
+    }
     return bool(text) and any(marker in text for marker in markers)
 
 
 def _task_is_auth_flow(task: str) -> bool:
     text = str(task or "").lower()
-    markers = {"login", "log in", "signin", "sign in", "register", "sign up", "password"}
+    markers = {
+        "login",
+        "log in",
+        "signin",
+        "sign in",
+        "register",
+        "sign up",
+        "password",
+    }
     return bool(text) and any(marker in text for marker in markers)
 
 
@@ -468,7 +481,11 @@ def _pick_fallback_candidate_id(
         elif act == "type":
             if candidate.tag in {"input", "textarea"}:
                 score += 6.0
-            if str(attrs.get("type") or "").lower() not in {"hidden", "submit", "button"}:
+            if str(attrs.get("type") or "").lower() not in {
+                "hidden",
+                "submit",
+                "button",
+            }:
                 score += 1.0
         elif act == "select":
             if candidate.tag == "select":
@@ -493,10 +510,8 @@ def _tool_visible_text(*, html: str, max_chars: int = 2000) -> dict[str, Any]:
     try:
         soup = BeautifulSoup(html or "", "lxml")
         for node in soup(["script", "style", "noscript"]):
-            try:
+            with contextlib.suppress(Exception):
                 node.decompose()
-            except Exception:
-                pass
         text = _norm_ws(soup.get_text(" ", strip=True))
         return {"ok": True, "text": _safe_truncate(text, int(max_chars or 0))}
     except Exception as exc:
@@ -514,17 +529,10 @@ def _tool_extract_tables(*, html: str, max_tables: int = 6, max_rows: int = 8, m
     tables: list[dict[str, Any]] = []
     for table in soup.find_all("table")[: int(max_tables or 0)]:
         try:
-            headers = [
-                _safe_truncate(_norm_ws(header.get_text(" ", strip=True)), 80)
-                for header in table.find_all("th")[: int(max_cols or 0)]
-                if _norm_ws(header.get_text(" ", strip=True))
-            ]
+            headers = [_safe_truncate(_norm_ws(header.get_text(" ", strip=True)), 80) for header in table.find_all("th")[: int(max_cols or 0)] if _norm_ws(header.get_text(" ", strip=True))]
             rows: list[list[str]] = []
             for row in table.find_all("tr")[: int(max_rows or 0)]:
-                cells = [
-                    _safe_truncate(_norm_ws(cell.get_text(" ", strip=True)), 120)
-                    for cell in row.find_all(["td", "th"])[: int(max_cols or 0)]
-                ]
+                cells = [_safe_truncate(_norm_ws(cell.get_text(" ", strip=True)), 120) for cell in row.find_all(["td", "th"])[: int(max_cols or 0)]]
                 if any(cells):
                     rows.append(cells)
             caption_node = table.find("caption")
@@ -560,7 +568,10 @@ def _tool_extract_entities(*, html: str, max_items: int = 50) -> dict[str, Any]:
     return {
         "ok": True,
         "entities": {
-            "emails": _uniq(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text), limit),
+            "emails": _uniq(
+                re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text),
+                limit,
+            ),
             "phones": _uniq(re.findall(r"(?:\+?\d[\d\-\s().]{7,}\d)", text), limit),
             "urls": _uniq(re.findall(r"https?://[^\s)>\"]+", text), limit),
             "prices": _uniq(re.findall(r"(?:\$|USD\s?)\d+(?:[.,]\d{2})?", text), limit),

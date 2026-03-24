@@ -1,7 +1,29 @@
 from __future__ import annotations
 
-from .utils import *
-from .state import *
+import hashlib
+import json
+import re
+from dataclasses import dataclass, field
+from typing import Any
+from urllib.parse import urlsplit
+
+from bs4 import BeautifulSoup
+
+from src.operator.agents.fsm import AgentState
+
+from .utils import (
+    _candidate_text,
+    _constraint_key_tokens,
+    _constraint_value_matches,
+    _dedupe_keep_order,
+    _focus_terms,
+    _norm_ws,
+    _safe_url,
+    _sanitize_selector,
+    _task_constraints,
+    _tokenize,
+)
+
 
 @dataclass
 class Candidate:
@@ -11,7 +33,7 @@ class Candidate:
     text: str
     href: str
     context: str
-    selector: Dict[str, Any]
+    selector: dict[str, Any]
     dom_path: str
     field_hint: str = ""
     field_kind: str = ""
@@ -21,7 +43,7 @@ class Candidate:
     region_kind: str = ""
     region_label: str = ""
     parent_region_id: str = ""
-    region_ancestor_ids: List[str] = field(default_factory=list)
+    region_ancestor_ids: list[str] = field(default_factory=list)
     group_id: str = ""
     group_label: str = ""
     disabled: bool = False
@@ -31,10 +53,10 @@ class Candidate:
     aria_label: str = ""
     name_attr: str = ""
     current_value: str = ""
-    option_values: List[str] = field(default_factory=list)
-    bbox: Dict[str, float] | None = None
+    option_values: list[str] = field(default_factory=list)
+    bbox: dict[str, float] | None = None
 
-    def as_obs(self, *, index: int | None = None) -> Dict[str, Any]:
+    def as_obs(self, *, index: int | None = None) -> dict[str, Any]:
         out = {
             "id": self.id,
             "role": self.role,
@@ -71,7 +93,7 @@ class Candidate:
 
 
 class CandidateExtractor:
-    def extract(self, *, snapshot_html: str, url: str) -> List[Candidate]:
+    def extract(self, *, snapshot_html: str, url: str) -> list[Candidate]:
         html = str(snapshot_html or "")
         if not html or BeautifulSoup is None:
             return []
@@ -79,20 +101,14 @@ class CandidateExtractor:
             soup = BeautifulSoup(html, "lxml")
         except Exception:
             return []
-        nodes = list(
-            soup.select(
-                "a,button,input,select,textarea,"
-                "[role='button'],[role='link'],[role='tab'],[role='menuitem'],"
-                "[role='checkbox'],[role='radio'],[role='switch'],[role='combobox']"
-            )
-        )
-        id_counts: Dict[str, int] = {}
+        nodes = list(soup.select("a,button,input,select,textarea,[role='button'],[role='link'],[role='tab'],[role='menuitem'],[role='checkbox'],[role='radio'],[role='switch'],[role='combobox']"))
+        id_counts: dict[str, int] = {}
         for node in nodes:
             attrs = node.attrs if isinstance(getattr(node, "attrs", None), dict) else {}
             node_id = _norm_ws(attrs.get("id"))
             if node_id:
                 id_counts[node_id] = int(id_counts.get(node_id) or 0) + 1
-        out: List[Candidate] = []
+        out: list[Candidate] = []
         for node in nodes:
             try:
                 attrs = node.attrs if isinstance(getattr(node, "attrs", None), dict) else {}
@@ -104,7 +120,7 @@ class CandidateExtractor:
                 field_hint = self._field_hint(node)
                 current_value = _norm_ws(attrs.get("value"))
                 if tag == "select":
-                    selected_texts: List[str] = []
+                    selected_texts: list[str] = []
                     for option in node.find_all("option", limit=12):
                         opt_text = _norm_ws(option.get_text(" ", strip=True))
                         opt_value = _norm_ws(option.get("value"))
@@ -139,7 +155,13 @@ class CandidateExtractor:
                 )
                 if not isinstance(selector, dict):
                     continue
-                stable_id = self._stable_id(attrs=attrs, selector=selector, text=text, href=href, dom_path=dom_path)
+                stable_id = self._stable_id(
+                    attrs=attrs,
+                    selector=selector,
+                    text=text,
+                    href=href,
+                    dom_path=dom_path,
+                )
                 context = self._context(node)
                 input_type = str(attrs.get("type") or "").strip().lower()
                 ui_state = str(attrs.get("data-state") or "").strip().lower()
@@ -158,7 +180,7 @@ class CandidateExtractor:
                 placeholder = _norm_ws(attrs.get("placeholder"))
                 aria_label = _norm_ws(attrs.get("aria-label"))
                 name_attr = _norm_ws(attrs.get("name"))
-                option_values: List[str] = []
+                option_values: list[str] = []
                 if tag == "select":
                     for option in node.find_all("option", limit=16):
                         opt_text = _norm_ws(option.get_text(" ", strip=True))
@@ -208,15 +230,22 @@ class CandidateExtractor:
                 )
             except Exception:
                 continue
-        dedup: Dict[str, Candidate] = {}
+        dedup: dict[str, Candidate] = {}
         for cand in out:
             dedup[cand.id] = cand
         return list(dedup.values())[:220]
 
-    def _role_name(self, tag: str, role: str, attrs: Dict[str, Any]) -> str:
+    def _role_name(self, tag: str, role: str, attrs: dict[str, Any]) -> str:
         if tag == "a" or role == "link":
             return "link"
-        if tag == "button" or role in {"button", "tab", "menuitem", "checkbox", "radio", "switch"}:
+        if tag == "button" or role in {
+            "button",
+            "tab",
+            "menuitem",
+            "checkbox",
+            "radio",
+            "switch",
+        }:
             return "button"
         input_type = str(attrs.get("type") or "").strip().lower()
         if tag == "input" and input_type in {"submit", "button", "reset", "image"}:
@@ -228,7 +257,7 @@ class CandidateExtractor:
         return ""
 
     def _dom_path(self, node: Any) -> str:
-        parts: List[str] = []
+        parts: list[str] = []
         cur = node
         guard = 0
         while cur is not None and guard < 12:
@@ -258,19 +287,29 @@ class CandidateExtractor:
         self,
         *,
         tag: str,
-        attrs: Dict[str, Any],
+        attrs: dict[str, Any],
         text: str,
         href: str,
         raw_href: str,
         dom_path: str,
-        id_counts: Dict[str, int],
-    ) -> Dict[str, Any]:
+        id_counts: dict[str, int],
+    ) -> dict[str, Any]:
         node_id = _norm_ws(attrs.get("id"))
         if node_id and int(id_counts.get(node_id) or 0) <= 1:
-            return {"type": "attributeValueSelector", "attribute": "id", "value": node_id, "case_sensitive": False}
+            return {
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": node_id,
+                "case_sensitive": False,
+            }
         node_name = _norm_ws(attrs.get("name"))
         if node_name and tag in {"input", "textarea", "select"}:
-            return {"type": "attributeValueSelector", "attribute": "name", "value": node_name, "case_sensitive": False}
+            return {
+                "type": "attributeValueSelector",
+                "attribute": "name",
+                "value": node_name,
+                "case_sensitive": False,
+            }
         if raw_href and tag == "a":
             return {
                 "type": "attributeValueSelector",
@@ -280,15 +319,27 @@ class CandidateExtractor:
             }
         if text and tag in {"button", "a"}:
             clean = text.replace('"', "'")[:120]
-            xpath = f"//{tag}[contains(normalize-space(.), \"{clean}\")]"
+            xpath = f'//{tag}[contains(normalize-space(.), "{clean}")]'
             return {"type": "xpathSelector", "value": xpath, "case_sensitive": False}
         if dom_path:
             # IWA Selector prepends '//' for xpath values that do not start with '//'.
             # Keep this as a raw DOM path to avoid generating invalid triple-slash selectors.
             return {"type": "xpathSelector", "value": dom_path, "case_sensitive": False}
-        return {"type": "xpathSelector", "value": f"//{tag}[1]", "case_sensitive": False}
+        return {
+            "type": "xpathSelector",
+            "value": f"//{tag}[1]",
+            "case_sensitive": False,
+        }
 
-    def _stable_id(self, *, attrs: Dict[str, Any], selector: Dict[str, Any], text: str, href: str, dom_path: str) -> str:
+    def _stable_id(
+        self,
+        *,
+        attrs: dict[str, Any],
+        selector: dict[str, Any],
+        text: str,
+        href: str,
+        dom_path: str,
+    ) -> str:
         existing = _norm_ws(attrs.get("data-element-id"))
         if existing:
             return existing[:80]
@@ -309,7 +360,13 @@ class CandidateExtractor:
                 if parent is None:
                     break
                 container = parent
-                if str(getattr(container, "name", "") or "").lower() in {"section", "article", "div", "main", "li"}:
+                if str(getattr(container, "name", "") or "").lower() in {
+                    "section",
+                    "article",
+                    "div",
+                    "main",
+                    "li",
+                }:
                     break
             return _norm_ws(container.get_text(" ", strip=True))
         except Exception:
@@ -368,7 +425,7 @@ class CandidateExtractor:
         tag = str(getattr(container, "name", "") or "").lower()
         attrs = container.attrs if isinstance(getattr(container, "attrs", None), dict) else {}
         role = str(attrs.get("role") or "").strip().lower()
-        classes = " ".join(str(x) for x in (attrs.get("class") or [] if isinstance(attrs.get("class"), list) else [attrs.get("class")])) .lower()
+        classes = " ".join(str(x) for x in (attrs.get("class") or [] if isinstance(attrs.get("class"), list) else [attrs.get("class")])).lower()
         if tag in {"form", "fieldset"}:
             return "form"
         if tag == "dialog" or role == "dialog" or str(attrs.get("aria-modal") or "").strip().lower() == "true":
@@ -383,9 +440,9 @@ class CandidateExtractor:
             return tag
         return "group"
 
-    def _region_lineage(self, node: Any) -> tuple[str, List[str]]:
+    def _region_lineage(self, node: Any) -> tuple[str, list[str]]:
         parent_region_id = ""
-        ancestor_ids: List[str] = []
+        ancestor_ids: list[str] = []
         cur = self._group_container(node)
         hops = 0
         while cur is not None and hops < 6:
@@ -409,7 +466,7 @@ class CandidateExtractor:
         self,
         *,
         tag: str,
-        attrs: Dict[str, Any],
+        attrs: dict[str, Any],
         role_name: str,
         text: str,
         field_hint: str,
@@ -529,12 +586,21 @@ class CandidateRanker:
         self,
         *,
         cand: Candidate,
-        task_constraints: Dict[str, str],
-    ) -> Dict[str, str]:
+        task_constraints: dict[str, str],
+    ) -> dict[str, str]:
         if not task_constraints:
             return {}
-        blob = " ".join([cand.text, cand.field_hint, cand.context, cand.group_label, cand.region_label, cand.href]).lower()
-        matches: Dict[str, str] = {}
+        blob = " ".join(
+            [
+                cand.text,
+                cand.field_hint,
+                cand.context,
+                cand.group_label,
+                cand.region_label,
+                cand.href,
+            ]
+        ).lower()
+        matches: dict[str, str] = {}
         for key, value in task_constraints.items():
             key_tokens = _constraint_key_tokens(key)
             key_match = bool(key_tokens and key_tokens.intersection(_tokenize(blob)))
@@ -545,7 +611,7 @@ class CandidateRanker:
                 matches[str(key)] = "field"
         return matches
 
-    def _candidate_constraint_keys(self, *, cand: Candidate, task_constraints: Dict[str, str]) -> set[str]:
+    def _candidate_constraint_keys(self, *, cand: Candidate, task_constraints: dict[str, str]) -> set[str]:
         return set(self._candidate_constraint_match(cand=cand, task_constraints=task_constraints).keys())
 
     def _candidate_group_key(self, cand: Candidate) -> str:
@@ -564,7 +630,11 @@ class CandidateRanker:
             needs.add("confirm_password")
         if re.search(r"\b(19|20|21)\d{2}\b", text):
             needs.add("year")
-        if re.search(r"\bgenre\b|\bgenres\b|\bcategory\b|\bcategories\b|\btag\b|\btags\b", text, flags=re.I):
+        if re.search(
+            r"\bgenre\b|\bgenres\b|\bcategory\b|\bcategories\b|\btag\b|\btags\b",
+            text,
+            flags=re.I,
+        ):
             needs.add("genre")
         if re.search(r"\bname\b", text, flags=re.I):
             needs.add("name")
@@ -593,11 +663,13 @@ class CandidateRanker:
         for key in ("username", "email", "password", "confirm_password"):
             if str(constraints.get(key) or "").strip():
                 return True
-        if re.search(r"<\s*(username|email|password|signup_email|signup_password)\s*>", prompt, flags=re.I):
+        if re.search(
+            r"<\s*(username|email|password|signup_email|signup_password)\s*>",
+            prompt,
+            flags=re.I,
+        ):
             return True
-        if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", prompt):
-            return True
-        return False
+        return bool(re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", prompt))
 
     def _candidate_action_tags(self, cand: Candidate) -> set[str]:
         blob = " ".join([cand.text, cand.href, cand.field_hint, cand.field_kind, cand.group_label]).lower()
@@ -626,14 +698,17 @@ class CandidateRanker:
             return True
         if "tabpanel" in blob or "tablist" in blob:
             return True
-        if re.search(r"\b(tab|section|panel|view)\b", blob) and cand.role == "button":
-            return True
-        return False
+        return bool(re.search(r"\b(tab|section|panel|view)\b", blob) and cand.role == "button")
 
     def _looks_submit_like(self, cand: Candidate) -> bool:
         if cand.field_kind in {"submit", "account_create", "auth_entry"}:
             return True
-        if cand.role == "input" and str(cand.input_type or "").strip().lower() in {"submit", "button", "image", "reset"}:
+        if cand.role == "input" and str(cand.input_type or "").strip().lower() in {
+            "submit",
+            "button",
+            "image",
+            "reset",
+        }:
             return True
         blob = " ".join([cand.text, cand.field_hint, cand.group_label]).lower()
         return bool(
@@ -660,7 +735,7 @@ class CandidateRanker:
             )
         )
 
-    def _selector_signature(self, selector: Dict[str, Any] | None) -> str:
+    def _selector_signature(self, selector: dict[str, Any] | None) -> str:
         selector = _sanitize_selector(selector)
         if not isinstance(selector, dict):
             return ""
@@ -674,12 +749,12 @@ class CandidateRanker:
         *,
         task: str,
         mode: str,
-        flags: Dict[str, Any],
-        candidates: List[Candidate],
+        flags: dict[str, Any],
+        candidates: list[Candidate],
         state: AgentState,
         current_url: str = "",
         top_k: int = 30,
-    ) -> List[Candidate]:
+    ) -> list[Candidate]:
         task_tokens = _focus_terms(task)
         task_constraints = _task_constraints(task)
         satisfied_constraints = set(state.progress.satisfied_constraints or [])
@@ -703,9 +778,9 @@ class CandidateRanker:
         blocked_regions = set(state.progress.blocked_regions)
         current_path = str(urlsplit(str(current_url or "")).path or "/").rstrip("/") or "/"
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
-        candidate_tags: Dict[str, set[str]] = {cand.id: self._candidate_action_tags(cand) for cand in candidates}
-        group_stats: Dict[str, Dict[str, Any]] = {}
-        exact_value_match_keys: Dict[str, int] = {}
+        candidate_tags: dict[str, set[str]] = {cand.id: self._candidate_action_tags(cand) for cand in candidates}
+        group_stats: dict[str, dict[str, Any]] = {}
+        exact_value_match_keys: dict[str, int] = {}
         for cand in candidates:
             group_key = self._candidate_group_key(cand)
             stats = group_stats.setdefault(
@@ -738,7 +813,7 @@ class CandidateRanker:
                 stats["constraint_hits"] += 1
             if task_constraints:
                 blob = " ".join([cand.text, cand.href, cand.context, cand.field_hint]).lower()
-                for key in task_constraints.keys():
+                for key in task_constraints:
                     key_blob = str(key or "").replace("_", " ").lower()
                     if key_blob and any(tok in blob for tok in _tokenize(key_blob)):
                         stats["constraint_hits"] += 1
@@ -749,44 +824,28 @@ class CandidateRanker:
         relevant_groups = {
             key
             for key, stats in group_stats.items()
-            if int(stats.get("constraint_hits") or 0) > 0
-            or (prompt_needs.intersection(set(stats.get("field_kinds") or set())) and int(stats.get("input_like") or 0) > 0)
+            if int(stats.get("constraint_hits") or 0) > 0 or (prompt_needs.intersection(set(stats.get("field_kinds") or set())) and int(stats.get("input_like") or 0) > 0)
         }
         has_visible_constraint_match = False
         for cand in candidates:
             blob = " ".join([cand.text, cand.href, cand.context, cand.field_hint]).lower()
             constraint_matches = self._candidate_constraint_match(cand=cand, task_constraints=task_constraints)
-            if (
-                cand.role in {"select", "input"}
-                and any(match == "value" for match in constraint_matches.values())
-                and ("current=" in blob or " value=" in blob)
-            ):
+            if cand.role in {"select", "input"} and any(match == "value" for match in constraint_matches.values()) and ("current=" in blob or " value=" in blob):
                 has_visible_constraint_match = True
                 break
-        credential_needs = {"username", "email", "password", "confirm_password"}.intersection(prompt_needs)
-        has_relevant_form_group = any(
-            key in relevant_groups and int(stats.get("input_like") or 0) > 0
-            for key, stats in group_stats.items()
-        )
-        has_direct_constraint_controls = any(
-            cand.role in {"input", "select"} and cand.field_kind and cand.field_kind in prompt_needs
-            for cand in candidates
-        )
-        has_password_input_visible = any(
-            cand.role == "input" and cand.field_kind in {"password", "confirm_password"}
-            for cand in candidates
-        )
+        credential_needs = {
+            "username",
+            "email",
+            "password",
+            "confirm_password",
+        }.intersection(prompt_needs)
+        has_relevant_form_group = any(key in relevant_groups and int(stats.get("input_like") or 0) > 0 for key, stats in group_stats.items())
+        has_direct_constraint_controls = any(cand.role in {"input", "select"} and cand.field_kind and cand.field_kind in prompt_needs for cand in candidates)
+        has_password_input_visible = any(cand.role == "input" and cand.field_kind in {"password", "confirm_password"} for cand in candidates)
         has_non_form_controls = any(cand.role in {"button", "link"} for cand in candidates)
-        has_same_region_commit_controls = any(
-            self._looks_submit_like(cand) and not cand.disabled
-            for cand in candidates
-        )
-        has_mutation_controls = any(
-            candidate_tags.get(cand.id, set()).intersection(mutation_ops)
-            for cand in candidates
-            if cand.role in {"button", "link", "input"}
-        )
-        scored: List[tuple[float, Candidate]] = []
+        has_same_region_commit_controls = any(self._looks_submit_like(cand) and not cand.disabled for cand in candidates)
+        has_mutation_controls = any(candidate_tags.get(cand.id, set()).intersection(mutation_ops) for cand in candidates if cand.role in {"button", "link", "input"})
+        scored: list[tuple[float, Candidate]] = []
         for cand in candidates:
             if cand.id in blocked:
                 continue
@@ -800,11 +859,7 @@ class CandidateRanker:
             constraint_matches = self._candidate_constraint_match(cand=cand, task_constraints=task_constraints)
             constraint_keys = set(constraint_matches.keys())
             unmet_constraint_keys = {key for key in constraint_keys if key not in satisfied_constraints}
-            current_value_already_matches = (
-                cand.role in {"select", "input"}
-                and any(constraint_matches.get(key) == "value" for key in constraint_keys)
-                and ("current=" in blob or " value=" in blob)
-            )
+            current_value_already_matches = cand.role in {"select", "input"} and any(constraint_matches.get(key) == "value" for key in constraint_keys) and ("current=" in blob or " value=" in blob)
             is_section_switch = self._is_section_switch_candidate(cand)
             score = 0.0
             if cand.role == "input":
@@ -852,20 +907,23 @@ class CandidateRanker:
                 score -= 0.6
             if cand.field_kind == "search" and (prompt_needs - {"search"}):
                 score -= 3.8
-            if cand.field_kind == "sort" and "year" in prompt_needs and any(
-                "year" in set(stats.get("field_kinds") or set()) for stats in group_stats.values()
-            ):
+            if cand.field_kind == "sort" and "year" in prompt_needs and any("year" in set(stats.get("field_kinds") or set()) for stats in group_stats.values()):
                 score -= 4.4
-            if {"username", "email", "password", "confirm_password"}.intersection(prompt_needs):
-                if cand.role == "input" and cand.field_kind in {"text", "name", "search"} and not (
-                    {"username", "email", "password", "confirm_password"} & group_kinds
-                ):
-                    score -= 4.6
+            if (
+                {"username", "email", "password", "confirm_password"}.intersection(prompt_needs)
+                and cand.role == "input"
+                and cand.field_kind in {"text", "name", "search"}
+                and not ({"username", "email", "password", "confirm_password"} & group_kinds)
+            ):
+                score -= 4.6
             if group_key in relevant_groups:
                 score += 3.8
                 if cand.role in {"input", "select", "button"}:
                     score += 1.0
-            if {"username", "password"}.issubset(group_kinds) or {"email", "password"}.issubset(group_kinds):
+            if {"username", "password"}.issubset(group_kinds) or {
+                "email",
+                "password",
+            }.issubset(group_kinds):
                 score += 2.6
             if {"username", "email", "password"}.intersection(group_kinds) and cand.role in {"input", "button"}:
                 score += 1.4
@@ -874,17 +932,21 @@ class CandidateRanker:
             if cand.id in obs_hints:
                 score += 3.2
             same_focus_region = False
-            if focus_region_id and cand.region_id and cand.region_id == focus_region_id:
-                same_focus_region = True
-            elif focus_region_context and cand_context and cand_context == focus_region_context:
-                same_focus_region = True
-            elif focus_region_ids and cand.id in focus_region_ids:
+            if (
+                (focus_region_id and cand.region_id and cand.region_id == focus_region_id)
+                or (focus_region_context and cand_context and cand_context == focus_region_context)
+                or (focus_region_ids and cand.id in focus_region_ids)
+            ):
                 same_focus_region = True
             if same_focus_region:
                 score += 4.4
                 if cand.role in {"button", "input", "select"}:
                     score += 1.8
-                if last_action_type in {"typeaction", "selectdropdownoptionaction", "clickaction"}:
+                if last_action_type in {
+                    "typeaction",
+                    "selectdropdownoptionaction",
+                    "clickaction",
+                }:
                     score += 1.2
                 if cand.field_kind == "pager":
                     score -= 4.0
@@ -904,11 +966,11 @@ class CandidateRanker:
             if cand.region_id and cand.region_id in blocked_regions:
                 score -= 3.4
             same_active_group = False
-            if active_group_id and cand.group_id and cand.group_id == active_group_id:
-                same_active_group = True
-            elif active_group_context and cand_context and cand_context == active_group_context:
-                same_active_group = True
-            elif active_group_ids and cand.id in active_group_ids:
+            if (
+                (active_group_id and cand.group_id and cand.group_id == active_group_id)
+                or (active_group_context and cand_context and cand_context == active_group_context)
+                or (active_group_ids and cand.id in active_group_ids)
+            ):
                 same_active_group = True
             if same_active_group:
                 score += 2.4
@@ -920,23 +982,10 @@ class CandidateRanker:
                     score -= 1.6
                 if cand.role == "link":
                     score -= 1.0
-            relevant_form_field_kinds = {
-                kind
-                for kind in group_kinds
-                if kind in {"username", "email", "password", "confirm_password"}
-                or kind in prompt_needs
-            }
+            relevant_form_field_kinds = {kind for kind in group_kinds if kind in {"username", "email", "password", "confirm_password"} or kind in prompt_needs}
             has_local_multifield_form = int((group_stats.get(group_key) or {}).get("input_like") or 0) >= 2
-            remaining_relevant_kinds = {
-                kind for kind in relevant_form_field_kinds if kind not in group_typed_kinds
-            }
-            input_already_typed = (
-                cand.role == "input"
-                and (
-                    (cand.id and cand.id in typed_candidate_ids)
-                    or (sel_sig and sel_sig in typed_selector_sigs)
-                )
-            )
+            remaining_relevant_kinds = {kind for kind in relevant_form_field_kinds if kind not in group_typed_kinds}
+            input_already_typed = cand.role == "input" and ((cand.id and cand.id in typed_candidate_ids) or (sel_sig and sel_sig in typed_selector_sigs))
             if input_already_typed:
                 score -= 18.0
                 if cand.field_kind in remaining_relevant_kinds:
@@ -958,9 +1007,18 @@ class CandidateRanker:
                 if cand.role == "link" and remaining_relevant_kinds:
                     score -= 4.0
             if has_local_multifield_form and credential_needs:
-                if cand.role == "input" and cand.field_kind in {"username", "email", "password", "confirm_password"}:
-                    if cand.field_kind in remaining_relevant_kinds:
-                        score += 6.0
+                if (
+                    cand.role == "input"
+                    and cand.field_kind
+                    in {
+                        "username",
+                        "email",
+                        "password",
+                        "confirm_password",
+                    }
+                    and cand.field_kind in remaining_relevant_kinds
+                ):
+                    score += 6.0
                 if cand.role in {"link", "button"} and not self._looks_submit_like(cand) and not action_tags.intersection({"auth_login", "auth_register"}):
                     score -= 4.0
             cand_path = str(urlsplit(str(cand.href or "")).path or "").rstrip("/") or "/"
@@ -978,14 +1036,14 @@ class CandidateRanker:
                 score += 3.0 + min(3.0, float(len(unmet_constraint_keys)))
                 if any(constraint_matches.get(key) == "value" for key in unmet_constraint_keys):
                     score += 4.2
-                elif any(
-                    constraint_matches.get(key) == "field" and int(exact_value_match_keys.get(key) or 0) > 0
-                    for key in unmet_constraint_keys
-                ):
-                    if cand.role in {"button", "link"}:
-                        score -= 3.6
+                elif any(constraint_matches.get(key) == "field" and int(exact_value_match_keys.get(key) or 0) > 0 for key in unmet_constraint_keys) and cand.role in {"button", "link"}:
+                    score -= 3.6
             elif constraint_keys:
-                if cand.role in {"button", "link"} and cand.field_kind not in {"submit", "auth_entry", "account_create"}:
+                if cand.role in {"button", "link"} and cand.field_kind not in {
+                    "submit",
+                    "auth_entry",
+                    "account_create",
+                }:
                     score -= 3.2
                 elif cand.role == "select":
                     score -= 2.0
@@ -1020,12 +1078,20 @@ class CandidateRanker:
                         score -= 1.2
                     if cand.role == "link" and cand.field_kind == "link" and overlap == 0:
                         score -= 2.6
-                    if cand.role == "link" and int((group_stats.get(group_key) or {}).get("input_like") or 0) == 0:
-                        if int((group_stats.get(group_key) or {}).get("context_len") or 0) >= 220:
-                            score -= 2.2
-            if mode == "POPUP":
-                if any(k in blob for k in ("accept", "reject", "agree", "close", "dismiss", "continue")):
-                    score += 6.0
+                    if cand.role == "link" and int((group_stats.get(group_key) or {}).get("input_like") or 0) == 0 and int((group_stats.get(group_key) or {}).get("context_len") or 0) >= 220:
+                        score -= 2.2
+            if mode == "POPUP" and any(
+                k in blob
+                for k in (
+                    "accept",
+                    "reject",
+                    "agree",
+                    "close",
+                    "dismiss",
+                    "continue",
+                )
+            ):
+                score += 6.0
             if mode == "EXTRACT" and cand.role == "link":
                 score += 0.8
             if cand.field_kind == "pager":
@@ -1073,4 +1139,3 @@ class CandidateRanker:
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]
-

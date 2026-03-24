@@ -8,8 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
 from dotenv import load_dotenv
+from openai import OpenAI
 
 
 def _wait_for_job(client: OpenAI, job_id: str, poll_s: float = 20.0, timeout_s: float = 60 * 60 * 8) -> dict[str, Any]:

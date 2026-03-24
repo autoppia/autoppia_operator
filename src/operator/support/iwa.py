@@ -3,11 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 try:
+    import autoppia_iwa.src.execution.actions.actions  # noqa: F401
     from autoppia_iwa.src.data_generation.tasks.classes import Task
     from autoppia_iwa.src.execution.actions.base import BaseAction
-    from autoppia_iwa.src.web_agents.act_protocol import ACT_PROTOCOL_VERSION as IWA_ACT_PROTOCOL_VERSION
+    from autoppia_iwa.src.web_agents.act_protocol import (
+        ACT_PROTOCOL_VERSION as IWA_ACT_PROTOCOL_VERSION,
+    )
     from autoppia_iwa.src.web_agents.classes import IWebAgent
-    import autoppia_iwa.src.execution.actions.actions  # noqa: F401
 
     AUTOPPIA_IWA_IMPORT_OK = True
     AUTOPPIA_IWA_IMPORT_ERROR = ""
@@ -23,8 +25,8 @@ except Exception:  # pragma: no cover
 __all__ = [
     "AUTOPPIA_IWA_IMPORT_ERROR",
     "AUTOPPIA_IWA_IMPORT_OK",
-    "BaseAction",
     "IWA_ACT_PROTOCOL_VERSION",
+    "BaseAction",
     "IWebAgent",
     "Task",
 ]

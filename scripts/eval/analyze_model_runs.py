@@ -49,15 +49,19 @@ def main() -> None:
         m["path"] = str(path)
         rows.append(m)
 
-    rows = sorted(rows, key=lambda x: (-float(x["success_rate"]), float(x["avg_cost_per_task_usd"]), float(x["avg_time_per_task_s"])))
+    rows = sorted(
+        rows,
+        key=lambda x: (
+            -float(x["success_rate"]),
+            float(x["avg_cost_per_task_usd"]),
+            float(x["avg_time_per_task_s"]),
+        ),
+    )
     payload = {"runs": rows}
 
     for r in rows:
         print(
-            f"{r['model'][:56]:56s} | sr={r['success_rate']:.1%} "
-            f"| ep={int(r['episodes']):3d} | avg_steps={r['avg_steps_per_task']:.2f} "
-            f"| task_s={r['avg_time_per_task_s']:.2f} | step_s={r['avg_time_per_step_s']:.2f} "
-            f"| cost/task=${r['avg_cost_per_task_usd']:.5f} | tok/task={r['avg_tokens_per_task']:.1f}"
+            f"{r['model'][:56]:56s} | sr={r['success_rate']:.1%} | ep={int(r['episodes']):3d} | avg_steps={r['avg_steps_per_task']:.2f} | task_s={r['avg_time_per_task_s']:.2f} | step_s={r['avg_time_per_step_s']:.2f} | cost/task=${r['avg_cost_per_task_usd']:.5f} | tok/task={r['avg_tokens_per_task']:.1f}"
         )
 
     if args.out:
@@ -69,4 +73,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

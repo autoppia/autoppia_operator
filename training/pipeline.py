@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +10,7 @@ from .dataset import split_train_val, write_jsonl
 from .iwap_client import IWAPClient
 from .models import TrajectoryRecord
 from .normalize import dedupe_trajectories, extract_task_payload, normalize_trajectory
-from .s3_source import S3ObjectRef, S3TrajectorySource
+from .s3_source import S3TrajectorySource
 
 
 @dataclass
@@ -52,7 +52,7 @@ class DatasetArtifacts:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _task_map(tasks: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -231,13 +231,7 @@ def ingest_from_s3(
             stats.payload_parse_errors += 1
             continue
 
-        run_id = str(
-            raw.get("run_id")
-            or raw.get("runId")
-            or payload.get("run_id")
-            or payload.get("agent_run_id")
-            or f"s3-{idx:06d}"
-        )
+        run_id = str(raw.get("run_id") or raw.get("runId") or payload.get("run_id") or payload.get("agent_run_id") or f"s3-{idx:06d}")
         task_meta = raw.get("task") if isinstance(raw.get("task"), dict) else None
 
         normalized = normalize_trajectory(

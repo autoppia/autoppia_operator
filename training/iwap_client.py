@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any
 
 import httpx
 
@@ -30,7 +32,7 @@ class IWAPClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "IWAPClient":
+    def __enter__(self) -> IWAPClient:
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
@@ -44,13 +46,17 @@ class IWAPClient:
 
     def _get_json(self, path_or_url: str, *, params: dict[str, Any] | None = None) -> Any:
         is_absolute = str(path_or_url).startswith("http://") or str(path_or_url).startswith("https://")
-        response = self._client.get(path_or_url if is_absolute else str(path_or_url), params=params, headers=self._headers())
+        response = self._client.get(
+            path_or_url if is_absolute else str(path_or_url),
+            params=params,
+            headers=self._headers(),
+        )
         response.raise_for_status()
         return response.json()
 
     @staticmethod
     def _extract_data(payload: Any) -> Any:
-        if isinstance(payload, dict) and isinstance(payload.get("data"), (dict, list)):
+        if isinstance(payload, dict) and isinstance(payload.get("data"), dict | list):
             return payload["data"]
         return payload
 
@@ -140,11 +146,8 @@ class IWAPClient:
         should_try_gzip = str(url).endswith(".gz") or "gzip" in encoding or "application/gzip" in content_type
 
         if should_try_gzip or body[:2] == b"\x1f\x8b":
-            try:
+            with contextlib.suppress(Exception):
                 body = gzip.decompress(body)
-            except Exception:
-                # Some endpoints already transparently decompress.
-                pass
 
         try:
             parsed = json.loads(body.decode("utf-8"))

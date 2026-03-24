@@ -11,7 +11,12 @@ OPERATOR_ROOT = SCRIPT_DIR.parents[1]
 if str(OPERATOR_ROOT) not in sys.path:
     sys.path.insert(0, str(OPERATOR_ROOT))
 
-from training import S3TrajectorySource, TrajectoryBuildConfig, ingest_from_s3, write_jsonl
+from training import (
+    S3TrajectorySource,
+    TrajectoryBuildConfig,
+    ingest_from_s3,
+    write_jsonl,
+)
 
 
 def _args() -> argparse.Namespace:
@@ -82,7 +87,13 @@ def main() -> None:
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(json.dumps({**manifest["stats"], "manifest": str(manifest_path)}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {**manifest["stats"], "manifest": str(manifest_path)},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

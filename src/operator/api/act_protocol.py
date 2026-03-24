@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
-from types import SimpleNamespace
-
-from src.operator.support.iwa import BaseAction, IWA_ACT_PROTOCOL_VERSION, Task
-from src.operator.support.utils import candidate_text, env_bool, normalize_demo_url, normalize_selector_payload
+from src.operator.support.iwa import IWA_ACT_PROTOCOL_VERSION, BaseAction, Task
+from src.operator.support.utils import (
+    candidate_text,
+    env_bool,
+    normalize_demo_url,
+    normalize_selector_payload,
+)
 
 
 def use_vision() -> bool:
     return env_bool("USE_VISION", False) or env_bool("AGENT_USE_VISION", False)
+
 
 _normalize_demo_url = normalize_demo_url
 _candidate_text = candidate_text
@@ -20,7 +25,12 @@ def _is_navigate_action_type(action_type: Any) -> bool:
 
 
 def _is_done_action_type(action_type: Any) -> bool:
-    return str(action_type or "").strip().lower() in {"doneaction", "finishaction", "done", "finish"}
+    return str(action_type or "").strip().lower() in {
+        "doneaction",
+        "finishaction",
+        "done",
+        "finish",
+    }
 
 
 def _is_request_user_input_action_type(action_type: Any) -> bool:
@@ -102,9 +112,7 @@ def is_tool_enabled(name: str) -> bool:
     canonical = _canonical_browser_tool_name(name)
     if not canonical:
         return False
-    if canonical == "browser.screenshot" and not use_vision():
-        return False
-    return True
+    return not (canonical == "browser.screenshot" and not use_vision())
 
 
 def _action_to_tool_call(action: dict[str, Any]) -> dict[str, Any] | None:
@@ -299,7 +307,7 @@ def _act_http_response(
         out["total_tokens"] = int(raw_resp.get("total_tokens") or 0)
     if isinstance(raw_resp.get("model"), str) and str(raw_resp.get("model")).strip():
         out["model"] = str(raw_resp.get("model")).strip()
-    if isinstance(raw_resp.get("estimated_cost_usd"), (int, float)):
+    if isinstance(raw_resp.get("estimated_cost_usd"), int | float):
         out["estimated_cost_usd"] = float(raw_resp.get("estimated_cost_usd"))
     if isinstance(raw_resp.get("helper_models"), list):
         out["helper_models"] = [str(m).strip() for m in raw_resp.get("helper_models") if str(m).strip()]

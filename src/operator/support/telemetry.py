@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
-
 import logging
 import time
+from typing import Any
 
 from src.operator.support.utils import env_bool
 
@@ -61,11 +60,7 @@ def log_act_finish(ctx: dict[str, Any], started_at: float, response_payload: dic
     state_out = response_payload.get("state_out") if isinstance(response_payload.get("state_out"), dict) else {}
     content = str(response_payload.get("content") or "") if isinstance(response_payload, dict) else ""
     reasoning = str(response_payload.get("reasoning") or "") if isinstance(response_payload, dict) else ""
-    operator_metrics = (
-        (response_payload.get("metrics") or {}).get("operator")
-        if isinstance(response_payload.get("metrics"), dict)
-        else {}
-    )
+    operator_metrics = (response_payload.get("metrics") or {}).get("operator") if isinstance(response_payload.get("metrics"), dict) else {}
     duration_ms = int((operator_metrics or {}).get("duration_ms") or 0) or int((time.monotonic() - started_at) * 1000)
     logger.info(
         "[ACT] finish task_id=%s step=%s done=%s tool_calls=%s content_len=%s reasoning_len=%s state_out_keys=%s duration_ms=%s",

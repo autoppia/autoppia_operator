@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from typing import Any
-
 import os
+from typing import Any
 
 from fastapi import HTTPException
 
+from infra.pricing import estimate_cost_usd
 from src.operator.api.act_protocol import _normalize_demo_url, env_bool
 from src.operator.support.iwa import IWA_ACT_PROTOCOL_VERSION
 from src.operator.support.telemetry import logger
-from infra.pricing import estimate_cost_usd
 
 
 def build_fsm_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -84,19 +83,19 @@ def normalize_fsm_output(
         raw_usage_breakdown = normalized.get("usage_breakdown") if isinstance(normalized.get("usage_breakdown"), dict) else {}
         usage_breakdown = {
             "policy": {
-                "prompt_tokens": int(((raw_usage_breakdown.get("policy") or {}).get("prompt_tokens") or 0)),
-                "completion_tokens": int(((raw_usage_breakdown.get("policy") or {}).get("completion_tokens") or 0)),
-                "total_tokens": int(((raw_usage_breakdown.get("policy") or {}).get("total_tokens") or 0)),
+                "prompt_tokens": int((raw_usage_breakdown.get("policy") or {}).get("prompt_tokens") or 0),
+                "completion_tokens": int((raw_usage_breakdown.get("policy") or {}).get("completion_tokens") or 0),
+                "total_tokens": int((raw_usage_breakdown.get("policy") or {}).get("total_tokens") or 0),
             },
             "obs_extract": {
-                "prompt_tokens": int(((raw_usage_breakdown.get("obs_extract") or {}).get("prompt_tokens") or 0)),
-                "completion_tokens": int(((raw_usage_breakdown.get("obs_extract") or {}).get("completion_tokens") or 0)),
-                "total_tokens": int(((raw_usage_breakdown.get("obs_extract") or {}).get("total_tokens") or 0)),
+                "prompt_tokens": int((raw_usage_breakdown.get("obs_extract") or {}).get("prompt_tokens") or 0),
+                "completion_tokens": int((raw_usage_breakdown.get("obs_extract") or {}).get("completion_tokens") or 0),
+                "total_tokens": int((raw_usage_breakdown.get("obs_extract") or {}).get("total_tokens") or 0),
             },
             "vision": {
-                "prompt_tokens": int(((raw_usage_breakdown.get("vision") or {}).get("prompt_tokens") or 0)),
-                "completion_tokens": int(((raw_usage_breakdown.get("vision") or {}).get("completion_tokens") or 0)),
-                "total_tokens": int(((raw_usage_breakdown.get("vision") or {}).get("total_tokens") or 0)),
+                "prompt_tokens": int((raw_usage_breakdown.get("vision") or {}).get("prompt_tokens") or 0),
+                "completion_tokens": int((raw_usage_breakdown.get("vision") or {}).get("completion_tokens") or 0),
+                "total_tokens": int((raw_usage_breakdown.get("vision") or {}).get("total_tokens") or 0),
             },
         }
         normalized["metrics"] = {
@@ -116,9 +115,10 @@ def run_fsm_operator(fsm_operator: Any, payload: dict[str, Any], *, model_overri
     try:
         out = fsm_operator.run(payload=build_fsm_payload(payload), model_override=model_override)
     except Exception as exc:
-        logger.exception(
-            f"[AGENT_TRACE] strict_fsm_failed task_id={str(payload.get('task_id') or '')} "
-            f"step_index={int(payload.get('step_index') or 0)} err={str(exc)}"
-        )
-        raise HTTPException(status_code=500, detail="fsm_operator_failed")
-    return normalize_fsm_output(out, model_override=model_override, return_metrics=env_bool("AGENT_RETURN_METRICS", False))
+        logger.exception(f"[AGENT_TRACE] strict_fsm_failed task_id={payload.get('task_id') or ''!s} step_index={int(payload.get('step_index') or 0)} err={exc!s}")
+        raise HTTPException(status_code=500, detail="fsm_operator_failed") from exc
+    return normalize_fsm_output(
+        out,
+        model_override=model_override,
+        return_metrics=env_bool("AGENT_RETURN_METRICS", False),
+    )

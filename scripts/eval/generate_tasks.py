@@ -71,7 +71,12 @@ def main() -> None:
         default=None,
         help="Comma-separated project ids (alternative to repeating --project-id)",
     )
-    parser.add_argument("--prompts-per-use-case", type=int, default=1, help="Prompt variants per use case")
+    parser.add_argument(
+        "--prompts-per-use-case",
+        type=int,
+        default=1,
+        help="Prompt variants per use case",
+    )
     parser.add_argument("--dynamic", action="store_true", help="Enable dynamic task generation")
     parser.add_argument(
         "--out",
@@ -82,7 +87,7 @@ def main() -> None:
 
     project_ids: list[str] = []
     if args.project_ids:
-        project_ids.extend([p.strip() for p in str(args.project_ids).split(',') if p.strip()])
+        project_ids.extend([p.strip() for p in str(args.project_ids).split(",") if p.strip()])
     project_ids.extend([p.strip() for p in (args.project_id or []) if p.strip()])
     if not project_ids:
         project_ids = ["autocinema"]
@@ -100,17 +105,19 @@ def main() -> None:
         projects = []
         for pid in project_ids:
             payload = await _generate(pid, int(args.prompts_per_use_case), bool(args.dynamic))
-            projects.append({
-                'project_id': payload.get('project_id'),
-                'project_name': payload.get('project_name'),
-                'num_tasks': len(payload.get('tasks') or []),
-            })
-            all_tasks.extend(payload.get('tasks') or [])
+            projects.append(
+                {
+                    "project_id": payload.get("project_id"),
+                    "project_name": payload.get("project_name"),
+                    "num_tasks": len(payload.get("tasks") or []),
+                }
+            )
+            all_tasks.extend(payload.get("tasks") or [])
 
         return {
-            'timestamp': datetime.now().isoformat(),
-            'projects': projects,
-            'tasks': all_tasks,
+            "timestamp": datetime.now().isoformat(),
+            "projects": projects,
+            "tasks": all_tasks,
         }
 
     payload = asyncio.run(_run())

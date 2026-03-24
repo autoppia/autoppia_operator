@@ -12,17 +12,18 @@ import contextlib
 import hashlib
 import json
 import os
-import re
-from datetime import datetime
 import random
-import subprocess
+import re
 import socket
+import subprocess
 import sys
 import time
-from typing import Any
-from copy import deepcopy
-from pathlib import Path
 from collections import defaultdict
+from copy import deepcopy
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
 import aiohttp
 from playwright.async_api import async_playwright
 
@@ -32,8 +33,6 @@ OPERATOR_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(OPERATOR_ROOT))
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from src.operator.support.utils import candidate_text as _shared_candidate_text
-from src.operator.support.utils import normalize_selector_payload as _shared_normalize_selector_payload
 
 # ── Load .env from autoppia_operator ────────────────────────────
 from dotenv import load_dotenv
@@ -46,7 +45,7 @@ if operator_env.exists():
 def _candidate_text(value: Any) -> str:
     if isinstance(value, str):
         return " ".join(value.strip().split())
-    if isinstance(value, (int, float, bool)):
+    if isinstance(value, int | float | bool):
         return str(value)
     if isinstance(value, list):
         for item in value:
@@ -76,11 +75,22 @@ def _normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
                 return value[:400]
         return ""
 
-    if sel_type in {"text", "textselector", "textcontains", "textcontainsselector", "linktext", "partiallinktext"}:
+    if sel_type in {
+        "text",
+        "textselector",
+        "textcontains",
+        "textcontainsselector",
+        "linktext",
+        "partiallinktext",
+    }:
         value = first_text("value", "text", "label", "name", "query")
         if not value:
             return None
-        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
+        return {
+            "type": "tagContainsSelector",
+            "value": value,
+            "case_sensitive": case_sensitive,
+        }
     if sel_type in {"attribute", "attributevalueselector"}:
         attribute = first_text("attribute", "attr", "name")
         value = first_text("value", "text", "label")
@@ -103,13 +113,33 @@ def _normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
         value = re.sub(r"\s+", " ", value).strip()
         if not value:
             return None
-        return {"type": "xpathSelector", "value": value, "case_sensitive": case_sensitive}
+        return {
+            "type": "xpathSelector",
+            "value": value,
+            "case_sensitive": case_sensitive,
+        }
     if sel_type == "tagcontainsselector":
         value = first_text("value", "text", "label")
         if not value:
             return None
-        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
-    if sel_type in {"id", "class", "name", "href", "placeholder", "aria-label", "aria_label", "title", "role", "value", "type"}:
+        return {
+            "type": "tagContainsSelector",
+            "value": value,
+            "case_sensitive": case_sensitive,
+        }
+    if sel_type in {
+        "id",
+        "class",
+        "name",
+        "href",
+        "placeholder",
+        "aria-label",
+        "aria_label",
+        "title",
+        "role",
+        "value",
+        "type",
+    }:
         value = first_text("value", "text", "label")
         if not value:
             return None
@@ -120,7 +150,11 @@ def _normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
             "value": value,
             "case_sensitive": case_sensitive,
         }
-    if sel_type not in {"attributevalueselector", "tagcontainsselector", "xpathselector"}:
+    if sel_type not in {
+        "attributevalueselector",
+        "tagcontainsselector",
+        "xpathselector",
+    }:
         attribute = first_text("attribute", "attr", "name")
         value = first_text("value", "text", "label", "query")
         if attribute and value:
@@ -131,7 +165,11 @@ def _normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
                 "case_sensitive": case_sensitive,
             }
         if value:
-            return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
+            return {
+                "type": "tagContainsSelector",
+                "value": value,
+                "case_sensitive": case_sensitive,
+            }
         return None
     return selector
 
@@ -145,21 +183,24 @@ def _sanitize_action_payload(payload: dict[str, Any]) -> dict[str, Any]:
         out.pop("selector", None)
     return out
 
-# ── Imports ──────────────────────────────────────────────────────
-from loguru import logger
 
-from autoppia_iwa.src.data_generation.tasks.classes import Task
-from autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator
-from autoppia_iwa.src.execution.actions.base import BaseAction
-from autoppia_iwa.config.config import EVALUATOR_HEADLESS, VALIDATOR_ID as IWA_VALIDATOR_ID
-from autoppia_iwa.src.data_generation.tasks.classes import BrowserSpecification
+# ── Imports ──────────────────────────────────────────────────────
+import autoppia_iwa.src.execution.actions.actions  # noqa: F401
+from autoppia_iwa.config.config import (
+    EVALUATOR_HEADLESS,
+    VALIDATOR_ID as IWA_VALIDATOR_ID,
+)
+from autoppia_iwa.src.data_generation.tasks.classes import BrowserSpecification, Task
 from autoppia_iwa.src.demo_webs.classes import BackendEvent, WebProject
 from autoppia_iwa.src.demo_webs.config import demo_web_projects
 from autoppia_iwa.src.demo_webs.demo_webs_service import BackendDemoWebService
+from autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator
+from autoppia_iwa.src.execution.actions.base import BaseAction
 from autoppia_iwa.src.execution.browser_executor import PlaywrightBrowserExecutor
+from loguru import logger
+
 from infra.llm_gateway import openai_chat_completions
 from infra.pricing import estimate_cost_usd
-import autoppia_iwa.src.execution.actions.actions  # noqa: F401
 
 # Default task cache path
 TASK_CACHE = OPERATOR_ROOT / "autoppia_rl" / "data" / "task_cache" / "autoppia_cinema_tasks.json"
@@ -268,6 +309,7 @@ def select_all_use_case_tasks(
                 logger.debug(f"Skipping task {td.get('id', '?')} from use_case={uc_name}: {e}")
     return selected
 
+
 def load_tasks(
     cache_path: Path = TASK_CACHE,
     use_case: str | None = None,
@@ -281,9 +323,8 @@ def load_tasks(
     tasks: list[Task] = []
     for td in raw_tasks:
         # Optional task id filter (exact match)
-        if task_id:
-            if str(td.get("id", "")) != str(task_id):
-                continue
+        if task_id and str(td.get("id", "")) != str(task_id):
+            continue
 
         # Optional use-case filter
         if use_case:
@@ -293,9 +334,8 @@ def load_tasks(
                 continue
 
         # Optional web project filter
-        if web_project_id is not None:
-            if str(td.get("web_project_id", "")) != str(web_project_id):
-                continue
+        if web_project_id is not None and str(td.get("web_project_id", "")) != str(web_project_id):
+            continue
 
         try:
             task = Task(**td)
@@ -314,7 +354,7 @@ def _serialize_screenshot(raw: Any | None) -> str | None:
         return None
     if isinstance(raw, str):
         return raw or None
-    if isinstance(raw, (bytes, bytearray, memoryview)):
+    if isinstance(raw, bytes | bytearray | memoryview):
         return base64.b64encode(bytes(raw)).decode("ascii")
     return None
 
@@ -461,25 +501,13 @@ def _compute_results_summary(results: dict[str, Any], elapsed: float) -> None:
     total_steps = sum(int(ep.get("steps") or 0) for ep in results["episodes"])
     total_operator_duration_ms = sum(int(ep.get("operator_duration_ms") or 0) for ep in results["episodes"])
     total_http_roundtrip_ms = sum(int(ep.get("act_http_roundtrip_ms") or 0) for ep in results["episodes"])
-    avg_task_seconds = (
-        sum(float(ep.get("task_seconds", 0.0) or 0.0) for ep in results["episodes"]) / total
-        if total > 0
-        else 0.0
-    )
-    avg_step_seconds = (
-        sum(float(ep.get("task_seconds", 0.0) or 0.0) for ep in results["episodes"]) / total_steps
-        if total_steps > 0
-        else 0.0
-    )
+    avg_task_seconds = sum(float(ep.get("task_seconds", 0.0) or 0.0) for ep in results["episodes"]) / total if total > 0 else 0.0
+    avg_step_seconds = sum(float(ep.get("task_seconds", 0.0) or 0.0) for ep in results["episodes"]) / total_steps if total_steps > 0 else 0.0
     results["timing"]["total_seconds"] = round(elapsed, 4)
     results["timing"]["avg_task_seconds"] = round(avg_task_seconds, 4)
     results["timing"]["avg_step_seconds"] = round(avg_step_seconds, 4)
     operator_cost = sum(float(ep.get("estimated_cost_usd") or 0.0) for ep in results["episodes"])
-    judge_cost = sum(
-        float(((ep.get("failure_judge") or {}).get("estimated_cost_usd")) or 0.0)
-        for ep in results["episodes"]
-        if isinstance(ep, dict)
-    )
+    judge_cost = sum(float(((ep.get("failure_judge") or {}).get("estimated_cost_usd")) or 0.0) for ep in results["episodes"] if isinstance(ep, dict))
     results["costs"] = {
         "operator_estimated_cost_usd": round(operator_cost, 6),
         "failure_judge_estimated_cost_usd": round(judge_cost, 6),
@@ -503,7 +531,7 @@ def _compute_results_summary(results: dict[str, Any], elapsed: float) -> None:
     vision_steps = sum(int(ep.get("vision_steps") or 0) for ep in results["episodes"])
     helper_model_counts: dict[str, int] = {}
     for ep in results["episodes"]:
-        for model_name in (ep.get("helper_models") or []):
+        for model_name in ep.get("helper_models") or []:
             name = str(model_name or "").strip()
             if not name:
                 continue
@@ -514,9 +542,18 @@ def _compute_results_summary(results: dict[str, Any], elapsed: float) -> None:
         "avg_policy_llm_calls_per_episode": round((total_policy_llm_calls / total) if total > 0 else 0.0, 6),
         "avg_obs_extract_llm_calls_per_episode": round((total_obs_extract_llm_calls / total) if total > 0 else 0.0, 6),
         "avg_vision_llm_calls_per_episode": round((total_vision_llm_calls / total) if total > 0 else 0.0, 6),
-        "avg_prompt_tokens_per_step": round((sum(int(ep.get("prompt_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0, 6),
-        "avg_completion_tokens_per_step": round((sum(int(ep.get("completion_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0, 6),
-        "avg_total_tokens_per_step": round((sum(int(ep.get("total_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0, 6),
+        "avg_prompt_tokens_per_step": round(
+            (sum(int(ep.get("prompt_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0,
+            6,
+        ),
+        "avg_completion_tokens_per_step": round(
+            (sum(int(ep.get("completion_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0,
+            6,
+        ),
+        "avg_total_tokens_per_step": round(
+            (sum(int(ep.get("total_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0,
+            6,
+        ),
         "avg_operator_ms_per_step": round((total_operator_duration_ms / total_steps) if total_steps > 0 else 0.0, 6),
         "avg_operator_seconds_per_task": round(((total_operator_duration_ms / 1000.0) / total) if total > 0 else 0.0, 6),
         "avg_http_roundtrip_ms_per_step": round((total_http_roundtrip_ms / total_steps) if total_steps > 0 else 0.0, 6),
@@ -669,10 +706,7 @@ def _history_lines_for_judge(history: list[dict[str, Any]] | None, *, limit: int
         err = str(item.get("error") or "").strip()
         url = str(item.get("url") or "")
         text = str(item.get("text") or "").strip()
-        out.append(
-            f"{idx + 1}. action={action or '-'} done={done} exec_ok={exec_ok} "
-            f"url={url[:180]} text={text[:120]} error={err[:140]}"
-        )
+        out.append(f"{idx + 1}. action={action or '-'} done={done} exec_ok={exec_ok} url={url[:180]} text={text[:120]} error={err[:140]}")
     return "\n".join(out)
 
 
@@ -686,15 +720,7 @@ def _step_lines_for_judge(step_traces: list[dict[str, Any]] | None, *, limit: in
         actions = step.get("actions") if isinstance(step, dict) else []
         action_types = [str(a.get("type") or "") for a in actions if isinstance(a, dict)]
         out.append(
-            f"step={int(step.get('step_index') or 0)} "
-            f"before_score={float(before.get('score') or 0.0):.2f} "
-            f"after_score={float(after.get('score') or 0.0):.2f} "
-            f"before_url={str(before.get('url') or '')[:120]} "
-            f"after_url={str(after.get('url') or '')[:120]} "
-            f"done={bool(agent.get('done'))} "
-            f"actions={','.join(action_types)[:120]} "
-            f"exec_ok={bool(execution.get('exec_ok', True))} "
-            f"error={str(execution.get('error') or '')[:140]}"
+            f"step={int(step.get('step_index') or 0)} before_score={float(before.get('score') or 0.0):.2f} after_score={float(after.get('score') or 0.0):.2f} before_url={str(before.get('url') or '')[:120]} after_url={str(after.get('url') or '')[:120]} done={bool(agent.get('done'))} actions={','.join(action_types)[:120]} exec_ok={bool(execution.get('exec_ok', True))} error={str(execution.get('error') or '')[:140]}"
         )
     return "\n".join(out)
 
@@ -718,28 +744,11 @@ async def _run_failure_judge(
     judge_max_tokens = int(os.getenv("EVAL_FAILURE_JUDGE_MAX_TOKENS", "140"))
 
     system_msg = (
-        "You are a strict evaluator for failed web-agent episodes.\n"
-        "Choose exactly one failure category from this closed set:\n"
+        "You are a strict evaluator for failed web-agent episodes.\nChoose exactly one failure category from this closed set:\n"
         + ", ".join(FAILURE_JUDGE_CATEGORIES)
-        + ".\n"
-        "Return JSON only with keys: category, reasoning.\n"
-        "reasoning must be short, concrete, and based on the evidence.\n"
-        "Do not mention multiple categories. If unsure, return UNKNOWN."
+        + ".\nReturn JSON only with keys: category, reasoning.\nreasoning must be short, concrete, and based on the evidence.\nDo not mention multiple categories. If unsure, return UNKNOWN."
     )
-    user_msg = (
-        f"TASK_PROMPT: {str(getattr(prepared_task, 'prompt', '')).strip()[:800]}\n"
-        f"USE_CASE: {str(getattr(getattr(prepared_task, 'use_case', None), 'name', '') or '')[:120]}\n"
-        f"FINAL_SUCCESS: {bool(final_success)}\n"
-        f"FINAL_SCORE: {float(final_score):.3f}\n"
-        f"FINAL_URL: {final_url[:300]}\n"
-        f"FINAL_CONTENT: {str(final_content or '')[:300]}\n"
-        "RECENT_HISTORY:\n"
-        f"{_history_lines_for_judge(history)}\n"
-        "RECENT_STEP_LOGS:\n"
-        f"{_step_lines_for_judge(episode_trace_steps)}\n"
-        "FINAL_HTML_EXCERPT:\n"
-        f"{str(final_html or '')[:4000]}"
-    )
+    user_msg = f"TASK_PROMPT: {str(getattr(prepared_task, 'prompt', '')).strip()[:800]}\nUSE_CASE: {str(getattr(getattr(prepared_task, 'use_case', None), 'name', '') or '')[:120]}\nFINAL_SUCCESS: {bool(final_success)}\nFINAL_SCORE: {float(final_score):.3f}\nFINAL_URL: {final_url[:300]}\nFINAL_CONTENT: {str(final_content or '')[:300]}\nRECENT_HISTORY:\n{_history_lines_for_judge(history)}\nRECENT_STEP_LOGS:\n{_step_lines_for_judge(episode_trace_steps)}\nFINAL_HTML_EXCERPT:\n{str(final_html or '')[:4000]}"
 
     old_provider = os.environ.get("LLM_PROVIDER")
     os.environ["LLM_PROVIDER"] = str(provider or "openai")
@@ -782,6 +791,7 @@ async def _run_failure_judge(
 
 # ── Main evaluation loop ────────────────────────────────────────
 
+
 async def run_evaluation(
     provider: str = "openai",
     model: str = "gpt-5-mini",
@@ -813,13 +823,14 @@ async def run_evaluation(
     # Re-load .env here as a guard: some imported modules may mutate env vars.
     try:
         from dotenv import load_dotenv
+
         operator_env = Path(__file__).resolve().parent / ".env"
         if operator_env.exists():
             load_dotenv(operator_env, override=True)
     except Exception:
         pass
 
-    provider_s = str(provider or os.getenv('LLM_PROVIDER') or 'openai').strip().lower()
+    provider_s = str(provider or os.getenv("LLM_PROVIDER") or "openai").strip().lower()
     use_vision = _env_bool("USE_VISION", False) or _env_bool("AGENT_USE_VISION", False)
     # Trace bundles are primarily for visual debugging, so default to capturing
     # screenshots whenever trace persistence is enabled.
@@ -829,11 +840,11 @@ async def run_evaluation(
     )
     send_allowed_tools = _env_bool("EVAL_SEND_ALLOWED_TOOLS", False)
     allowed_tools_payload = BaseAction.all_function_definitions() if send_allowed_tools else None
-    run_scope = hashlib.sha1(f"{os.getpid()}-{time.time()}".encode("utf-8")).hexdigest()[:10]
+    run_scope = hashlib.sha1(f"{os.getpid()}-{time.time()}".encode()).hexdigest()[:10]
 
     cache_path = Path(task_cache).resolve() if task_cache else TASK_CACHE
-    if provider_s == 'anthropic':
-        api_key = os.getenv('ANTHROPIC_API_KEY')
+    if provider_s == "anthropic":
+        api_key = os.getenv("ANTHROPIC_API_KEY")
         api_key_fpr = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:12] if api_key else "missing"
         logger.info(f"Eval env: ANTHROPIC_API_KEY={'set' if api_key else 'missing'} fpr={api_key_fpr}")
         if not api_key:
@@ -844,12 +855,12 @@ async def run_evaluation(
         api_key_fpr = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:12] if api_key else "missing"
         logger.info(f"Eval env: OPENAI_API_KEY={'set' if api_key else 'missing'} fpr={api_key_fpr}")
         # For sandbox-gateway routing, OPENAI_API_KEY may be intentionally absent.
-        base_url = (os.getenv('OPENAI_BASE_URL') or 'https://api.openai.com/v1').rstrip('/')
-        if not api_key and not base_url.startswith('http://sandbox-gateway') and not base_url.startswith('http://localhost') and not base_url.startswith('http://127.0.0.1'):
+        base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+        if not api_key and not base_url.startswith("http://sandbox-gateway") and not base_url.startswith("http://localhost") and not base_url.startswith("http://127.0.0.1"):
             logger.error("OPENAI_API_KEY not set. Check .env file.")
             sys.exit(1)
     logger.info("=" * 60)
-    logger.info("  Autoppia Operator – LLM Agent Evaluation")
+    logger.info("  Autoppia Operator - LLM Agent Evaluation")
     logger.info(f"  Provider:   {provider_s}")
     logger.info(f"  Model:      {model}")
     logger.info(f"  Tasks:      {num_tasks}")
@@ -865,10 +876,7 @@ async def run_evaluation(
     cpu_count = max(1, int(os.cpu_count() or 1))
     env_agent_workers = os.getenv("AGENT_SERVER_WORKERS", "").strip()
     if agent_workers is None:
-        if env_agent_workers:
-            agent_workers = max(1, int(env_agent_workers))
-        else:
-            agent_workers = min(task_concurrency, cpu_count)
+        agent_workers = max(1, int(env_agent_workers)) if env_agent_workers else min(task_concurrency, cpu_count)
     agent_workers = max(1, int(agent_workers))
 
     logger.info(f"  Repeat:     {int(repeat)}")
@@ -928,16 +936,19 @@ async def run_evaluation(
             tasks_per_use_case=max(1, int(tasks_per_use_case)),
             seed=int(seed or 0),
         )
-        logger.info(
-            f"Selected {len(tasks)} task(s) across all use cases for project={web_project_id} "
-            f"(tasks_per_use_case={max(1, int(tasks_per_use_case))})"
-        )
+        logger.info(f"Selected {len(tasks)} task(s) across all use cases for project={web_project_id} (tasks_per_use_case={max(1, int(tasks_per_use_case))})")
     else:
         # If we want distinct use cases, load more upfront then filter down.
         load_limit = num_tasks
         if distinct_use_cases:
             load_limit = max(500, num_tasks * 20)
-        tasks = load_tasks(cache_path=cache_path, use_case=use_case, web_project_id=web_project_id, task_id=task_id, limit=load_limit)
+        tasks = load_tasks(
+            cache_path=cache_path,
+            use_case=use_case,
+            web_project_id=web_project_id,
+            task_id=task_id,
+            limit=load_limit,
+        )
     logger.info(f"Loaded {len(tasks)} tasks")
 
     if not tasks:
@@ -954,7 +965,7 @@ async def run_evaluation(
             if isinstance(uc, dict):
                 uc_name = str(uc.get("name") or "")
             elif uc is not None and hasattr(uc, "name"):
-                uc_name = str(getattr(uc, "name") or "")
+                uc_name = str(uc.name or "")
             if not uc_name:
                 rest.append(t)
                 continue
@@ -978,8 +989,10 @@ async def run_evaluation(
     # Agent endpoint config
     agent_base_url = os.getenv("AGENT_BASE_URL", "").strip().rstrip("/")
     start_server = os.getenv("START_AGENT_SERVER", "1") in {"1", "true", "yes"}
+    log_stack: contextlib.ExitStack | None = None
     base_web_agent_id = os.getenv("WEB_AGENT_ID", "1").strip() or "1"
     base_validator_id = os.getenv("VALIDATOR_ID", IWA_VALIDATOR_ID or "validator_001").strip() or "validator_001"
+
     def _port_available(port: int) -> bool:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -1007,7 +1020,8 @@ async def run_evaluation(
         out_dir = SCRIPT_DIR / "data"
         out_dir.mkdir(parents=True, exist_ok=True)
         log_path = out_dir / "agent_server.log"
-        log_f = open(log_path, "a", encoding="utf-8")
+        log_stack = contextlib.ExitStack()
+        log_f = log_stack.enter_context(log_path.open("a", encoding="utf-8"))
         log_f.write(f"\n=== uvicorn main:app port={port} workers={agent_workers} ===\n")
         log_f.flush()
 
@@ -1021,14 +1035,7 @@ async def run_evaluation(
         server_env["FSM_USE_SITE_KNOWLEDGE"] = "1" if bool(use_site_knowledge) else "0"
         server_env["FSM_USE_LOCAL_HTML_CONTEXT"] = "1" if bool(use_local_html_context) else "0"
         logger.info(
-            f"Agent server env: OPENAI_MODEL={server_env.get('OPENAI_MODEL')} "
-            f"LLM_PROVIDER={server_env.get('LLM_PROVIDER')} "
-            f"FSM_USE_SITE_KNOWLEDGE={server_env.get('FSM_USE_SITE_KNOWLEDGE')} "
-            f"FSM_USE_LOCAL_HTML_CONTEXT={server_env.get('FSM_USE_LOCAL_HTML_CONTEXT')} "
-            f"AGENT_SERVER_WORKERS={agent_workers} "
-            f"START_AGENT_SERVER={os.getenv('START_AGENT_SERVER')} "
-            f"AGENT_BASE_URL={agent_base_url or 'local'} "
-            f"OPENAI_API_KEY={'set' if k else 'missing'} fpr={k_fpr}"
+            f"Agent server env: OPENAI_MODEL={server_env.get('OPENAI_MODEL')} LLM_PROVIDER={server_env.get('LLM_PROVIDER')} FSM_USE_SITE_KNOWLEDGE={server_env.get('FSM_USE_SITE_KNOWLEDGE')} FSM_USE_LOCAL_HTML_CONTEXT={server_env.get('FSM_USE_LOCAL_HTML_CONTEXT')} AGENT_SERVER_WORKERS={agent_workers} START_AGENT_SERVER={os.getenv('START_AGENT_SERVER')} AGENT_BASE_URL={agent_base_url or 'local'} OPENAI_API_KEY={'set' if k else 'missing'} fpr={k_fpr}"
         )
         server_proc = subprocess.Popen(
             [
@@ -1048,6 +1055,7 @@ async def run_evaluation(
             stderr=subprocess.STDOUT,
             env=server_env,
         )
+
         async def _wait_for_server_health(url: str, *, timeout_s: float = 15.0) -> None:
             deadline = time.time() + float(timeout_s)
             last_error: str | None = None
@@ -1069,9 +1077,6 @@ async def run_evaluation(
             agent_base_url = "http://127.0.0.1:5000"
         server_proc = None
 
-
-
-
     async def call_agent_act(
         session: aiohttp.ClientSession,
         prepared_task: Task,
@@ -1083,7 +1088,16 @@ async def run_evaluation(
         requested_model: str,
         state_in: dict[str, Any],
         screenshot: str | None = None,
-    ) -> tuple[list[BaseAction], dict, bool, str | None, str | None, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    ) -> tuple[
+        list[BaseAction],
+        dict,
+        bool,
+        str | None,
+        str | None,
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+    ]:
         payload = {
             "task_id": str(episode_task_id),
             "prompt": prepared_task.prompt,
@@ -1114,38 +1128,24 @@ async def run_evaluation(
                     if int(resp.status) >= 500 and attempt < 3:
                         body_preview = (await resp.text())[:400]
                         logger.warning(
-                            f"/act server_error attempt={attempt}/3 task={episode_task_id} step={step_index} "
-                            f"status={int(resp.status)} duration_ms={request_duration_ms} "
-                            f"body={body_preview}"
+                            f"/act server_error attempt={attempt}/3 task={episode_task_id} step={step_index} status={int(resp.status)} duration_ms={request_duration_ms} body={body_preview}"
                         )
                         await asyncio.sleep(0.35 * attempt)
                         continue
                     resp.raise_for_status()
                     data = await resp.json()
                     logger.info(
-                        f"/act ok task={episode_task_id} step={step_index} attempt={attempt} "
-                        f"status={response_status} duration_ms={request_duration_ms} "
-                        f"tool_calls={len(data.get('tool_calls') if isinstance(data, dict) and isinstance(data.get('tool_calls'), list) else [])} "
-                        f"done={int(bool(data.get('done'))) if isinstance(data, dict) else 0}"
+                        f"/act ok task={episode_task_id} step={step_index} attempt={attempt} status={response_status} duration_ms={request_duration_ms} tool_calls={len(data.get('tool_calls') if isinstance(data, dict) and isinstance(data.get('tool_calls'), list) else [])} done={int(bool(data.get('done'))) if isinstance(data, dict) else 0}"
                     )
                     break
-            except (
-                aiohttp.ClientConnectionError,
-                aiohttp.ClientOSError,
-                aiohttp.ServerDisconnectedError,
-                asyncio.TimeoutError,
-            ) as exc:
+            except (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientOSError, aiohttp.ServerDisconnectedError) as exc:
                 last_exc = exc
                 if server_proc is not None and server_proc.poll() is not None:
-                    raise RuntimeError(
-                        f"agent_server_exited code={server_proc.poll()} task={episode_task_id} step={step_index}"
-                    ) from exc
+                    raise RuntimeError(f"agent_server_exited code={server_proc.poll()} task={episode_task_id} step={step_index}") from exc
                 if attempt >= 3:
                     raise
                 logger.warning(
-                    f"/act transient failure attempt={attempt}/3 task={episode_task_id} step={step_index} "
-                    f"duration_ms={int((time.monotonic() - started_at) * 1000)} "
-                    f"err_type={type(exc).__name__} err={str(exc)}"
+                    f"/act transient failure attempt={attempt}/3 task={episode_task_id} step={step_index} duration_ms={int((time.monotonic() - started_at) * 1000)} err_type={type(exc).__name__} err={exc!s}"
                 )
                 with contextlib.suppress(Exception):
                     await _wait_for_server_health(agent_base_url, timeout_s=5.0)
@@ -1155,17 +1155,14 @@ async def run_evaluation(
                 body_preview = ""
                 if exc.status >= 500 and attempt < 3:
                     logger.warning(
-                        f"/act response_error attempt={attempt}/3 task={episode_task_id} step={step_index} "
-                        f"status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={str(exc)}"
+                        f"/act response_error attempt={attempt}/3 task={episode_task_id} step={step_index} status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s}"
                     )
                     with contextlib.suppress(Exception):
                         await _wait_for_server_health(agent_base_url, timeout_s=5.0)
                     await asyncio.sleep(min(0.5 * attempt, 1.5))
                     continue
                 logger.error(
-                    f"/act response_error task={episode_task_id} step={step_index} "
-                    f"status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} "
-                    f"err={str(exc)} body={body_preview}"
+                    f"/act response_error task={episode_task_id} step={step_index} status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s} body={body_preview}"
                 )
                 raise
         if data is None:
@@ -1341,9 +1338,21 @@ async def run_evaluation(
             episode_http_roundtrip_ms = 0
             episode_helper_models: list[str] = []
             episode_usage_breakdown = {
-                "policy": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-                "obs_extract": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-                "vision": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "policy": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+                "obs_extract": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+                "vision": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             }
             episode_model = str(model)
             final_content: str | None = None
@@ -1380,7 +1389,16 @@ async def run_evaluation(
                             "tests_passed": int(step_result.score.tests_passed),
                             "total_tests": int(step_result.score.total_tests),
                         }
-                    actions, metrics, done, content, reasoning, state_out, act_request_payload, act_raw_response = await call_agent_act(
+                    (
+                        actions,
+                        metrics,
+                        done,
+                        content,
+                        reasoning,
+                        state_out,
+                        act_request_payload,
+                        act_raw_response,
+                    ) = await call_agent_act(
                         agent_session,
                         prepared_task,
                         episode_task_id=episode_task_id,
@@ -1405,9 +1423,7 @@ async def run_evaluation(
                         model_name = llm_meta.get("model") or model
                         episode_model = str(model_name)
                         if bool(strict_model) and not _model_names_compatible(str(requested_model), str(episode_model)):
-                            raise RuntimeError(
-                                f"model_mismatch requested={requested_model} effective={episode_model} task={episode_task_id} step={step_idx}"
-                            )
+                            raise RuntimeError(f"model_mismatch requested={requested_model} effective={episode_model} task={episode_task_id} step={step_idx}")
                         if isinstance(usages, list):
                             for u in usages:
                                 if not isinstance(u, dict):
@@ -1472,8 +1488,15 @@ async def run_evaluation(
                                 "error": None,
                                 "agent_decision": (metrics.get("decision") if isinstance(metrics, dict) else None),
                                 "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
-                                "prompt_tokens": int(sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
-                                "completion_tokens": int(sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
+                                "prompt_tokens": int(
+                                    sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))
+                                ),
+                                "completion_tokens": int(
+                                    sum(
+                                        int(u.get("completion_tokens") or 0)
+                                        for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else [])
+                                    )
+                                ),
                                 "done": True,
                                 "content": final_content,
                                 "reasoning": reasoning if isinstance(reasoning, str) else None,
@@ -1503,20 +1526,24 @@ async def run_evaluation(
                                     "content": content if isinstance(content, str) else None,
                                     "reasoning": reasoning if isinstance(reasoning, str) else None,
                                     "metrics": metrics if isinstance(metrics, dict) else {},
-                                    "llm_call_breakdown": _normalize_call_breakdown((llm_meta.get("call_breakdown") if isinstance(llm_meta, dict) else None)),
-                                    "llm_usage_breakdown": _normalize_usage_breakdown((llm_meta.get("usage_breakdown") if isinstance(llm_meta, dict) else None)),
+                                    "llm_call_breakdown": _normalize_call_breakdown(llm_meta.get("call_breakdown") if isinstance(llm_meta, dict) else None),
+                                    "llm_usage_breakdown": _normalize_usage_breakdown(llm_meta.get("usage_breakdown") if isinstance(llm_meta, dict) else None),
                                     "state_in": act_request_payload.get("state_in") if isinstance(act_request_payload, dict) else {},
                                     "state_out": state_out if isinstance(state_out, dict) else {},
                                 },
                                 "action": None,
                                 "execution": {"executed": False, "done_break": True},
-                                "act_request": act_request_payload if bool(trace_full_payloads) else {
+                                "act_request": act_request_payload
+                                if bool(trace_full_payloads)
+                                else {
                                     "task_id": act_request_payload.get("task_id") if isinstance(act_request_payload, dict) else None,
                                     "url": act_request_payload.get("url") if isinstance(act_request_payload, dict) else None,
                                     "step_index": act_request_payload.get("step_index") if isinstance(act_request_payload, dict) else None,
-                                    "history_count": len((act_request_payload.get("history") or [])) if isinstance(act_request_payload, dict) else 0,
+                                    "history_count": len(act_request_payload.get("history") or []) if isinstance(act_request_payload, dict) else 0,
                                 },
-                                "act_response": act_raw_response if bool(trace_full_payloads) else {
+                                "act_response": act_raw_response
+                                if bool(trace_full_payloads)
+                                else {
                                     "done": bool(done),
                                     "content": content if isinstance(content, str) else None,
                                     "reasoning": reasoning if isinstance(reasoning, str) else None,
@@ -1529,12 +1556,20 @@ async def run_evaluation(
                         action = None
                         step_result = await evaluator.step(None)
 
-                    if os.getenv("EVAL_SAVE_TRACES", "0").lower() in {"1", "true", "yes"}:
+                    if os.getenv("EVAL_SAVE_TRACES", "0").lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                    }:
                         try:
-                            trace_dir = (SCRIPT_DIR / "data" / "traces" / str(episode_task_id))
+                            trace_dir = SCRIPT_DIR / "data" / "traces" / str(episode_task_id)
                             trace_dir.mkdir(parents=True, exist_ok=True)
                             (trace_dir / f"{step_idx:02d}.url.txt").write_text(str(step_result.snapshot.url), encoding="utf-8")
-                            (trace_dir / f"{step_idx:02d}.html").write_text(str(step_result.snapshot.html), encoding="utf-8", errors="replace")
+                            (trace_dir / f"{step_idx:02d}.html").write_text(
+                                str(step_result.snapshot.html),
+                                encoding="utf-8",
+                                errors="replace",
+                            )
                         except Exception:
                             pass
 
@@ -1570,8 +1605,18 @@ async def run_evaluation(
                                     "operator_duration_ms": int(operator_meta.get("duration_ms") or 0),
                                     "act_http_roundtrip_ms": int(operator_meta.get("http_roundtrip_ms") or 0),
                                     "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
-                                    "prompt_tokens": int(sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
-                                    "completion_tokens": int(sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
+                                    "prompt_tokens": int(
+                                        sum(
+                                            int(u.get("prompt_tokens") or 0)
+                                            for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else [])
+                                        )
+                                    ),
+                                    "completion_tokens": int(
+                                        sum(
+                                            int(u.get("completion_tokens") or 0)
+                                            for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else [])
+                                        )
+                                    ),
                                 }
                             )
                     else:
@@ -1593,8 +1638,15 @@ async def run_evaluation(
                                 "operator_duration_ms": int(operator_meta.get("duration_ms") or 0),
                                 "act_http_roundtrip_ms": int(operator_meta.get("http_roundtrip_ms") or 0),
                                 "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
-                                "prompt_tokens": int(sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
-                                "completion_tokens": int(sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
+                                "prompt_tokens": int(
+                                    sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))
+                                ),
+                                "completion_tokens": int(
+                                    sum(
+                                        int(u.get("completion_tokens") or 0)
+                                        for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else [])
+                                    )
+                                ),
                             }
                         )
 
@@ -1620,16 +1672,23 @@ async def run_evaluation(
                             "reasoning": reasoning if isinstance(reasoning, str) else None,
                             "metrics": metrics if isinstance(metrics, dict) else {},
                             "operator_metrics": operator_meta,
-                            "llm_call_breakdown": _normalize_call_breakdown((llm_meta.get("call_breakdown") if isinstance(llm_meta, dict) else None)),
-                            "llm_usage_breakdown": _normalize_usage_breakdown((llm_meta.get("usage_breakdown") if isinstance(llm_meta, dict) else None)),
+                            "llm_call_breakdown": _normalize_call_breakdown(llm_meta.get("call_breakdown") if isinstance(llm_meta, dict) else None),
+                            "llm_usage_breakdown": _normalize_usage_breakdown(llm_meta.get("usage_breakdown") if isinstance(llm_meta, dict) else None),
                             "state_in": act_request_payload.get("state_in") if isinstance(act_request_payload, dict) else {},
                             "state_out": state_out if isinstance(state_out, dict) else {},
                         },
                         "actions": [
-                            {"type": act.type, "raw": act.model_dump(mode="json", exclude_none=False)}
+                            {
+                                "type": act.type,
+                                "raw": act.model_dump(mode="json", exclude_none=False),
+                            }
                             for act in executed_actions
                         ],
-                        "execution": {"executed": bool(executed_actions or action is not None), "exec_ok": bool(exec_ok), "error": exec_err},
+                        "execution": {
+                            "executed": bool(executed_actions or action is not None),
+                            "exec_ok": bool(exec_ok),
+                            "error": exec_err,
+                        },
                     }
                     if bool(trace_full_payloads):
                         step_trace["act_request"] = act_request_payload
@@ -1639,7 +1698,7 @@ async def run_evaluation(
                             "task_id": act_request_payload.get("task_id") if isinstance(act_request_payload, dict) else None,
                             "url": act_request_payload.get("url") if isinstance(act_request_payload, dict) else None,
                             "step_index": act_request_payload.get("step_index") if isinstance(act_request_payload, dict) else None,
-                            "history_count": len((act_request_payload.get("history") or [])) if isinstance(act_request_payload, dict) else 0,
+                            "history_count": len(act_request_payload.get("history") or []) if isinstance(act_request_payload, dict) else 0,
                         }
                         step_trace["act_response"] = {
                             "done": bool(done),
@@ -1662,7 +1721,11 @@ async def run_evaluation(
                         fail_dir = out_dir / "failures"
                         fail_dir.mkdir(parents=True, exist_ok=True)
                         (fail_dir / f"{episode_task_id}.url.txt").write_text(str(step_result.snapshot.url), encoding="utf-8")
-                        (fail_dir / f"{episode_task_id}.html").write_text(str(step_result.snapshot.html), encoding="utf-8", errors="replace")
+                        (fail_dir / f"{episode_task_id}.html").write_text(
+                            str(step_result.snapshot.html),
+                            encoding="utf-8",
+                            errors="replace",
+                        )
                     except Exception:
                         pass
 
@@ -1687,7 +1750,11 @@ async def run_evaluation(
                             "category": "UNKNOWN",
                             "reasoning": f"Failure judge errored: {str(judge_err)[:220]}",
                             "model": str(os.getenv("EVAL_FAILURE_JUDGE_MODEL", "gpt-4o-mini")),
-                            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                            "usage": {
+                                "prompt_tokens": 0,
+                                "completion_tokens": 0,
+                                "total_tokens": 0,
+                            },
                             "estimated_cost_usd": 0.0,
                         }
 
@@ -1715,8 +1782,14 @@ async def run_evaluation(
                     "avg_step_seconds": round(avg_step_seconds, 4),
                     "operator_duration_ms": int(episode_operator_duration_ms),
                     "act_http_roundtrip_ms": int(episode_http_roundtrip_ms),
-                    "avg_operator_ms_per_step": round((episode_operator_duration_ms / steps_count) if steps_count > 0 else 0.0, 4),
-                    "avg_http_roundtrip_ms_per_step": round((episode_http_roundtrip_ms / steps_count) if steps_count > 0 else 0.0, 4),
+                    "avg_operator_ms_per_step": round(
+                        (episode_operator_duration_ms / steps_count) if steps_count > 0 else 0.0,
+                        4,
+                    ),
+                    "avg_http_roundtrip_ms_per_step": round(
+                        (episode_http_roundtrip_ms / steps_count) if steps_count > 0 else 0.0,
+                        4,
+                    ),
                     "final_content": final_content,
                     "vision_enabled": bool(use_vision),
                     "vision_used": bool(episode_vision_llm_calls > 0),
@@ -1803,7 +1876,11 @@ async def run_evaluation(
                         "category": "ACTION_EXECUTION_ERROR",
                         "reasoning": f"Episode raised an exception before completion: {str(e)[:220]}",
                         "model": "runtime",
-                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                        "usage": {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "total_tokens": 0,
+                        },
                         "estimated_cost_usd": 0.0,
                     }
                     ep_data["failure_judge"] = failure_judge_payload
@@ -1829,7 +1906,7 @@ async def run_evaluation(
     semaphore = asyncio.Semaphore(concurrency)
     out_dir = SCRIPT_DIR / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = Path(out_path).resolve() if out_path else (out_dir / 'eval_results.json')
+    out_path = Path(out_path).resolve() if out_path else (out_dir / "eval_results.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as agent_session:
@@ -1862,21 +1939,11 @@ async def run_evaluation(
     total = results["num_tasks"]
     succ = results["successes"]
     rate = succ / total if total > 0 else 0
-    avg_score = (
-        sum(ep["score"] for ep in results["episodes"]) / total if total > 0 else 0
-    )
-    avg_steps = (
-        sum(ep["steps"] for ep in results["episodes"]) / total if total > 0 else 0
-    )
-    avg_task_seconds = (
-        sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total if total > 0 else 0
-    )
+    avg_score = sum(ep["score"] for ep in results["episodes"]) / total if total > 0 else 0
+    avg_steps = sum(ep["steps"] for ep in results["episodes"]) / total if total > 0 else 0
+    avg_task_seconds = sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total if total > 0 else 0
     total_steps = sum(ep["steps"] for ep in results["episodes"])
-    avg_step_seconds = (
-        sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total_steps
-        if total_steps > 0
-        else 0
-    )
+    avg_step_seconds = sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total_steps if total_steps > 0 else 0
 
     _compute_results_summary(results, elapsed)
     results["partial"] = False
@@ -1907,17 +1974,10 @@ async def run_evaluation(
     print(f"  Avg LLM/step:   {float(llm_stats.get('avg_llm_calls_per_step') or 0.0):.2f}")
     print(f"  Avg LLM/task:   {float(llm_stats.get('avg_llm_calls_per_episode') or 0.0):.2f}")
     print(
-        "  Operator time: "
-        f"{float(llm_stats.get('avg_operator_ms_per_step') or 0.0):.1f}ms/step "
-        f"{float(llm_stats.get('avg_operator_seconds_per_task') or 0.0):.2f}s/task "
-        f"(HTTP {float(llm_stats.get('avg_http_roundtrip_ms_per_step') or 0.0):.1f}ms/step)"
+        f"  Operator time: {float(llm_stats.get('avg_operator_ms_per_step') or 0.0):.1f}ms/step {float(llm_stats.get('avg_operator_seconds_per_task') or 0.0):.2f}s/task (HTTP {float(llm_stats.get('avg_http_roundtrip_ms_per_step') or 0.0):.1f}ms/step)"
     )
     print(
-        "  Vision stats:   "
-        f"enabled={bool(llm_stats.get('vision_enabled'))} "
-        f"episodes={int(llm_stats.get('vision_episodes') or 0)} "
-        f"steps={int(llm_stats.get('vision_steps') or 0)} "
-        f"calls={int(llm_stats.get('vision_helper_calls_total') or 0)}"
+        f"  Vision stats:   enabled={bool(llm_stats.get('vision_enabled'))} episodes={int(llm_stats.get('vision_episodes') or 0)} steps={int(llm_stats.get('vision_steps') or 0)} calls={int(llm_stats.get('vision_helper_calls_total') or 0)}"
     )
     print(f"  Total time:     {elapsed:.1f}s")
     print("=" * 60)
@@ -1967,8 +2027,8 @@ async def run_evaluation(
 
     if server_proc:
         try:
-            log_f.flush()
-            log_f.close()
+            if log_stack is not None:
+                log_stack.close()
         except Exception:
             pass
         server_proc.terminate()
@@ -1979,11 +2039,12 @@ async def run_evaluation(
 
 # ── CLI ──────────────────────────────────────────────────────────
 
+
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Autoppia Operator - LLM Agent Evaluation")
-    parser.add_argument('--provider', default='chutes', help='LLM provider: openai|chutes|anthropic')
+    parser.add_argument("--provider", default="chutes", help="LLM provider: openai|chutes|anthropic")
     parser.add_argument("--model", default="deepseek-ai/DeepSeek-V3-0324", help="Model name")
     parser.add_argument("--num-tasks", type=int, default=20, help="Number of tasks to evaluate")
     parser.add_argument("--max-steps", type=int, default=15, help="Max steps per episode")
@@ -1993,24 +2054,94 @@ def main():
     parser.add_argument("--seed", type=int, default=None, help="Fixed seed (otherwise random)")
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each selected task N times")
     parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
-    parser.add_argument('--out', default=None, help='Output JSON path (default: data/eval_results.json)')
-    parser.add_argument('--task-cache', default=None, help='Task cache JSON path')
-    parser.add_argument("--strict-model", action=argparse.BooleanOptionalAction, default=True, help="Fail episodes when effective model != requested model")
-    parser.add_argument("--distinct-use-cases", action="store_true", help="Pick tasks with distinct use cases")
-    parser.add_argument("--all-use-cases", action="store_true", help="Select all use cases for the given --web-project-id")
-    parser.add_argument("--tasks-per-use-case", type=int, default=1, help="When --all-use-cases is set, number of tasks sampled per use case")
-    parser.add_argument("--task-concurrency", type=int, default=1, help="Number of episodes to evaluate concurrently")
-    parser.add_argument("--agent-workers", type=int, default=None, help="Number of uvicorn worker processes to serve /act locally (default: min(task_concurrency, cpu_count) or AGENT_SERVER_WORKERS)")
-    parser.add_argument("--list-web-projects", action="store_true", help="List web projects available in --task-cache and exit")
-    parser.add_argument("--list-use-cases", action="store_true", help="List use cases (optionally filtered by --web-project-id) and exit")
-    parser.add_argument("--save-act-traces", action="store_true", help="Persist /act request-response traces per step")
+    parser.add_argument("--out", default=None, help="Output JSON path (default: data/eval_results.json)")
+    parser.add_argument("--task-cache", default=None, help="Task cache JSON path")
+    parser.add_argument(
+        "--strict-model",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Fail episodes when effective model != requested model",
+    )
+    parser.add_argument(
+        "--distinct-use-cases",
+        action="store_true",
+        help="Pick tasks with distinct use cases",
+    )
+    parser.add_argument(
+        "--all-use-cases",
+        action="store_true",
+        help="Select all use cases for the given --web-project-id",
+    )
+    parser.add_argument(
+        "--tasks-per-use-case",
+        type=int,
+        default=1,
+        help="When --all-use-cases is set, number of tasks sampled per use case",
+    )
+    parser.add_argument(
+        "--task-concurrency",
+        type=int,
+        default=1,
+        help="Number of episodes to evaluate concurrently",
+    )
+    parser.add_argument(
+        "--agent-workers",
+        type=int,
+        default=None,
+        help="Number of uvicorn worker processes to serve /act locally (default: min(task_concurrency, cpu_count) or AGENT_SERVER_WORKERS)",
+    )
+    parser.add_argument(
+        "--list-web-projects",
+        action="store_true",
+        help="List web projects available in --task-cache and exit",
+    )
+    parser.add_argument(
+        "--list-use-cases",
+        action="store_true",
+        help="List use cases (optionally filtered by --web-project-id) and exit",
+    )
+    parser.add_argument(
+        "--save-act-traces",
+        action="store_true",
+        help="Persist /act request-response traces per step",
+    )
     parser.add_argument("--trace-dir", default=None, help="Custom trace directory")
-    parser.add_argument("--trace-full-payloads", action=argparse.BooleanOptionalAction, default=True, help="Include full payloads (snapshot_html/screenshot/history)")
-    parser.add_argument("--include-reasoning", action=argparse.BooleanOptionalAction, default=False, help="Request reasoning from /act and store it in traces")
-    parser.add_argument("--use-site-knowledge", action=argparse.BooleanOptionalAction, default=False, help="Expose project-level site knowledge to the operator prompt")
-    parser.add_argument("--use-local-html-context", action=argparse.BooleanOptionalAction, default=False, help="Expose active-form and local DOM HTML snippets to the operator prompt")
-    parser.add_argument("--enable-score-cheating", action=argparse.BooleanOptionalAction, default=False, help="Inject evaluator score feedback into state_in for local debug")
-    parser.add_argument("--failure-judge", action=argparse.BooleanOptionalAction, default=True, help="Run a cheap LLM judge on failed episodes and store category/reasoning")
+    parser.add_argument(
+        "--trace-full-payloads",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include full payloads (snapshot_html/screenshot/history)",
+    )
+    parser.add_argument(
+        "--include-reasoning",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Request reasoning from /act and store it in traces",
+    )
+    parser.add_argument(
+        "--use-site-knowledge",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Expose project-level site knowledge to the operator prompt",
+    )
+    parser.add_argument(
+        "--use-local-html-context",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Expose active-form and local DOM HTML snippets to the operator prompt",
+    )
+    parser.add_argument(
+        "--enable-score-cheating",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Inject evaluator score feedback into state_in for local debug",
+    )
+    parser.add_argument(
+        "--failure-judge",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run a cheap LLM judge on failed episodes and store category/reasoning",
+    )
     args = parser.parse_args()
 
     cache_path = Path(args.task_cache).resolve() if args.task_cache else TASK_CACHE
@@ -2023,7 +2154,10 @@ def main():
                 print(f"- {project_id}: {int(payload.get('count') or 0)} task(s)")
             print("=" * 60)
         else:
-            print_task_catalog(catalog, only_project=args.web_project_id if args.web_project_id else None)
+            print_task_catalog(
+                catalog,
+                only_project=args.web_project_id if args.web_project_id else None,
+            )
         return
 
     asyncio.run(

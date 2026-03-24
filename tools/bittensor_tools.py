@@ -18,7 +18,7 @@ def _json_dump(payload: Any) -> str:
 def _to_list(value: Any) -> list[Any]:
     if value is None:
         return []
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return list(value)
     if isinstance(value, dict):
         return list(value.values())
@@ -58,15 +58,11 @@ class MetaRow:
         }
 
 
-def _load_metagraph(
-    netuid: int, network: str, chain_endpoint: str | None
-) -> tuple[dict[str, Any], list[str], list[float], list[float]]:
+def _load_metagraph(netuid: int, network: str, chain_endpoint: str | None) -> tuple[dict[str, Any], list[str], list[float], list[float]]:
     try:
         import bittensor as bt
     except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "bittensor is not installed in this environment. Install with: pip install bittensor"
-        ) from exc
+        raise RuntimeError("bittensor is not installed in this environment. Install with: pip install bittensor") from exc
 
     params = {"network": network}
     if chain_endpoint:
@@ -82,14 +78,23 @@ def _load_metagraph(
     metas: dict[str, Any] = {"netuid": int(netuid), "network": network}
     if chain_endpoint:
         metas["chain_endpoint"] = chain_endpoint
-    return metas, [str(h) for h in hotkeys], [_float(v) for v in incentives], [_float(v) for v in stakes]
+    return (
+        metas,
+        [str(h) for h in hotkeys],
+        [_float(v) for v in incentives],
+        [_float(v) for v in stakes],
+    )
 
 
 def _build_snapshot(netuid: int, network: str, chain_endpoint: str | None) -> list[MetaRow]:
     _, hotkeys, incentives, stakes = _load_metagraph(netuid=netuid, network=network, chain_endpoint=chain_endpoint)
 
     # Rank by incentive descending
-    order = sorted(range(len(hotkeys)), key=lambda uid: incentives[uid] if uid < len(incentives) else 0.0, reverse=True)
+    order = sorted(
+        range(len(hotkeys)),
+        key=lambda uid: incentives[uid] if uid < len(incentives) else 0.0,
+        reverse=True,
+    )
     rank_for_uid: dict[int, int] = {uid: idx + 1 for idx, uid in enumerate(order)}
 
     rows: list[MetaRow] = []
@@ -185,9 +190,7 @@ def cmd_uid_stats(args: argparse.Namespace) -> int:
 def cmd_user_miner(args: argparse.Namespace) -> int:
     hotkey = (args.hotkey or os.getenv("SN36_HOTKEY", "")).strip()
     if not hotkey:
-        raise RuntimeError(
-            "SN36_HOTKEY is not set. Run with --hotkey or set SN36_HOTKEY env var."
-        )
+        raise RuntimeError("SN36_HOTKEY is not set. Run with --hotkey or set SN36_HOTKEY env var.")
 
     rows = _build_snapshot(args.netuid, args.network, args.chain_endpoint)
     matches = [row for row in rows if row.hotkey == hotkey]
@@ -198,11 +201,7 @@ def cmd_user_miner(args: argparse.Namespace) -> int:
         "hotkey": hotkey,
         "miner_count": len(matches),
         "rows": [row.to_dict() for row in matches],
-        "message": (
-            "Found one or more local UID candidates for this hotkey."
-            if matches
-            else "No metagraph match for SN36_HOTKEY."
-        ),
+        "message": ("Found one or more local UID candidates for this hotkey." if matches else "No metagraph match for SN36_HOTKEY."),
     }
     print(_json_dump(payload))
     return 0 if matches else 2

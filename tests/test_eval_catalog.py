@@ -21,10 +21,34 @@ def test_build_task_catalog_groups_projects_and_use_cases(tmp_path: Path) -> Non
         json.dumps(
             {
                 "tasks": [
-                    {"id": "1", "web_project_id": "proj_a", "use_case": {"name": "LOGIN"}, "prompt": "p1", "url": "https://a"},
-                    {"id": "2", "web_project_id": "proj_a", "use_case": {"name": "LOGIN"}, "prompt": "p2", "url": "https://a"},
-                    {"id": "3", "web_project_id": "proj_a", "use_case": {"name": "SEARCH"}, "prompt": "p3", "url": "https://a"},
-                    {"id": "4", "web_project_id": "proj_b", "use_case": {"name": "BUY"}, "prompt": "p4", "url": "https://b"},
+                    {
+                        "id": "1",
+                        "web_project_id": "proj_a",
+                        "use_case": {"name": "LOGIN"},
+                        "prompt": "p1",
+                        "url": "https://a",
+                    },
+                    {
+                        "id": "2",
+                        "web_project_id": "proj_a",
+                        "use_case": {"name": "LOGIN"},
+                        "prompt": "p2",
+                        "url": "https://a",
+                    },
+                    {
+                        "id": "3",
+                        "web_project_id": "proj_a",
+                        "use_case": {"name": "SEARCH"},
+                        "prompt": "p3",
+                        "url": "https://a",
+                    },
+                    {
+                        "id": "4",
+                        "web_project_id": "proj_b",
+                        "use_case": {"name": "BUY"},
+                        "prompt": "p4",
+                        "url": "https://b",
+                    },
                 ]
             }
         ),
@@ -41,10 +65,34 @@ def test_build_task_catalog_groups_projects_and_use_cases(tmp_path: Path) -> Non
 def test_select_all_use_case_tasks_returns_one_per_use_case(tmp_path: Path) -> None:
     eval_mod = _load_eval_module()
     raw_tasks = [
-        {"id": "1", "web_project_id": "proj_a", "use_case": {"name": "LOGIN"}, "prompt": "p1", "url": "https://a"},
-        {"id": "2", "web_project_id": "proj_a", "use_case": {"name": "LOGIN"}, "prompt": "p2", "url": "https://a"},
-        {"id": "3", "web_project_id": "proj_a", "use_case": {"name": "SEARCH"}, "prompt": "p3", "url": "https://a"},
-        {"id": "4", "web_project_id": "proj_b", "use_case": {"name": "BUY"}, "prompt": "p4", "url": "https://b"},
+        {
+            "id": "1",
+            "web_project_id": "proj_a",
+            "use_case": {"name": "LOGIN"},
+            "prompt": "p1",
+            "url": "https://a",
+        },
+        {
+            "id": "2",
+            "web_project_id": "proj_a",
+            "use_case": {"name": "LOGIN"},
+            "prompt": "p2",
+            "url": "https://a",
+        },
+        {
+            "id": "3",
+            "web_project_id": "proj_a",
+            "use_case": {"name": "SEARCH"},
+            "prompt": "p3",
+            "url": "https://a",
+        },
+        {
+            "id": "4",
+            "web_project_id": "proj_b",
+            "use_case": {"name": "BUY"},
+            "prompt": "p4",
+            "url": "https://b",
+        },
     ]
     selected = eval_mod.select_all_use_case_tasks(raw_tasks, web_project_id="proj_a", tasks_per_use_case=1, seed=7)
     selected_ids = {str(t.id) for t in selected}

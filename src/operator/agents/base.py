@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
-
 import json
-import os
 import time
+from typing import Any
 
 from src.operator.api.act_protocol import (
     _act_http_response,
@@ -15,7 +13,12 @@ from src.operator.api.act_protocol import (
     _serialize_use_case,
     use_vision,
 )
-from src.operator.support.iwa import BaseAction, IWA_ACT_PROTOCOL_VERSION, IWebAgent, Task
+from src.operator.support.iwa import (
+    IWA_ACT_PROTOCOL_VERSION,
+    BaseAction,
+    IWebAgent,
+    Task,
+)
 from src.operator.support.telemetry import (
     attach_operator_metrics,
     log_act_failure,
@@ -65,9 +68,7 @@ class BaseApifiedWebAgent(IWebAgent):
                 converted = create_action_fn(action) if callable(create_action_fn) else None
             except Exception as exc:
                 logger.error(
-                    f"[AGENT_TRACE] create_action failed task_id={task_id} step_index={int(step_index)} "
-                    f"action_type={str(action.get('type') or '')} err={str(exc)} "
-                    f"payload={json.dumps(action, ensure_ascii=True)[:500]}"
+                    f"[AGENT_TRACE] create_action failed task_id={task_id} step_index={int(step_index)} action_type={action.get('type') or ''!s} err={exc!s} payload={json.dumps(action, ensure_ascii=True)[:500]}"
                 )
                 continue
             if converted is not None:
@@ -125,10 +126,7 @@ class BaseApifiedWebAgent(IWebAgent):
             try:
                 payload = action if isinstance(action, dict) else action.model_dump(exclude_none=True)
             except Exception as exc:
-                logger.error(
-                    f"[AGENT_TRACE] /act action normalization failed task_id={task_id} step_index={step_index} "
-                    f"err={str(exc)} raw={str(action)[:500]}"
-                )
+                logger.error(f"[AGENT_TRACE] /act action normalization failed task_id={task_id} step_index={step_index} err={exc!s} raw={str(action)[:500]}")
                 continue
             normalized.append(_sanitize_action_payload(payload))
         return normalized

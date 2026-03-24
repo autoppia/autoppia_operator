@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-
+import contextlib
 import os
+from typing import Any
 
 import httpx
 
@@ -27,7 +27,7 @@ def is_sandbox_gateway_base_url(base_url: str) -> bool:
 
 
 def _llm_provider() -> str:
-    return (os.getenv('LLM_PROVIDER') or os.getenv('OPENAI_PROVIDER') or 'openai').strip().lower()
+    return (os.getenv("LLM_PROVIDER") or os.getenv("OPENAI_PROVIDER") or "openai").strip().lower()
 
 
 class OpenAIGateway:
@@ -36,15 +36,15 @@ class OpenAIGateway:
     def __init__(
         self,
         *,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
         self.base_url = (base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
         self.api_key = api_key  # If None, read from env per request.
         self.timeout_seconds = float(timeout_seconds)
 
-    def chat_completions(self, *, task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    def chat_completions(self, *, task_id: str, body: dict[str, Any]) -> dict[str, Any]:
         api_key = self.api_key if self.api_key is not None else os.getenv("OPENAI_API_KEY", "")
         if not api_key and not is_sandbox_gateway_base_url(self.base_url):
             raise RuntimeError("OPENAI_API_KEY not set")
@@ -96,26 +96,26 @@ class AnthropicGateway:
     def __init__(
         self,
         *,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         timeout_seconds: float = 30.0,
-        anthropic_version: str = '2023-06-01',
+        anthropic_version: str = "2023-06-01",
     ) -> None:
-        self.base_url = (base_url or os.getenv('ANTHROPIC_BASE_URL', 'https://api.anthropic.com')).rstrip('/')
+        self.base_url = (base_url or os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")).rstrip("/")
         self.api_key = api_key  # If None, read from env per request.
         self.timeout_seconds = float(timeout_seconds)
         self.anthropic_version = anthropic_version
 
-    def messages(self, *, task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        api_key = self.api_key if self.api_key is not None else os.getenv('ANTHROPIC_API_KEY', '')
+    def messages(self, *, task_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        api_key = self.api_key if self.api_key is not None else os.getenv("ANTHROPIC_API_KEY", "")
         if not api_key:
-            raise RuntimeError('ANTHROPIC_API_KEY not set')
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
 
         headers = {
-            'content-type': 'application/json',
-            'x-api-key': api_key,
-            'anthropic-version': self.anthropic_version,
-            'IWA-Task-ID': str(task_id),
+            "content-type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": self.anthropic_version,
+            "IWA-Task-ID": str(task_id),
         }
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -127,37 +127,37 @@ class AnthropicGateway:
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as e:
-                detail = (e.response.text or '')[:200]
+                detail = (e.response.text or "")[:200]
                 raise RuntimeError(f"Anthropic error ({e.response.status_code}): {detail}") from e
 
             raw = resp.json()
 
         # Extract text
-        text = ''
+        text = ""
         try:
-            parts = raw.get('content') if isinstance(raw, dict) else None
+            parts = raw.get("content") if isinstance(raw, dict) else None
             if isinstance(parts, list):
                 bits = []
                 for p in parts:
-                    if isinstance(p, dict) and p.get('type') == 'text':
-                        bits.append(str(p.get('text') or ''))
-                text = ''.join(bits)
+                    if isinstance(p, dict) and p.get("type") == "text":
+                        bits.append(str(p.get("text") or ""))
+                text = "".join(bits)
         except Exception:
-            text = ''
+            text = ""
 
-        usage = raw.get('usage') if isinstance(raw, dict) else None
-        input_tokens = int((usage or {}).get('input_tokens') or 0) if isinstance(usage, dict) else 0
-        output_tokens = int((usage or {}).get('output_tokens') or 0) if isinstance(usage, dict) else 0
+        usage = raw.get("usage") if isinstance(raw, dict) else None
+        input_tokens = int((usage or {}).get("input_tokens") or 0) if isinstance(usage, dict) else 0
+        output_tokens = int((usage or {}).get("output_tokens") or 0) if isinstance(usage, dict) else 0
 
         # Normalize to OpenAI-like response.
         return {
-            'choices': [{'message': {'content': text}}],
-            'usage': {
-                'prompt_tokens': input_tokens,
-                'completion_tokens': output_tokens,
-                'total_tokens': input_tokens + output_tokens,
+            "choices": [{"message": {"content": text}}],
+            "usage": {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
             },
-            'model': raw.get('model') if isinstance(raw, dict) else None,
+            "model": raw.get("model") if isinstance(raw, dict) else None,
         }
 
 
@@ -187,9 +187,9 @@ def _message_content_text_len(content: Any) -> int:
 
 def _normalize_usage_from_response(
     *,
-    raw_resp: Dict[str, Any],
-    messages: List[Dict[str, Any]],
-) -> Dict[str, int]:
+    raw_resp: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> dict[str, int]:
     usage = raw_resp.get("usage") if isinstance(raw_resp.get("usage"), dict) else {}
     pt = usage.get("prompt_tokens")
     ct = usage.get("completion_tokens")
@@ -207,16 +207,18 @@ def _normalize_usage_from_response(
         ct_i = 0
 
     if pt_i > 0 or ct_i > 0:
-        return {"prompt_tokens": pt_i, "completion_tokens": ct_i, "total_tokens": pt_i + ct_i}
+        return {
+            "prompt_tokens": pt_i,
+            "completion_tokens": ct_i,
+            "total_tokens": pt_i + ct_i,
+        }
 
     # Fallback estimate for providers/gateways that omit usage:
     # ~4 chars/token is a coarse but practical default.
     msg_chars = 0
     for m in messages:
-        try:
+        with contextlib.suppress(Exception):
             msg_chars += _message_content_text_len(m.get("content"))
-        except Exception:
-            pass
     out_chars = 0
     try:
         out_chars = len(str(raw_resp.get("choices", [{}])[0].get("message", {}).get("content") or ""))
@@ -224,18 +226,22 @@ def _normalize_usage_from_response(
         out_chars = 0
     est_pt = max(1, msg_chars // 4) if msg_chars > 0 else 0
     est_ct = max(1, out_chars // 4) if out_chars > 0 else 0
-    return {"prompt_tokens": int(est_pt), "completion_tokens": int(est_ct), "total_tokens": int(est_pt + est_ct)}
+    return {
+        "prompt_tokens": int(est_pt),
+        "completion_tokens": int(est_ct),
+        "total_tokens": int(est_pt + est_ct),
+    }
 
 
 def _openai_chat_with_compat(
     *,
     task_id: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     model: str,
     temperature: float,
     max_tokens: int,
-) -> Dict[str, Any]:
-    body: Dict[str, Any] = {
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
         "model": str(model),
         "messages": messages,
     }
@@ -252,7 +258,7 @@ def _openai_chat_with_compat(
             }
         )
 
-    def _post(b: Dict[str, Any]) -> Dict[str, Any]:
+    def _post(b: dict[str, Any]) -> dict[str, Any]:
         resp = _openai.chat_completions(task_id=task_id, body=b)
         if isinstance(resp, dict):
             resp["usage"] = _normalize_usage_from_response(raw_resp=resp, messages=messages)
@@ -286,11 +292,11 @@ def _openai_chat_with_compat(
 def openai_chat_completions(
     *,
     task_id: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     model: str,
     temperature: float = 0.2,
     max_tokens: int = 300,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Provider-agnostic "chat completions" used by the agent.
 
     For historical reasons this is named openai_chat_completions, but it supports:
@@ -323,9 +329,7 @@ def openai_chat_completions(
             # transparently retry against OpenAI when a direct key is available.
             # This avoids deterministic-fallback-only behavior in eval loops.
             err_msg = str(err or "")
-            allow_model_fallback = str(os.getenv("CHUTES_MODEL_FALLBACK_TO_OPENAI", "1")).strip().lower() not in {
-                "0", "false", "no"
-            }
+            allow_model_fallback = str(os.getenv("CHUTES_MODEL_FALLBACK_TO_OPENAI", "1")).strip().lower() not in {"0", "false", "no"}
             if "404" in err_msg and allow_model_fallback and os.getenv("OPENAI_API_KEY"):
                 resp = _openai_chat_with_compat(
                     task_id=task_id,
@@ -339,30 +343,30 @@ def openai_chat_completions(
                 return resp
             raise
 
-    if provider == 'anthropic':
+    if provider == "anthropic":
         # Convert OpenAI-style messages into Anthropic messages+system.
-        system = ''
-        user = ''
+        system = ""
+        user = ""
         try:
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
-                if msg.get('role') == 'system' and not system:
-                    system = str(msg.get('content') or '')
-                if msg.get('role') == 'user' and not user:
-                    user = str(msg.get('content') or '')
+                if msg.get("role") == "system" and not system:
+                    system = str(msg.get("content") or "")
+                if msg.get("role") == "user" and not user:
+                    user = str(msg.get("content") or "")
         except Exception:
-            system = ''
-            user = ''
+            system = ""
+            user = ""
 
-        body: Dict[str, Any] = {
-            'model': m,
-            'max_tokens': int(max_tokens),
-            'messages': [{'role': 'user', 'content': user}],
-            'temperature': float(temperature),
+        body: dict[str, Any] = {
+            "model": m,
+            "max_tokens": int(max_tokens),
+            "messages": [{"role": "user", "content": user}],
+            "temperature": float(temperature),
         }
         if system:
-            body['system'] = system
+            body["system"] = system
 
         resp = _anthropic.messages(task_id=task_id, body=body)
         if isinstance(resp, dict):
@@ -382,11 +386,11 @@ def openai_chat_completions(
 def openai_vision_chat_completions(
     *,
     task_id: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     model: str,
     temperature: float = 0.0,
     max_tokens: int = 300,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """OpenAI-compatible multimodal chat completions for screenshot/image analysis.
 
     This intentionally bypasses provider switching so the FSM can rely on an OpenAI

@@ -1,9 +1,40 @@
 from __future__ import annotations
 
-from .utils import *
-from .state import *
-from .candidates import *
-from .site_knowledge import *
+import contextlib
+import hashlib
+import json
+import re
+from typing import Any
+from urllib.parse import urlsplit
+
+from bs4 import BeautifulSoup
+
+from agent_test_support import _norm_ws
+
+from . import AgentState, Candidate
+from .state import ProgressEffect
+from .utils import (
+    HISTORY_RECENT_LIMIT,
+    MAX_HISTORY_SUMMARY_CHARS,
+    _anchor_overlap_score,
+    _build_site_knowledge,
+    _candidate_text,
+    _dedupe_keep_order,
+    _env_bool,
+    _env_int,
+    _fact_overlap_score,
+    _labelish_text,
+    _looks_like_informational_task,
+    _normalize_use_case_info,
+    _normalize_working_state,
+    _supported_browser_tool_names,
+    _task_constraints,
+    _unavailable_browser_tools,
+    _value_line_text,
+    _valueish_text,
+    _working_state_summary,
+)
+
 
 class ObsBuilder:
     def _group_label_for_candidate(self, cand: Candidate) -> str:
@@ -31,11 +62,13 @@ class ObsBuilder:
             value = str(constraints.get(key) or "").strip()
             if value:
                 return True
-        if re.search(r"<\s*(username|email|password|signup_email|signup_password)\s*>", prompt, flags=re.I):
+        if re.search(
+            r"<\s*(username|email|password|signup_email|signup_password)\s*>",
+            prompt,
+            flags=re.I,
+        ):
             return True
-        if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", prompt):
-            return True
-        return False
+        return bool(re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", prompt))
 
     def _candidate_action_tags(self, cand: Candidate) -> set[str]:
         blob = " ".join([cand.text, cand.href, cand.field_hint, cand.field_kind, cand.group_label]).lower()
@@ -59,8 +92,8 @@ class ObsBuilder:
         *,
         prompt: str,
         state: AgentState,
-        candidates: List[Candidate],
-    ) -> Dict[str, Any]:
+        candidates: list[Candidate],
+    ) -> dict[str, Any]:
         task_ops = self._task_operation_hints(prompt)
         mutation_ops = sorted(task_ops.intersection({"create", "update", "delete"}))
         available_ops: set[str] = set()
@@ -98,16 +131,10 @@ class ObsBuilder:
             elif login_available:
                 preferred_transition = "login"
         local_mutation_controls_visible = bool(mutation_ops) and any(op in available_ops for op in mutation_ops)
-        active_manage_context = bool(local_mutation_controls_visible) and (
-            bool(state.form_progress.active_group_candidate_ids) or bool(state.form_progress.active_group_label)
-        )
-        strategy_parts: List[str] = []
+        active_manage_context = bool(local_mutation_controls_visible) and (bool(state.form_progress.active_group_candidate_ids) or bool(state.form_progress.active_group_label))
+        strategy_parts: list[str] = []
         if read_only_for_task:
-            strategy_parts.append(
-                "Current page appears read-only for the requested operation: missing "
-                + ", ".join(missing_ops[:3])
-                + "."
-            )
+            strategy_parts.append("Current page appears read-only for the requested operation: missing " + ", ".join(missing_ops[:3]) + ".")
             if preferred_transition == "register":
                 strategy_parts.append("Prefer registration to reach an authenticated management context.")
             elif preferred_transition == "login":
@@ -134,7 +161,7 @@ class ObsBuilder:
             "strategy_summary": strategy_summary,
         }
 
-    def build_text_ir(self, snapshot_html: str) -> Dict[str, Any]:
+    def build_text_ir(self, snapshot_html: str) -> dict[str, Any]:
         html = str(snapshot_html or "")
         if not html:
             return {
@@ -164,17 +191,15 @@ class ObsBuilder:
         try:
             soup = BeautifulSoup(html, "lxml")
             for node in soup(["script", "style", "noscript"]):
-                try:
+                with contextlib.suppress(Exception):
                     node.decompose()
-                except Exception:
-                    pass
             title = ""
             try:
                 title_tag = soup.find("title")
                 title = _norm_ws(title_tag.get_text(" ", strip=True) if title_tag else "")
             except Exception:
                 title = ""
-            headings: List[str] = []
+            headings: list[str] = []
             for h in soup.find_all(["h1", "h2", "h3"], limit=25):
                 txt = _norm_ws(h.get_text(" ", strip=True))
                 if txt:
@@ -219,7 +244,7 @@ class ObsBuilder:
                 "html_excerpt": str(html)[:12000],
             }
 
-    def _visible_lines(self, soup: Any) -> List[str]:
+    def _visible_lines(self, soup: Any) -> list[str]:
         try:
             raw = str((soup.body or soup).get_text("\n", strip=True))
         except Exception:
@@ -227,8 +252,8 @@ class ObsBuilder:
         lines = [_norm_ws(line)[:220] for line in raw.splitlines() if _norm_ws(line)]
         return _dedupe_keep_order(lines, 160)
 
-    def _extract_page_facts(self, *, soup: Any, visible_lines: List[str]) -> List[str]:
-        facts: List[str] = []
+    def _extract_page_facts(self, *, soup: Any, visible_lines: list[str]) -> list[str]:
+        facts: list[str] = []
 
         def section_context(idx: int, current_label: str) -> str:
             best = ""
@@ -252,7 +277,7 @@ class ObsBuilder:
                     score += 1
                 if lowered.startswith("view "):
                     score -= 2
-                if "toggle" in lowered or "search" == lowered:
+                if "toggle" in lowered or lowered == "search":
                     score -= 3
                 if score > best_score:
                     best = candidate
@@ -262,11 +287,7 @@ class ObsBuilder:
         # Table / row pairs
         try:
             for row in soup.find_all(["tr"], limit=80):
-                cells = [
-                    _norm_ws(cell.get_text(" ", strip=True))
-                    for cell in row.find_all(["th", "td"], limit=4)
-                    if _norm_ws(cell.get_text(" ", strip=True))
-                ]
+                cells = [_norm_ws(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"], limit=4) if _norm_ws(cell.get_text(" ", strip=True))]
                 if len(cells) >= 2 and _labelish_text(cells[0]) and _valueish_text(cells[1]):
                     facts.append(f"{cells[0]}: {cells[1]}"[:180])
         except Exception:
@@ -314,8 +335,8 @@ class ObsBuilder:
 
         return _dedupe_keep_order(facts, 16)
 
-    def _extract_visible_value_lines(self, *, visible_lines: List[str]) -> List[str]:
-        lines: List[str] = []
+    def _extract_visible_value_lines(self, *, visible_lines: list[str]) -> list[str]:
+        lines: list[str] = []
         total = len(visible_lines)
 
         def section_context(idx: int, current_label: str) -> str:
@@ -340,7 +361,7 @@ class ObsBuilder:
                     score += 1
                 if lowered.startswith("view "):
                     score -= 2
-                if "toggle" in lowered or "search" == lowered:
+                if "toggle" in lowered or lowered == "search":
                     score -= 3
                 if score > best_score:
                     best = candidate
@@ -367,11 +388,11 @@ class ObsBuilder:
         self,
         *,
         prompt: str,
-        visible_lines: List[str],
-        page_facts: List[str],
-        value_lines: List[str],
-    ) -> List[str]:
-        ranked: List[tuple[int, str]] = []
+        visible_lines: list[str],
+        page_facts: list[str],
+        value_lines: list[str],
+    ) -> list[str]:
+        ranked: list[tuple[int, str]] = []
         seen: set[str] = set()
         for source in [page_facts[:12], value_lines[:16], visible_lines[:80]]:
             for item in source:
@@ -393,15 +414,15 @@ class ObsBuilder:
         selected = [text for score, text in ranked if score > 0][:16]
         if selected:
             return selected
-        fallback: List[str] = []
-        for item in (value_lines[:12] + visible_lines[:12]):
+        fallback: list[str] = []
+        for item in value_lines[:12] + visible_lines[:12]:
             clean = _norm_ws(item)
             if clean and clean not in fallback:
                 fallback.append(clean[:180])
         return fallback[:16]
 
-    def _likely_answers(self, *, prompt: str, page_facts: List[str]) -> List[str]:
-        scored: List[tuple[int, str]] = []
+    def _likely_answers(self, *, prompt: str, page_facts: list[str]) -> list[str]:
+        scored: list[tuple[int, str]] = []
         for fact in page_facts:
             clean = _norm_ws(fact)
             if not clean:
@@ -415,23 +436,23 @@ class ObsBuilder:
         scored.sort(key=lambda item: (item[0], len(item[1])), reverse=True)
         return [fact for score, fact in scored[:6] if score > 0] or [fact for _, fact in scored[:3]]
 
-    def _extract_forms(self, soup: Any) -> List[Dict[str, Any]]:
-        out: List[Dict[str, Any]] = []
+    def _extract_forms(self, soup: Any) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         for idx, form in enumerate(soup.find_all("form", limit=12), start=1):
             try:
                 attrs = form.attrs if isinstance(getattr(form, "attrs", None), dict) else {}
                 form_text = _norm_ws(form.get_text(" ", strip=True))
-                controls: List[Dict[str, Any]] = []
-                commit_controls: List[str] = []
+                controls: list[dict[str, Any]] = []
+                commit_controls: list[str] = []
                 for control in form.find_all(["input", "textarea", "select", "button"], limit=20):
                     c_attrs = control.attrs if isinstance(getattr(control, "attrs", None), dict) else {}
                     tag = str(getattr(control, "name", "") or "").lower()
                     label = self._field_hint_from_node(control)
                     required = ("required" in c_attrs) or (str(c_attrs.get("aria-required") or "").strip().lower() == "true")
-                    options: List[str] = []
+                    options: list[str] = []
                     current_value = _norm_ws(c_attrs.get("value"))
                     if tag == "select":
-                        selected_texts: List[str] = []
+                        selected_texts: list[str] = []
                         for option in control.find_all("option", limit=12):
                             opt_text = _norm_ws(option.get_text(" ", strip=True))
                             opt_value = _norm_ws(option.get("value"))
@@ -470,8 +491,24 @@ class ObsBuilder:
                             _norm_ws(control.get_text(" ", strip=True)),
                         ]
                     ).lower()
-                    if tag == "button" or str(c_attrs.get("type") or "").strip().lower() in {"submit", "button"} or any(
-                        token in role_blob for token in ("submit", "save", "apply", "search", "find", "continue", "register", "sign up", "log in", "sign in")
+                    if (
+                        tag == "button"
+                        or str(c_attrs.get("type") or "").strip().lower() in {"submit", "button"}
+                        or any(
+                            token in role_blob
+                            for token in (
+                                "submit",
+                                "save",
+                                "apply",
+                                "search",
+                                "find",
+                                "continue",
+                                "register",
+                                "sign up",
+                                "log in",
+                                "sign in",
+                            )
+                        )
                     ):
                         commit_label = _candidate_text(
                             label,
@@ -535,15 +572,15 @@ class ObsBuilder:
         words = clean.split()
         return " ".join(words[:16])[:160]
 
-    def _control_groups_from_forms(self, forms: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        groups: List[Dict[str, Any]] = []
+    def _control_groups_from_forms(self, forms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        groups: list[dict[str, Any]] = []
         for idx, form in enumerate(forms[:8], start=1):
             if not isinstance(form, dict):
                 continue
             controls = form.get("controls") if isinstance(form.get("controls"), list) else []
             if not controls:
                 continue
-            summary: List[str] = []
+            summary: list[str] = []
             for control in controls[:10]:
                 if not isinstance(control, dict):
                     continue
@@ -583,8 +620,8 @@ class ObsBuilder:
             )
         return groups[:8]
 
-    def _extract_control_panels(self, soup: Any) -> List[Dict[str, Any]]:
-        groups: List[Dict[str, Any]] = []
+    def _extract_control_panels(self, soup: Any) -> list[dict[str, Any]]:
+        groups: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
         for idx, node in enumerate(soup.find_all(["section", "div", "aside", "nav"], limit=80), start=1):
             try:
@@ -600,15 +637,15 @@ class ObsBuilder:
                 key = node_id or node_text[:200]
                 if not key or key in seen_keys:
                     continue
-                summary: List[str] = []
+                summary: list[str] = []
                 for control in controls[:8]:
                     c_attrs = control.attrs if isinstance(getattr(control, "attrs", None), dict) else {}
                     tag = str(getattr(control, "name", "") or "").lower()
                     label = self._field_hint_from_node(control)
-                    options: List[str] = []
+                    options: list[str] = []
                     current_value = _norm_ws(c_attrs.get("value"))
                     if tag == "select":
-                        selected_texts: List[str] = []
+                        selected_texts: list[str] = []
                         for option in control.find_all("option", limit=12):
                             opt_text = _norm_ws(option.get_text(" ", strip=True))
                             opt_value = _norm_ws(option.get("value"))
@@ -658,8 +695,8 @@ class ObsBuilder:
         groups.sort(key=lambda item: int(item.get("control_count") or 0), reverse=True)
         return groups[:8]
 
-    def _candidate_groups(self, candidates: List[Candidate]) -> List[Dict[str, Any]]:
-        groups: Dict[str, Dict[str, Any]] = {}
+    def _candidate_groups(self, candidates: list[Candidate]) -> list[dict[str, Any]]:
+        groups: dict[str, dict[str, Any]] = {}
         for cand in candidates:
             context = _norm_ws(cand.context)
             key = context[:320] if context else ""
@@ -688,7 +725,7 @@ class ObsBuilder:
                 group["controls"].append(item)
             elif cand.role == "link":
                 group["links"].append(item)
-        ranked: List[Dict[str, Any]] = []
+        ranked: list[dict[str, Any]] = []
         for key, group in groups.items():
             roles = group["roles"] if isinstance(group.get("roles"), dict) else {}
             n_controls = len(group["controls"])
@@ -720,14 +757,14 @@ class ObsBuilder:
             item.pop("_sort", None)
         return ranked[:12]
 
-    def _card_summaries(self, groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        cards: List[Dict[str, Any]] = []
+    def _card_summaries(self, groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        cards: list[dict[str, Any]] = []
         for group in groups:
             if not isinstance(group, dict) or str(group.get("kind") or "") != "items":
                 continue
             items = group.get("items") if isinstance(group.get("items"), list) else []
-            actions: List[Dict[str, Any]] = []
-            facts: List[str] = []
+            actions: list[dict[str, Any]] = []
+            facts: list[str] = []
             for item in items[:6]:
                 if not isinstance(item, dict):
                     continue
@@ -756,15 +793,15 @@ class ObsBuilder:
         self,
         *,
         prompt: str,
-        flags: Dict[str, Any],
+        flags: dict[str, Any],
         state: AgentState,
-        text_ir: Dict[str, Any],
-        candidates: List[Candidate],
-        history_recent: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        text_ir: dict[str, Any],
+        candidates: list[Candidate],
+        history_recent: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         text_ir = text_ir if isinstance(text_ir, dict) else {}
-        role_counts: Dict[str, int] = {}
-        type_counts: Dict[str, int] = {}
+        role_counts: dict[str, int] = {}
+        type_counts: dict[str, int] = {}
         for cand in candidates:
             role_counts[cand.role] = int(role_counts.get(cand.role) or 0) + 1
             type_counts[cand.type] = int(type_counts.get(cand.type) or 0) + 1
@@ -779,11 +816,7 @@ class ObsBuilder:
                 or (focus_candidate_ids and cand.id in focus_candidate_ids)
             ):
                 local_candidates += 1
-        recent_failures = sum(
-            1
-            for item in history_recent
-            if isinstance(item, dict) and ((not bool(item.get("exec_ok", True))) or bool(_candidate_text(item.get("error"))))
-        )
+        recent_failures = sum(1 for item in history_recent if isinstance(item, dict) and ((not bool(item.get("exec_ok", True))) or bool(_candidate_text(item.get("error")))))
         capability_gap = self._capability_gap_summary(prompt=prompt, state=state, candidates=candidates)
         page_facts = text_ir.get("page_facts") if isinstance(text_ir.get("page_facts"), list) else []
         value_lines = text_ir.get("value_lines") if isinstance(text_ir.get("value_lines"), list) else []
@@ -841,7 +874,7 @@ class ObsBuilder:
             "capability_gap": capability_gap,
         }
 
-    def _page_ir_text(self, *, prompt: str, text_ir: Dict[str, Any], candidates: List[Candidate]) -> str:
+    def _page_ir_text(self, *, prompt: str, text_ir: dict[str, Any], candidates: list[Candidate]) -> str:
         text_ir = text_ir if isinstance(text_ir, dict) else {}
         headings = text_ir.get("headings") if isinstance(text_ir.get("headings"), list) else []
         forms = text_ir.get("forms") if isinstance(text_ir.get("forms"), list) else []
@@ -861,7 +894,7 @@ class ObsBuilder:
         )
         likely_answers = self._likely_answers(prompt=prompt, page_facts=page_facts)
         visible_text = str(text_ir.get("visible_text") or "")
-        parts: List[str] = []
+        parts: list[str] = []
         title = _candidate_text(text_ir.get("title"))
         if title:
             parts.append(f"TITLE: {title[:260]}")
@@ -902,12 +935,12 @@ class ObsBuilder:
         if visible_text:
             parts.append("VISIBLE TEXT EXCERPT: " + visible_text[:1800])
         if forms:
-            form_lines: List[str] = []
+            form_lines: list[str] = []
             for idx, form in enumerate(forms[:6], start=1):
                 if not isinstance(form, dict):
                     continue
                 controls = form.get("controls") if isinstance(form.get("controls"), list) else []
-                control_bits: List[str] = []
+                control_bits: list[str] = []
                 for control in controls[:6]:
                     if not isinstance(control, dict):
                         continue
@@ -938,25 +971,28 @@ class ObsBuilder:
             if form_lines:
                 parts.append("FORMS:\n" + "\n".join(f"- {line}" for line in form_lines[:6]))
         if control_groups:
-            group_lines: List[str] = []
+            group_lines: list[str] = []
             for group in control_groups[:6]:
                 if not isinstance(group, dict):
                     continue
                 controls = group.get("controls") if isinstance(group.get("controls"), list) else []
-                group_lines.append(
-                    f"{str(group.get('label') or '')[:120]} ({int(group.get('control_count') or 0)} controls) -> "
-                    + " ; ".join(str(x)[:120] for x in controls[:6])
-                )
+                group_lines.append(f"{str(group.get('label') or '')[:120]} ({int(group.get('control_count') or 0)} controls) -> " + " ; ".join(str(x)[:120] for x in controls[:6]))
             if group_lines:
                 parts.append("CONTROL GROUPS:\n" + "\n".join(f"- {line}" for line in group_lines[:6]))
         if active_region:
-            region_lines: List[str] = []
+            region_lines: list[str] = []
             for item in (active_region.get("items") if isinstance(active_region.get("items"), list) else [])[:8]:
                 if not isinstance(item, dict):
                     continue
                 bits = [
                     str(item.get("id") or "")[:80],
-                    _candidate_text(item.get("role"), item.get("region_kind"), item.get("text"), item.get("field_hint"), item.get("href"))[:140],
+                    _candidate_text(
+                        item.get("role"),
+                        item.get("region_kind"),
+                        item.get("text"),
+                        item.get("field_hint"),
+                        item.get("href"),
+                    )[:140],
                 ]
                 region_lines.append(" | ".join([x for x in bits if x]))
             if region_lines:
@@ -968,23 +1004,24 @@ class ObsBuilder:
         if active_group:
             label = str(active_group.get("label") or "")[:120]
             active_items = active_group.get("items") if isinstance(active_group.get("items"), list) else []
-            active_lines: List[str] = []
+            active_lines: list[str] = []
             for item in active_items[:8]:
                 if not isinstance(item, dict):
                     continue
                 bits = [
                     str(item.get("id") or "")[:80],
-                    _candidate_text(item.get("role"), item.get("text"), item.get("field_hint"), item.get("href"))[:140],
+                    _candidate_text(
+                        item.get("role"),
+                        item.get("text"),
+                        item.get("field_hint"),
+                        item.get("href"),
+                    )[:140],
                 ]
                 active_lines.append(" | ".join([x for x in bits if x]))
             if active_lines:
-                parts.append(
-                    "ACTIVE CONTROL GROUP:\n"
-                    + f"- {label} ({len(active_items)} visible related elements)\n"
-                    + "\n".join(f"- {line}" for line in active_lines[:8])
-                )
+                parts.append("ACTIVE CONTROL GROUP:\n" + f"- {label} ({len(active_items)} visible related elements)\n" + "\n".join(f"- {line}" for line in active_lines[:8]))
         if cards:
-            card_lines: List[str] = []
+            card_lines: list[str] = []
             for idx, card in enumerate(cards[:6], start=1):
                 if not isinstance(card, dict):
                     continue
@@ -996,9 +1033,7 @@ class ObsBuilder:
                         continue
                     action_bits.append(_candidate_text(action.get("text"), action.get("href"), action.get("id"))[:90])
                 card_lines.append(
-                    f"card[{idx}] {str(card.get('label') or '')[:120]} -> "
-                    + " | ".join(str(x)[:80] for x in facts[:3])
-                    + (" ; actions=" + " / ".join(action_bits) if action_bits else "")
+                    f"card[{idx}] {str(card.get('label') or '')[:120]} -> " + " | ".join(str(x)[:80] for x in facts[:3]) + (" ; actions=" + " / ".join(action_bits) if action_bits else "")
                 )
             if card_lines:
                 parts.append("ITEM GROUPS:\n" + "\n".join(f"- {line}" for line in card_lines[:6]))
@@ -1019,7 +1054,7 @@ class ObsBuilder:
         return "\n".join(parts)[:12000]
 
     def _progress_brief(self, *, state: AgentState) -> str:
-        parts: List[str] = []
+        parts: list[str] = []
         last_effect = _candidate_text(state.progress.last_effect)
         if last_effect:
             parts.append(f"last_effect={last_effect}")
@@ -1031,7 +1066,11 @@ class ObsBuilder:
         if state.focus_region.region_label:
             parts.append(
                 "active_region="
-                + _candidate_text(state.focus_region.region_label, state.focus_region.region_kind, state.focus_region.region_id)[:160]
+                + _candidate_text(
+                    state.focus_region.region_label,
+                    state.focus_region.region_kind,
+                    state.focus_region.region_id,
+                )[:160]
             )
         recent_effects = []
         for effect in state.progress.recent_effects[-4:]:
@@ -1058,11 +1097,11 @@ class ObsBuilder:
         *,
         prompt: str,
         state: AgentState,
-        page_observations: Dict[str, Any],
-        active_subgoal: Dict[str, Any],
-        active_region: Dict[str, Any],
-        active_group: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        page_observations: dict[str, Any],
+        active_subgoal: dict[str, Any],
+        active_region: dict[str, Any],
+        active_group: dict[str, Any],
+    ) -> dict[str, Any]:
         expected_effect = _candidate_text(state.progress.pending_expected_effect)
         expected_action_type = _candidate_text(state.progress.pending_expected_action_type)
         no_progress_score = int(state.progress.no_progress_score or 0)
@@ -1124,11 +1163,11 @@ class ObsBuilder:
         *,
         prompt: str,
         state: AgentState,
-        text_ir: Dict[str, Any],
-        page_observations: Dict[str, Any],
-        active_region: Dict[str, Any],
-        active_group: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        text_ir: dict[str, Any],
+        page_observations: dict[str, Any],
+        active_region: dict[str, Any],
+        active_group: dict[str, Any],
+    ) -> dict[str, Any]:
         previous = state.memory.working_state if isinstance(state.memory.working_state, dict) else {}
         page_kind = _candidate_text(
             page_observations.get("page_kind") if isinstance(page_observations, dict) else None,
@@ -1154,8 +1193,8 @@ class ObsBuilder:
         if not completed_fields:
             for key in list(typed_by_selector.keys())[-6:]:
                 completed_fields.append(str(key))
-        pending_fields: List[str] = []
-        field_labels: List[str] = []
+        pending_fields: list[str] = []
+        field_labels: list[str] = []
         for item in list(active_region.get("items") or [])[:8] if isinstance(active_region, dict) else []:
             if not isinstance(item, dict):
                 continue
@@ -1169,7 +1208,7 @@ class ObsBuilder:
             lower = label.lower()
             if not any(lower in str(done).lower() or str(done).lower() in lower for done in completed_fields):
                 pending_fields.append(label)
-        completion_missing: List[str] = []
+        completion_missing: list[str] = []
         expected_effect = _candidate_text(state.progress.pending_expected_effect)
         if expected_effect:
             completion_missing.append(expected_effect)
@@ -1199,18 +1238,14 @@ class ObsBuilder:
         self,
         *,
         state: AgentState,
-        active_region: Dict[str, Any],
-        candidates: List[Candidate],
-    ) -> Dict[str, Any]:
+        active_region: dict[str, Any],
+        candidates: list[Candidate],
+    ) -> dict[str, Any]:
         if not isinstance(active_region, dict) or not active_region:
             return {}
         typed_ids = set(state.form_progress.typed_candidate_ids or [])
-        indexed = {
-            cand.id: idx
-            for idx, cand in enumerate(candidates[:24])
-            if isinstance(cand, Candidate) and cand.id
-        }
-        commit_controls: List[Dict[str, Any]] = []
+        indexed = {cand.id: idx for idx, cand in enumerate(candidates[:24]) if isinstance(cand, Candidate) and cand.id}
+        commit_controls: list[dict[str, Any]] = []
         for item in list(active_region.get("items") or [])[:12]:
             if not isinstance(item, dict):
                 continue
@@ -1245,7 +1280,7 @@ class ObsBuilder:
             "ready_to_commit": ready_to_commit,
         }
 
-    def _avoid_repeating_summary(self, *, state: AgentState, candidates: List[Candidate]) -> Dict[str, Any]:
+    def _avoid_repeating_summary(self, *, state: AgentState, candidates: list[Candidate]) -> dict[str, Any]:
         indexed_candidates = self._indexed_candidate_obs(candidates, limit=24)
         current_by_id = {
             str(item.get("id") or ""): {
@@ -1258,7 +1293,7 @@ class ObsBuilder:
             for item in indexed_candidates
             if isinstance(item, dict) and str(item.get("id") or "")
         }
-        discouraged_targets: List[Dict[str, Any]] = []
+        discouraged_targets: list[dict[str, Any]] = []
         seen_target_ids: set[str] = set()
         for effect in reversed(state.progress.recent_effects[-8:]):
             if not isinstance(effect, ProgressEffect):
@@ -1310,14 +1345,14 @@ class ObsBuilder:
             str(selector.get("attribute") or ""),
             str(selector.get("value") or ""),
         ]
-        return "|".join(selector_bits + [cand.text[:80], cand.role[:24]])
+        return "|".join([*selector_bits, cand.text[:80], cand.role[:24]])
 
-    def _page_summary_text(self, *, text_ir: Dict[str, Any]) -> str:
+    def _page_summary_text(self, *, text_ir: dict[str, Any]) -> str:
         text_ir = text_ir if isinstance(text_ir, dict) else {}
         title = _candidate_text(text_ir.get("title"))
         headings = text_ir.get("headings") if isinstance(text_ir.get("headings"), list) else []
         visible_text = str(text_ir.get("visible_text") or "")
-        parts: List[str] = []
+        parts: list[str] = []
         if title:
             parts.append(title[:180])
         if headings:
@@ -1331,9 +1366,9 @@ class ObsBuilder:
         *,
         state: AgentState,
         url: str,
-        text_ir: Dict[str, Any],
+        text_ir: dict[str, Any],
         page_ir_text: str,
-        candidates: List[Candidate],
+        candidates: list[Candidate],
     ) -> tuple[str, str]:
         prev_url = str(state.last_url or "")
         prev_summary = str(state.memory.prev_page_summary or "")
@@ -1374,11 +1409,11 @@ class ObsBuilder:
     def _select_candidates_for_policy(
         self,
         *,
-        candidates: List[Candidate],
+        candidates: list[Candidate],
         current_url: str,
         state: AgentState,
         max_total: int = 24,
-    ) -> List[Candidate]:
+    ) -> list[Candidate]:
         if not candidates:
             return []
 
@@ -1387,14 +1422,14 @@ class ObsBuilder:
         focus_region_context = _norm_ws(state.focus_region.region_context)
         focus_candidate_ids = set(state.focus_region.candidate_ids)
         has_focus = bool(focus_region_id or focus_region_context or focus_candidate_ids)
-        focused_local: List[Candidate] = []
-        focused_escape: List[Candidate] = []
-        focused_extended: List[Candidate] = []
-        controls: List[Candidate] = []
-        commit_controls: List[Candidate] = []
-        contextual: List[Candidate] = []
-        global_nav: List[Candidate] = []
-        others: List[Candidate] = []
+        focused_local: list[Candidate] = []
+        focused_escape: list[Candidate] = []
+        focused_extended: list[Candidate] = []
+        controls: list[Candidate] = []
+        commit_controls: list[Candidate] = []
+        contextual: list[Candidate] = []
+        global_nav: list[Candidate] = []
+        others: list[Candidate] = []
 
         def same_focus_region(cand: Candidate) -> bool:
             if focus_region_id and cand.region_id and cand.region_id == focus_region_id:
@@ -1403,9 +1438,7 @@ class ObsBuilder:
                 return True
             if focus_region_context and _norm_ws(cand.context) == focus_region_context:
                 return True
-            if focus_candidate_ids and cand.id in focus_candidate_ids:
-                return True
-            return False
+            return bool(focus_candidate_ids and cand.id in focus_candidate_ids)
 
         for cand in candidates:
             if same_focus_region(cand):
@@ -1439,7 +1472,12 @@ class ObsBuilder:
             if cand.role in {"input", "select"} or cand.type in {"textarea"}:
                 controls.append(cand)
                 continue
-            if bool(re.search(r"\b(save|submit|apply|continue|confirm|done|finish|search)\b", lowered)):
+            if bool(
+                re.search(
+                    r"\b(save|submit|apply|continue|confirm|done|finish|search)\b",
+                    lowered,
+                )
+            ):
                 commit_controls.append(cand)
                 continue
             if cand.role == "button":
@@ -1453,10 +1491,10 @@ class ObsBuilder:
                 continue
             others.append(cand)
 
-        picked: List[Candidate] = []
+        picked: list[Candidate] = []
         seen: set[str] = set()
 
-        def add_many(arr: List[Candidate]) -> None:
+        def add_many(arr: list[Candidate]) -> None:
             nonlocal picked
             for cand in arr:
                 sig = self._candidate_sig(cand)
@@ -1496,38 +1534,51 @@ class ObsBuilder:
             return False
         blob = " ".join([cand.text, cand.field_hint, cand.group_label, cand.context]).lower()
         if focus_region_id and cand.region_id and cand.region_id == focus_region_id:
-            return bool(re.search(r"\b(save|submit|apply|continue|confirm|close|done|cancel|back)\b", blob))
+            return bool(
+                re.search(
+                    r"\b(save|submit|apply|continue|confirm|close|done|cancel|back)\b",
+                    blob,
+                )
+            )
         if focus_region_context and _norm_ws(cand.context) == focus_region_context:
-            return bool(re.search(r"\b(save|submit|apply|continue|confirm|close|done|cancel|back)\b", blob))
+            return bool(
+                re.search(
+                    r"\b(save|submit|apply|continue|confirm|close|done|cancel|back)\b",
+                    blob,
+                )
+            )
         return False
 
     def _partition_candidates(
         self,
         *,
-        candidates: List[Candidate],
+        candidates: list[Candidate],
         state: AgentState,
         max_local: int = 18,
         max_escape: int = 8,
         max_global: int = 18,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         focus_region_id = str(state.focus_region.region_id or "").strip()
         focus_region_context = _norm_ws(state.focus_region.region_context)
         focus_candidate_ids = set(state.focus_region.candidate_ids)
-        local: List[Candidate] = []
-        escape: List[Candidate] = []
-        global_pool: List[Candidate] = []
+        local: list[Candidate] = []
+        escape: list[Candidate] = []
+        global_pool: list[Candidate] = []
         for cand in candidates:
             same_region = False
-            if focus_region_id and cand.region_id and cand.region_id == focus_region_id:
-                same_region = True
-            elif focus_region_id and focus_region_id in set(cand.region_ancestor_ids or []):
-                same_region = True
-            elif focus_region_context and _norm_ws(cand.context) == focus_region_context:
-                same_region = True
-            elif focus_candidate_ids and cand.id in focus_candidate_ids:
+            if (
+                (focus_region_id and cand.region_id and cand.region_id == focus_region_id)
+                or (focus_region_id and focus_region_id in set(cand.region_ancestor_ids or []))
+                or (focus_region_context and _norm_ws(cand.context) == focus_region_context)
+                or (focus_candidate_ids and cand.id in focus_candidate_ids)
+            ):
                 same_region = True
             if same_region:
-                if self._is_escape_candidate(cand=cand, focus_region_id=focus_region_id, focus_region_context=focus_region_context):
+                if self._is_escape_candidate(
+                    cand=cand,
+                    focus_region_id=focus_region_id,
+                    focus_region_context=focus_region_context,
+                ):
                     escape.append(cand)
                 else:
                     local.append(cand)
@@ -1544,8 +1595,8 @@ class ObsBuilder:
             "suppressed_global_count": max(0, len(global_pool) - max_global),
         }
 
-    def _candidate_lines(self, candidates: List[Candidate], *, limit: int = 12) -> str:
-        lines: List[str] = []
+    def _candidate_lines(self, candidates: list[Candidate], *, limit: int = 12) -> str:
+        lines: list[str] = []
         for idx, cand in enumerate(candidates[:limit]):
             bits = [f"[index={idx}] [{cand.id}]", f"<{cand.role}>"]
             label = _candidate_text(cand.text, cand.field_hint, cand.href, cand.group_label)
@@ -1560,15 +1611,15 @@ class ObsBuilder:
             lines.append(" ".join(bits))
         return "\n".join(lines)
 
-    def _indexed_candidate_obs(self, candidates: List[Candidate], *, limit: int) -> List[Dict[str, Any]]:
+    def _indexed_candidate_obs(self, candidates: list[Candidate], *, limit: int) -> list[dict[str, Any]]:
         return [cand.as_obs(index=idx) for idx, cand in enumerate(candidates[:limit])]
 
     def _browser_state_snapshot(
         self,
         *,
         url: str,
-        text_ir: Dict[str, Any],
-        page_observations: Dict[str, Any],
+        text_ir: dict[str, Any],
+        page_observations: dict[str, Any],
         screenshot_available: bool,
     ) -> str:
         text_ir = text_ir if isinstance(text_ir, dict) else {}
@@ -1578,16 +1629,10 @@ class ObsBuilder:
         headings = text_ir.get("headings") if isinstance(text_ir.get("headings"), list) else []
         likely_answers = page_observations.get("likely_answers") if isinstance(page_observations.get("likely_answers"), list) else []
         relevant_lines = page_observations.get("relevant_lines") if isinstance(page_observations.get("relevant_lines"), list) else []
-        parts: List[str] = [
+        parts: list[str] = [
             f"Current URL: {_candidate_text(url)}",
             (
-                "Page stats: "
-                f'{int(page_stats.get("links") or 0)} links, '
-                f'{int(page_stats.get("controls") or 0)} controls, '
-                f'{int(page_stats.get("forms") or 0)} forms, '
-                f'{int(page_stats.get("control_groups") or 0)} control groups, '
-                f'{int(page_stats.get("cards") or 0)} cards, '
-                f'{int(page_stats.get("visible_text_chars") or 0)} visible chars'
+                f"Page stats: {int(page_stats.get('links') or 0)} links, {int(page_stats.get('controls') or 0)} controls, {int(page_stats.get('forms') or 0)} forms, {int(page_stats.get('control_groups') or 0)} control groups, {int(page_stats.get('cards') or 0)} cards, {int(page_stats.get('visible_text_chars') or 0)} visible chars"
             ),
             f"Screenshot available: {bool(screenshot_available)}",
         ]
@@ -1601,19 +1646,19 @@ class ObsBuilder:
             parts.append("Relevant visible text: " + " | ".join(str(x)[:120] for x in relevant_lines[:8]))
         return "\n".join(parts)[:2400]
 
-    def _browser_state_text(self, candidates: List[Candidate], *, limit: int = 60) -> str:
+    def _browser_state_text(self, candidates: list[Candidate], *, limit: int = 60) -> str:
         class _Node:
-            __slots__ = ("name", "children", "items")
+            __slots__ = ("children", "items", "name")
 
             def __init__(self, name: str) -> None:
                 self.name = name
-                self.children: Dict[str, "_Node"] = {}
-                self.items: List[Candidate] = []
+                self.children: dict[str, _Node] = {}
+                self.items: list[Candidate] = []
 
         root = _Node("ROOT")
         chosen = candidates[: max(1, int(limit))]
         for cand in chosen:
-            chain: List[str] = []
+            chain: list[str] = []
             if cand.group_label:
                 chain.append(cand.group_label[:80])
             elif cand.context:
@@ -1627,8 +1672,8 @@ class ObsBuilder:
                 node = node.children[part]
             node.items.append(cand)
 
-        def render(node: _Node, indent: str = "") -> List[str]:
-            lines: List[str] = []
+        def render(node: _Node, indent: str = "") -> list[str]:
+            lines: list[str] = []
             for child_name, child in list(node.children.items())[:24]:
                 lines.append(f"{indent}{child_name}")
                 for cand in child.items[:12]:
@@ -1652,8 +1697,8 @@ class ObsBuilder:
             return ""
         return "\n".join(rendered)[:12000]
 
-    def _history_brief(self, history: List[Dict[str, Any]], *, limit: int = 10) -> List[Dict[str, Any]]:
-        out: List[Dict[str, Any]] = []
+    def _history_brief(self, history: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         for item in history[-max(1, int(limit)) :]:
             if not isinstance(item, dict):
                 continue
@@ -1687,13 +1732,13 @@ class ObsBuilder:
             )
         return out
 
-    def _typed_values_from_history(self, history: List[Dict[str, Any]]) -> List[str]:
-        out: List[str] = []
+    def _typed_values_from_history(self, history: list[dict[str, Any]]) -> list[str]:
+        out: list[str] = []
         for item in history:
             if not isinstance(item, dict):
                 continue
             action_raw = item.get("action")
-            action: Dict[str, Any] = action_raw if isinstance(action_raw, dict) else {}
+            action: dict[str, Any] = action_raw if isinstance(action_raw, dict) else {}
             action_type = str(action.get("type") or "")
             if not action_type and isinstance(action_raw, str):
                 action_type = str(action_raw)
@@ -1710,14 +1755,13 @@ class ObsBuilder:
                     out.append(val)
         return out
 
-
-    def _history_summary(self, history: List[Dict[str, Any]]) -> str:
+    def _history_summary(self, history: list[dict[str, Any]]) -> str:
         if not isinstance(history, list) or not history:
             return ""
         total = len(history)
         failures = 0
-        by_action: Dict[str, int] = {}
-        recent_urls: List[str] = []
+        by_action: dict[str, int] = {}
+        recent_urls: list[str] = []
         for item in history[-120:]:
             if not isinstance(item, dict):
                 continue
@@ -1747,10 +1791,10 @@ class ObsBuilder:
             parts.append(f"recent_urls={urls_line}")
         return " ; ".join(parts)[:MAX_HISTORY_SUMMARY_CHARS]
 
-    def _recent_failures(self, history: List[Dict[str, Any]], *, limit: int = 6) -> List[Dict[str, Any]]:
+    def _recent_failures(self, history: list[dict[str, Any]], *, limit: int = 6) -> list[dict[str, Any]]:
         if not isinstance(history, list) or not history:
             return []
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for item in reversed(history[-40:]):
             if not isinstance(item, dict):
                 continue
@@ -1776,7 +1820,7 @@ class ObsBuilder:
                 break
         return list(reversed(out))
 
-    def _previous_step_verdict(self, history: List[Dict[str, Any]], flags: Dict[str, Any]) -> Dict[str, str]:
+    def _previous_step_verdict(self, history: list[dict[str, Any]], flags: dict[str, Any]) -> dict[str, str]:
         if not isinstance(history, list) or not history:
             return {"status": "n/a", "summary": "No previous step to evaluate."}
         last = history[-1] if isinstance(history[-1], dict) else {}
@@ -1786,15 +1830,27 @@ class ObsBuilder:
         if err:
             return {"status": "failure", "summary": f"Previous step error: {err[:180]}"}
         if not bool(last.get("exec_ok", True)):
-            return {"status": "failure", "summary": "Previous step execution reported failure."}
+            return {
+                "status": "failure",
+                "summary": "Previous step execution reported failure.",
+            }
         if bool(flags.get("url_changed")) or bool(flags.get("dom_changed")):
-            return {"status": "success", "summary": "Previous step changed page state (url/dom diff detected)."}
+            return {
+                "status": "success",
+                "summary": "Previous step changed page state (url/dom diff detected).",
+            }
         if bool(flags.get("no_visual_progress")):
-            return {"status": "uncertain", "summary": "No visual progress detected after previous step."}
-        return {"status": "uncertain", "summary": "Previous step outcome unclear from current snapshot."}
+            return {
+                "status": "uncertain",
+                "summary": "No visual progress detected after previous step.",
+            }
+        return {
+            "status": "uncertain",
+            "summary": "Previous step outcome unclear from current snapshot.",
+        }
 
-    def _loop_nudges(self, *, state: AgentState, flags: Dict[str, Any]) -> List[str]:
-        n: List[str] = []
+    def _loop_nudges(self, *, state: AgentState, flags: dict[str, Any]) -> list[str]:
+        n: list[str] = []
         repeat_n = int(state.counters.repeat_action_count or 0)
         stall_n = int(state.counters.stall_count or 0)
         level = str(flags.get("loop_level") or "none")
@@ -1817,26 +1873,26 @@ class ObsBuilder:
         *,
         prompt: str,
         web_project_id: str = "",
-        use_case: Dict[str, str] | None = None,
+        use_case: dict[str, str] | None = None,
         snapshot_html: str = "",
-        task_constraints: Dict[str, str],
+        task_constraints: dict[str, str],
         step_index: int,
         mode: str,
         url: str,
-        flags: Dict[str, Any],
+        flags: dict[str, Any],
         state: AgentState,
-        history_recent: List[Dict[str, Any]],
+        history_recent: list[dict[str, Any]],
         history_summary: str,
-        verdict: Dict[str, str],
-        loop_nudges: List[str],
-        text_ir: Dict[str, Any],
-        candidates: List[Candidate],
+        verdict: dict[str, str],
+        loop_nudges: list[str],
+        text_ir: dict[str, Any],
+        candidates: list[Candidate],
         state_delta: str = "",
         ir_delta: str = "",
         screenshot_available: bool = False,
     ) -> str:
         text_ir = self._augment_text_ir(text_ir=text_ir, candidates=candidates)
-        parts: List[str] = []
+        parts: list[str] = []
         page_observations = self._page_observations(
             prompt=prompt,
             flags=flags,
@@ -1901,9 +1957,7 @@ class ObsBuilder:
         typed_recent = [
             str(item.get("text") or "")
             for item in history_recent
-            if isinstance(item, dict)
-            and str(item.get("action_type") or "").lower() in {"typeaction", "fillaction"}
-            and str(item.get("text") or "").strip()
+            if isinstance(item, dict) and str(item.get("action_type") or "").lower() in {"typeaction", "fillaction"} and str(item.get("text") or "").strip()
         ][:10]
         parts.append(f"TASK: {_candidate_text(prompt)}")
         if task_constraints:
@@ -1915,21 +1969,9 @@ class ObsBuilder:
             + "tabs_supported=false\n"
             + "file_tools_supported=false"
         )
-        parts.append(
-            "CURRENT STATE:\n"
-            + f"step_index={int(step_index)}\n"
-            + f"mode={str(mode)}\n"
-            + f"url={_candidate_text(url)}"
-        )
-        parts.append(
-            "AVAILABLE TOOLS:\n"
-            + ", ".join(sorted(_supported_browser_tool_names()))
-        )
-        parts.append(
-            "UNAVAILABLE TOOLS:\n"
-            + ", ".join(_unavailable_browser_tools())
-            + "\nNever emit unavailable tools."
-        )
+        parts.append("CURRENT STATE:\n" + f"step_index={int(step_index)}\n" + f"mode={mode!s}\n" + f"url={_candidate_text(url)}")
+        parts.append("AVAILABLE TOOLS:\n" + ", ".join(sorted(_supported_browser_tool_names())))
+        parts.append("UNAVAILABLE TOOLS:\n" + ", ".join(_unavailable_browser_tools()) + "\nNever emit unavailable tools.")
         parts.append(
             "TOOL USAGE GUIDE:\n"
             + "- Use browser.click for buttons, links, toggles, tabs, checkboxes, radios, and submit controls.\n"
@@ -1963,12 +2005,17 @@ class ObsBuilder:
             parts.append("PREVIOUS REASONING TRACE (JSON):\n" + json.dumps(reasoning_trace, ensure_ascii=False))
         if working_state:
             parts.append("WORKING STATE SUMMARY:\n" + _working_state_summary(working_state))
-        parts.append("BROWSER SNAPSHOT:\n" + str(self._browser_state_snapshot(
-            url=url,
-            text_ir=text_ir,
-            page_observations=page_observations,
-            screenshot_available=screenshot_available,
-        )))
+        parts.append(
+            "BROWSER SNAPSHOT:\n"
+            + str(
+                self._browser_state_snapshot(
+                    url=url,
+                    text_ir=text_ir,
+                    page_observations=page_observations,
+                    screenshot_available=screenshot_available,
+                )
+            )
+        )
         parts.append(
             "ELEMENT TARGETING GUIDE:\n"
             + "- Each shortlist item has index, role, text, and context.\n"
@@ -2009,11 +2056,7 @@ class ObsBuilder:
         )
         if progress_brief:
             parts.append("PROGRESS LEDGER:\n" + progress_brief)
-        parts.append(
-            "PREVIOUS STEP VERDICT:\n"
-            + f"status={_candidate_text(verdict.get('status'))}\n"
-            + f"summary={_candidate_text(verdict.get('summary'))}\n"
-        )
+        parts.append("PREVIOUS STEP VERDICT:\n" + f"status={_candidate_text(verdict.get('status'))}\n" + f"summary={_candidate_text(verdict.get('summary'))}\n")
         if active_region:
             parts.append("FOCUSED REGION SUMMARY (JSON):\n" + json.dumps(active_region, ensure_ascii=False))
         if history_summary:
@@ -2070,11 +2113,11 @@ class ObsBuilder:
             parts.append("GLOBAL CANDIDATE SUMMARY (JSON):\n" + json.dumps(global_summary, ensure_ascii=False))
         return "\n\n".join(parts)
 
-    def _augment_text_ir(self, *, text_ir: Dict[str, Any], candidates: List[Candidate]) -> Dict[str, Any]:
+    def _augment_text_ir(self, *, text_ir: dict[str, Any], candidates: list[Candidate]) -> dict[str, Any]:
         base = dict(text_ir or {}) if isinstance(text_ir, dict) else {}
         groups = self._candidate_groups(candidates)
         existing_groups = base.get("control_groups") if isinstance(base.get("control_groups"), list) else []
-        merged_groups: List[Dict[str, Any]] = []
+        merged_groups: list[dict[str, Any]] = []
         seen_group_ids: set[str] = set()
         for group in list(existing_groups) + [g for g in groups if str(g.get("kind") or "") == "controls"]:
             if not isinstance(group, dict):
@@ -2089,13 +2132,13 @@ class ObsBuilder:
         base["cards"] = self._card_summaries(groups)
         return base
 
-    def active_group_summary(self, *, state: AgentState, candidates: List[Candidate]) -> Dict[str, Any]:
+    def active_group_summary(self, *, state: AgentState, candidates: list[Candidate]) -> dict[str, Any]:
         group_id = str(state.form_progress.active_group_id or "").strip()
         context = _norm_ws(state.form_progress.active_group_context)
         candidate_ids = set(state.form_progress.active_group_candidate_ids)
         if not group_id and not context and not candidate_ids:
             return {}
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         for cand in candidates:
             if group_id and cand.group_id and cand.group_id != group_id and cand.id not in candidate_ids:
                 continue
@@ -2123,7 +2166,7 @@ class ObsBuilder:
             "items": items[:10],
         }
 
-    def active_region_summary(self, *, state: AgentState, candidates: List[Candidate]) -> Dict[str, Any]:
+    def active_region_summary(self, *, state: AgentState, candidates: list[Candidate]) -> dict[str, Any]:
         region_id = str(state.focus_region.region_id or "").strip()
         region_context = _norm_ws(state.focus_region.region_context)
         candidate_ids = set(state.focus_region.candidate_ids)
@@ -2138,14 +2181,10 @@ class ObsBuilder:
                 "context": str(active_group.get("context") or "")[:280],
                 "items": active_group.get("items") if isinstance(active_group.get("items"), list) else [],
             }
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         for cand in candidates:
             same_region = False
-            if region_id and cand.region_id and cand.region_id == region_id:
-                same_region = True
-            elif region_context and _norm_ws(cand.context) == region_context:
-                same_region = True
-            elif candidate_ids and cand.id in candidate_ids:
+            if (region_id and cand.region_id and cand.region_id == region_id) or (region_context and _norm_ws(cand.context) == region_context) or (candidate_ids and cand.id in candidate_ids):
                 same_region = True
             if not same_region:
                 continue
@@ -2182,7 +2221,10 @@ class ObsBuilder:
             if sel_type == "attributeValueSelector" and attr and value:
                 return soup.find(attrs={attr: value})
             if sel_type == "xpathSelector" and value:
-                m = re.search(r'//([a-zA-Z0-9]+)\[contains\(normalize-space\(\.\), "([^"]+)"\)\]', value)
+                m = re.search(
+                    r'//([a-zA-Z0-9]+)\[contains\(normalize-space\(\.\), "([^"]+)"\)\]',
+                    value,
+                )
                 if m:
                     tag = m.group(1).lower()
                     text = _norm_ws(m.group(2))
@@ -2204,7 +2246,19 @@ class ObsBuilder:
             attrs = cur.attrs if isinstance(getattr(cur, "attrs", None), dict) else {}
             classes = " ".join(str(x) for x in list(attrs.get("class") or []))
             blob = f"{_norm_ws(attrs.get('id'))} {classes}".lower()
-            if any(token in blob for token in ("form", "comment", "reply", "review", "contact", "checkout", "register", "login")):
+            if any(
+                token in blob
+                for token in (
+                    "form",
+                    "comment",
+                    "reply",
+                    "review",
+                    "contact",
+                    "checkout",
+                    "register",
+                    "login",
+                )
+            ):
                 return cur
             cur = getattr(cur, "parent", None)
         return node
@@ -2214,9 +2268,9 @@ class ObsBuilder:
         *,
         snapshot_html: str,
         state: AgentState,
-        candidates: List[Candidate],
-        active_region: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        candidates: list[Candidate],
+        active_region: dict[str, Any],
+    ) -> dict[str, Any]:
         if not _env_bool("FSM_USE_LOCAL_HTML_CONTEXT", True):
             return {}
         html = str(snapshot_html or "")
@@ -2228,7 +2282,7 @@ class ObsBuilder:
             return {}
         by_id = {cand.id: cand for cand in candidates if isinstance(cand, Candidate) and cand.id}
         region_item_ids = [str(item.get("id") or "") for item in list(active_region.get("items") or []) if isinstance(item, dict)]
-        target_candidates: List[Candidate] = []
+        target_candidates: list[Candidate] = []
         for cand_id in region_item_ids + list(state.form_progress.typed_candidate_ids or []):
             cand = by_id.get(str(cand_id))
             if cand is not None and cand not in target_candidates:
@@ -2240,7 +2294,7 @@ class ObsBuilder:
                 if len(target_candidates) >= 4:
                     break
         active_form = None
-        target_candidate_htmls: List[str] = []
+        target_candidate_htmls: list[str] = []
         for cand in target_candidates:
             node = self._candidate_node(soup=soup, candidate=cand)
             if node is None:
@@ -2257,7 +2311,7 @@ class ObsBuilder:
         last_node = self._candidate_node(soup=soup, candidate=last_cand) if last_cand is not None else None
         if last_node is not None:
             last_used_html = str(last_node)[:2000]
-        commit_htmls: List[str] = []
+        commit_htmls: list[str] = []
         search_root = active_form or soup
         try:
             for node in search_root.find_all(["button", "input", "a"], limit=24):
@@ -2298,18 +2352,18 @@ class ObsBuilder:
         task_id: str,
         prompt: str,
         web_project_id: str = "",
-        use_case: Dict[str, str] | None = None,
+        use_case: dict[str, str] | None = None,
         snapshot_html: str = "",
         step_index: int,
         url: str,
         mode: str,
-        flags: Dict[str, Any],
+        flags: dict[str, Any],
         state: AgentState,
-        text_ir: Dict[str, Any],
-        candidates: List[Candidate],
-        history: List[Dict[str, Any]],
+        text_ir: dict[str, Any],
+        candidates: list[Candidate],
+        history: list[dict[str, Any]],
         screenshot_available: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         text_ir = self._augment_text_ir(text_ir=text_ir, candidates=candidates)
         active = {}
         if state.plan.active_id:
@@ -2340,9 +2394,7 @@ class ObsBuilder:
         text_ir["active_region"] = active_region
         text_ir["active_group"] = active_group
         text_ir["capability_gap"] = page_observations.get("capability_gap") if isinstance(page_observations, dict) else {}
-        state.memory.strategy_summary = _candidate_text(
-            (page_observations.get("capability_gap") if isinstance(page_observations, dict) else {}).get("strategy_summary")
-        )[:320]
+        state.memory.strategy_summary = _candidate_text((page_observations.get("capability_gap") if isinstance(page_observations, dict) else {}).get("strategy_summary"))[:320]
         policy_candidates = self._select_candidates_for_policy(candidates=candidates, current_url=url, state=state, max_total=60)
         candidate_partitions = self._partition_candidates(candidates=policy_candidates, state=state)
         page_ir_text = self._page_ir_text(prompt=prompt, text_ir=text_ir, candidates=policy_candidates)
@@ -2360,10 +2412,7 @@ class ObsBuilder:
             page_ir_text=page_ir_text,
             candidates=policy_candidates,
         )
-        plan_items = [
-            {"id": sg.id, "text": sg.text, "status": sg.status}
-            for sg in state.plan.subgoals
-        ]
+        plan_items = [{"id": sg.id, "text": sg.text, "status": sg.status} for sg in state.plan.subgoals]
         active_objective = self._active_objective_summary(
             prompt=prompt,
             state=state,
@@ -2453,11 +2502,7 @@ class ObsBuilder:
             "active_objective": active_objective,
             "working_state": working_state,
             "score_feedback": state.score_feedback if isinstance(state.score_feedback, dict) else {},
-            "state_score": (
-                float((state.score_feedback or {}).get("score"))
-                if isinstance(state.score_feedback, dict) and "score" in state.score_feedback
-                else None
-            ),
+            "state_score": (float((state.score_feedback or {}).get("score")) if isinstance(state.score_feedback, dict) and "score" in state.score_feedback else None),
             "local_workflow_closure": local_workflow_closure,
             "local_html_context": local_html_context,
             "site_knowledge": site_knowledge,
@@ -2474,18 +2519,18 @@ class ObsBuilder:
             },
             "session_query": state.session_query,
             "counters": state.counters.model_dump(),
-                "memory": {
-                    "facts": state.memory.facts[:20],
-                    "checkpoints": state.memory.checkpoints[-20:],
-                    "visual_notes": state.memory.visual_notes[-8:],
-                    "visual_element_hints": state.memory.visual_element_hints[-12:],
-                    "obs_candidate_hints": state.memory.obs_candidate_hints[-12:],
-                    "strategy_summary": state.memory.strategy_summary,
-                    "reasoning_trace": reasoning_trace,
-                    "working_state": working_state,
-                    "typed_values_recent": typed_values_recent,
-                    "typed_candidate_ids": state.form_progress.typed_candidate_ids[-20:],
-                    "typed_selector_sigs": state.form_progress.typed_selector_sigs[-20:],
+            "memory": {
+                "facts": state.memory.facts[:20],
+                "checkpoints": state.memory.checkpoints[-20:],
+                "visual_notes": state.memory.visual_notes[-8:],
+                "visual_element_hints": state.memory.visual_element_hints[-12:],
+                "obs_candidate_hints": state.memory.obs_candidate_hints[-12:],
+                "strategy_summary": state.memory.strategy_summary,
+                "reasoning_trace": reasoning_trace,
+                "working_state": working_state,
+                "typed_values_recent": typed_values_recent,
+                "typed_candidate_ids": state.form_progress.typed_candidate_ids[-20:],
+                "typed_selector_sigs": state.form_progress.typed_selector_sigs[-20:],
                 "submit_attempt_sigs": state.form_progress.submit_attempt_sigs[-20:],
                 "active_group_label": state.form_progress.active_group_label,
                 "active_group_candidate_ids": state.form_progress.active_group_candidate_ids[-20:],

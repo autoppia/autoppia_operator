@@ -1,8 +1,26 @@
 from __future__ import annotations
 
+import json
+import os
+from functools import lru_cache
 from importlib import import_module
+from typing import Any
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
-from .utils import *
+from bs4 import BeautifulSoup
+
+from .utils import (
+    SITE_KNOWLEDGE_STATIC_MAP_PATH,
+    SITE_KNOWLEDGE_TASK_CACHE,
+    _candidate_text,
+    _dedupe_keep_order,
+    _env_bool,
+    _env_int,
+    _normalize_use_case_info,
+    _root_url,
+    _safe_url,
+)
 
 
 def _package_helper(name: str, default: Any) -> Any:
@@ -16,7 +34,7 @@ def _package_helper(name: str, default: Any) -> Any:
     return default
 
 
-def _site_section_templates() -> Dict[str, Dict[str, str]]:
+def _site_section_templates() -> dict[str, dict[str, str]]:
     return {
         "home": {
             "label": "home / landing",
@@ -56,16 +74,42 @@ def _site_section_templates() -> Dict[str, Dict[str, str]]:
     }
 
 
-def _section_keys_for_use_case(name: str, description: str) -> List[str]:
+def _section_keys_for_use_case(name: str, description: str) -> list[str]:
     text = f"{name} {description}".lower()
     keys = ["home"]
     if any(tok in text for tok in ("login", "sign in", "sign up", "register", "logout", "auth")):
         keys.append("auth")
     if any(tok in text for tok in ("search", "filter", "browse", "find", "list")):
         keys.append("catalog")
-    if any(tok in text for tok in ("detail", "movie", "book", "product", "profile", "comment", "review", "share", "trailer", "view")):
+    if any(
+        tok in text
+        for tok in (
+            "detail",
+            "movie",
+            "book",
+            "product",
+            "profile",
+            "comment",
+            "review",
+            "share",
+            "trailer",
+            "view",
+        )
+    ):
         keys.append("detail")
-    if any(tok in text for tok in ("add", "create", "edit", "delete", "contact", "submit", "form", "message")):
+    if any(
+        tok in text
+        for tok in (
+            "add",
+            "create",
+            "edit",
+            "delete",
+            "contact",
+            "submit",
+            "form",
+            "message",
+        )
+    ):
         keys.append("form")
     if any(tok in text for tok in ("watchlist", "wishlist", "profile", "account", "saved")):
         keys.append("account")
@@ -75,7 +119,7 @@ def _section_keys_for_use_case(name: str, description: str) -> List[str]:
 
 
 @lru_cache(maxsize=1)
-def _load_task_cache_site_index() -> Dict[str, Dict[str, Any]]:
+def _load_task_cache_site_index() -> dict[str, dict[str, Any]]:
     path = SITE_KNOWLEDGE_TASK_CACHE
     if not path.exists():
         return {}
@@ -85,7 +129,7 @@ def _load_task_cache_site_index() -> Dict[str, Dict[str, Any]]:
     except Exception:
         return {}
     raw_tasks = data.get("tasks") if isinstance(data, dict) else data
-    out: Dict[str, Dict[str, Any]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for item in raw_tasks if isinstance(raw_tasks, list) else []:
         if not isinstance(item, dict):
             continue
@@ -99,12 +143,12 @@ def _load_task_cache_site_index() -> Dict[str, Dict[str, Any]]:
             project["use_cases"][uc_name] = uc
         prompt = _candidate_text(item.get("prompt"))
         if prompt:
-            project["examples"] = _dedupe_keep_order(list(project["examples"]) + [prompt[:180]], 12)
+            project["examples"] = _dedupe_keep_order([*list(project["examples"]), prompt[:180]], 12)
     return out
 
 
 @lru_cache(maxsize=1)
-def _load_static_site_maps() -> Dict[str, Dict[str, Any]]:
+def _load_static_site_maps() -> dict[str, dict[str, Any]]:
     path = SITE_KNOWLEDGE_STATIC_MAP_PATH
     if not path.exists():
         return {}
@@ -116,7 +160,7 @@ def _load_static_site_maps() -> Dict[str, Dict[str, Any]]:
     if not isinstance(payload, dict):
         return {}
     projects = payload.get("projects") if isinstance(payload.get("projects"), dict) else payload
-    out: Dict[str, Dict[str, Any]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for project_id, project_payload in projects.items() if isinstance(projects, dict) else []:
         pid = _candidate_text(project_id)
         if not pid or not isinstance(project_payload, dict):
@@ -131,20 +175,53 @@ def _section_key_for_path(path: str) -> str:
         return "home"
     if any(tok in clean for tok in ("/login", "/register", "/signup", "/signin", "/auth")):
         return "auth"
-    if any(tok in clean for tok in ("/search", "/browse", "/catalog", "/books", "/movies", "/restaurants")):
+    if any(
+        tok in clean
+        for tok in (
+            "/search",
+            "/browse",
+            "/catalog",
+            "/books",
+            "/movies",
+            "/restaurants",
+        )
+    ):
         return "catalog"
     if any(tok in clean for tok in ("/detail", "/movie/", "/book/", "/restaurant/", "/item/", "/film/")):
         return "detail"
-    if any(tok in clean for tok in ("/contact", "/create", "/add", "/edit", "/delete", "/checkout", "/reserve", "/booking")):
+    if any(
+        tok in clean
+        for tok in (
+            "/contact",
+            "/create",
+            "/add",
+            "/edit",
+            "/delete",
+            "/checkout",
+            "/reserve",
+            "/booking",
+        )
+    ):
         return "form"
-    if any(tok in clean for tok in ("/profile", "/account", "/watchlist", "/wishlist", "/saved", "/menu", "/calendar")):
+    if any(
+        tok in clean
+        for tok in (
+            "/profile",
+            "/account",
+            "/watchlist",
+            "/wishlist",
+            "/saved",
+            "/menu",
+            "/calendar",
+        )
+    ):
         return "account"
     if any(tok in clean for tok in ("/about", "/help", "/support", "/faq", "/policy")):
         return "info"
     return "home"
 
 
-def _normalize_route_entry(route: Dict[str, Any], *, base_url: str = "") -> Dict[str, Any] | None:
+def _normalize_route_entry(route: dict[str, Any], *, base_url: str = "") -> dict[str, Any] | None:
     if not isinstance(route, dict):
         return None
     raw_href = _candidate_text(route.get("href"), route.get("url"), route.get("path"))
@@ -164,8 +241,8 @@ def _normalize_route_entry(route: Dict[str, Any], *, base_url: str = "") -> Dict
     }
 
 
-def _discover_page_routes(*, snapshot_html: str, current_url: str, candidates: List[Any]) -> List[Dict[str, Any]]:
-    discovered: List[Dict[str, Any]] = []
+def _discover_page_routes(*, snapshot_html: str, current_url: str, candidates: list[Any]) -> list[dict[str, Any]]:
+    discovered: list[dict[str, Any]] = []
     if snapshot_html and BeautifulSoup is not None:
         try:
             soup = BeautifulSoup(snapshot_html, "lxml")
@@ -192,7 +269,7 @@ def _discover_page_routes(*, snapshot_html: str, current_url: str, candidates: L
                 "source": "candidate_href",
             }
         )
-    normalized: List[Dict[str, Any]] = []
+    normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in discovered:
         route = _normalize_route_entry(item, base_url=current_url)
@@ -223,12 +300,12 @@ def _crawl_site_routes(start_url: str, depth: int, max_pages: int, timeout_s: fl
     if not (parsed_start.scheme and parsed_start.netloc):
         return ()
     same_origin = f"{parsed_start.scheme}://{parsed_start.netloc}"
-    queue: List[tuple[str, int]] = [(start, 0)]
+    queue: list[tuple[str, int]] = [(start, 0)]
     root = _root_url(start)
     if root and root != start:
         queue.append((root, 0))
     fetched_paths: set[str] = set()
-    emitted: List[tuple[str, str, str, str]] = []
+    emitted: list[tuple[str, str, str, str]] = []
     emitted_paths: set[str] = set()
     while queue and len(fetched_paths) < max(1, int(max_pages)):
         page_url, current_depth = queue.pop(0)
@@ -267,7 +344,11 @@ def _crawl_site_routes(start_url: str, depth: int, max_pages: int, timeout_s: fl
                 emitted_paths.add(route_path)
                 emitted.append(
                     (
-                        _candidate_text(anchor.get_text(" ", strip=True), anchor.get("aria-label"), route_path)[:120],
+                        _candidate_text(
+                            anchor.get_text(" ", strip=True),
+                            anchor.get("aria-label"),
+                            route_path,
+                        )[:120],
                         str(absolute or href)[:300],
                         route_path[:180],
                         _section_key_for_path(route_path),
@@ -278,8 +359,13 @@ def _crawl_site_routes(start_url: str, depth: int, max_pages: int, timeout_s: fl
     return tuple(emitted[:40])
 
 
-def _merge_site_routes(static_routes: List[Dict[str, Any]], discovered_routes: List[Dict[str, Any]], *, base_url: str) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
+def _merge_site_routes(
+    static_routes: list[dict[str, Any]],
+    discovered_routes: list[dict[str, Any]],
+    *,
+    base_url: str,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in list(static_routes or []) + list(discovered_routes or []):
         route = _normalize_route_entry(item, base_url=base_url)
@@ -297,13 +383,13 @@ def _merge_site_routes(static_routes: List[Dict[str, Any]], discovered_routes: L
 
 def _build_site_knowledge(
     project_id: str,
-    use_case: Dict[str, str],
+    use_case: dict[str, str],
     prompt: str,
     *,
     current_url: str = "",
     snapshot_html: str = "",
-    candidates: List[Any] | None = None,
-) -> Dict[str, Any]:
+    candidates: list[Any] | None = None,
+) -> dict[str, Any]:
     project_id = _candidate_text(project_id)
     uc = _normalize_use_case_info(use_case)
     cache_index = _package_helper("_load_task_cache_site_index", _load_task_cache_site_index)()
@@ -315,7 +401,7 @@ def _build_site_knowledge(
     if uc.get("name") and not any(str(item.get("name") or "") == uc["name"] for item in all_use_cases if isinstance(item, dict)):
         all_use_cases.append(uc)
     templates = _site_section_templates()
-    section_sources: Dict[str, List[str]] = {}
+    section_sources: dict[str, list[str]] = {}
     for item in all_use_cases:
         if not isinstance(item, dict):
             continue
@@ -323,7 +409,7 @@ def _build_site_knowledge(
         desc = _candidate_text(item.get("description"))
         for key in _section_keys_for_use_case(name, desc):
             section_sources.setdefault(key, []).append(name or desc or "unknown")
-    known_sections: List[Dict[str, Any]] = []
+    known_sections: list[dict[str, Any]] = []
     for key in ("home", "auth", "catalog", "detail", "form", "account", "info"):
         if key not in section_sources:
             continue
@@ -348,7 +434,7 @@ def _build_site_knowledge(
         current_url=str(current_url or ""),
         candidates=list(candidates or []),
     )
-    crawled_routes: List[Dict[str, Any]] = []
+    crawled_routes: list[dict[str, Any]] = []
     if (not static_routes) and _env_bool("FSM_ENABLE_SITE_CRAWLER", True):
         crawl_depth = max(0, min(_env_int("FSM_SITE_CRAWL_DEPTH", 3), 3))
         crawl_max_pages = max(1, min(_env_int("FSM_SITE_CRAWL_MAX_PAGES", 12), 24))
@@ -371,8 +457,12 @@ def _build_site_knowledge(
             ]
         except Exception:
             crawled_routes = []
-    merged_routes = _merge_site_routes(static_routes, list(discovered_routes) + list(crawled_routes), base_url=str(current_url or ""))
-    route_sections: Dict[str, List[str]] = {}
+    merged_routes = _merge_site_routes(
+        static_routes,
+        list(discovered_routes) + list(crawled_routes),
+        base_url=str(current_url or ""),
+    )
+    route_sections: dict[str, list[str]] = {}
     for route in merged_routes:
         if not isinstance(route, dict):
             continue

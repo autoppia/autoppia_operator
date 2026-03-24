@@ -15,10 +15,9 @@ import asyncio
 import importlib.util
 import os
 import sys
-from typing import Any
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -128,17 +127,11 @@ def _check_url_normalizer(agent_mod) -> None:
 
         normed = normalize_fn("84.247.180.192/task?a=1")
         if normed != "http://localhost/task?a=1":
-            _fail(
-                "_normalize_demo_url failed for path with query. "
-                f"expected http://localhost/task?a=1, got {normed!r}"
-            )
+            _fail(f"_normalize_demo_url failed for path with query. expected http://localhost/task?a=1, got {normed!r}")
 
         normed = normalize_fn("http://84.247.180.192/task?a=1")
         if normed != "http://localhost/task?a=1":
-            _fail(
-                "_normalize_demo_url failed to rewrite scheme+host. "
-                f"expected http://localhost/task?a=1, got {normed!r}"
-            )
+            _fail(f"_normalize_demo_url failed to rewrite scheme+host. expected http://localhost/task?a=1, got {normed!r}")
     finally:
         if prev is None:
             os.environ.pop("AGENT_FORCE_LOCALHOST_URLS", None)
@@ -154,10 +147,7 @@ def _check_url_normalizer(agent_mod) -> None:
         try:
             nav_action = sanitize_action({"type": "NavigateAction", "url": "84.247.180.192/foo?x=1"})
             if nav_action.get("url") != "http://localhost/foo?x=1":
-                _fail(
-                    "_sanitize_action_payload did not sanitize NavigateAction url. "
-                    f"got: {nav_action.get('url')!r}"
-                )
+                _fail(f"_sanitize_action_payload did not sanitize NavigateAction url. got: {nav_action.get('url')!r}")
             _ok("_sanitize_action_payload rewrites NavigateAction URL when localhost mode is enabled")
         finally:
             if prev is None:
@@ -173,14 +163,19 @@ def _check_task_payload_task_from_payload(agent_mod) -> None:
     task = task_fn({"task_id": "check", "url": "http://84.247.180.192/test", "prompt": "open page"})
     if not hasattr(task, "url"):
         _fail("_task_from_payload did not return task-like object")
-    if str(getattr(task, "url")) != "http://84.247.180.192/test":
-        _fail(f"_task_from_payload should preserve incoming URL by default. got {getattr(task, 'url')!r}")
+    if str(task.url) != "http://84.247.180.192/test":
+        _fail(f"_task_from_payload should preserve incoming URL by default. got {task.url!r}")
     _ok("_task_from_payload preserves incoming task URL by default")
 
 
 def _check_handshake_fields() -> None:
     try:
-        from autoppia_web_agents_subnet.miner.config import AGENT_NAME, GITHUB_URL, AGENT_IMAGE, AGENT_VERSION
+        from autoppia_web_agents_subnet.miner.config import (
+            AGENT_IMAGE,
+            AGENT_NAME,
+            AGENT_VERSION,
+            GITHUB_URL,
+        )
     except Exception as exc:
         _warn("autoppia_web_agents_subnet package not importable for handshake checks")
         print(f"       detail: {exc}")
@@ -276,8 +271,7 @@ def _check_http_live(url: str) -> None:
                 _fail(f"Live /act response invalid: {err}")
             _ok("Live POST /act 200 and payload shape valid")
             if any(
-                isinstance(((c.get("arguments") or {}).get("url")), str)
-                and "84.247.180.192" in str((c.get("arguments") or {}).get("url") or "")
+                isinstance(((c.get("arguments") or {}).get("url")), str) and "84.247.180.192" in str((c.get("arguments") or {}).get("url") or "")
                 for c in (act_resp.get("tool_calls") or [])
                 if isinstance(c, dict) and str(c.get("name") or "").strip().lower() == "browser.navigate"
             ):

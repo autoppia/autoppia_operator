@@ -3,7 +3,14 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-__all__ = ["ApifiedWebAgent", "AutoppiaOperator", "FSMAgent", "OPERATOR", "app", "fsm_operator"]
+__all__ = [
+    "OPERATOR",
+    "ApifiedWebAgent",
+    "AutoppiaOperator",
+    "FSMAgent",
+    "app",
+    "fsm_operator",
+]
 
 
 def __getattr__(name: str) -> Any:

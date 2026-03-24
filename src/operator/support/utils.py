@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
-
 import os
 import re
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -18,7 +17,7 @@ def candidate_text(value: Any) -> str | None:
     if isinstance(value, str):
         collapsed = " ".join(value.strip().split())
         return collapsed if collapsed else None
-    if isinstance(value, (int, float, bool)):
+    if isinstance(value, int | float | bool):
         return str(value)
     if isinstance(value, list):
         for item in value:
@@ -27,7 +26,17 @@ def candidate_text(value: Any) -> str | None:
                 return parsed
         return None
     if isinstance(value, dict):
-        for key in ("content", "final_text", "final_answer", "summary", "answer", "result", "output", "text", "message"):
+        for key in (
+            "content",
+            "final_text",
+            "final_answer",
+            "summary",
+            "answer",
+            "result",
+            "output",
+            "text",
+            "message",
+        ):
             parsed = candidate_text(value.get(key))
             if parsed:
                 return parsed
@@ -85,11 +94,22 @@ def normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
         return cleaned
 
     allowed_types = {"attributevalueselector", "tagcontainsselector", "xpathselector"}
-    if sel_type in {"text", "textselector", "textcontains", "textcontainsselector", "linktext", "partiallinktext"}:
+    if sel_type in {
+        "text",
+        "textselector",
+        "textcontains",
+        "textcontainsselector",
+        "linktext",
+        "partiallinktext",
+    }:
         value = first_text("value", "text", "label", "name", "query")
         if not value:
             return None
-        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
+        return {
+            "type": "tagContainsSelector",
+            "value": value,
+            "case_sensitive": case_sensitive,
+        }
     if sel_type in {"attribute", "attributevalueselector"}:
         attribute = first_text("attribute", "attr", "name")
         value = first_text("value", "text", "label")
@@ -105,13 +125,33 @@ def normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
         value = normalize_xpath(first_text("value", "text", "xpath"))
         if not value:
             return None
-        return {"type": "xpathSelector", "value": value, "case_sensitive": case_sensitive}
+        return {
+            "type": "xpathSelector",
+            "value": value,
+            "case_sensitive": case_sensitive,
+        }
     if sel_type == "tagcontainsselector":
         value = first_text("value", "text", "label")
         if not value:
             return None
-        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
-    if sel_type in {"id", "class", "name", "href", "placeholder", "aria-label", "aria_label", "title", "role", "value", "type"}:
+        return {
+            "type": "tagContainsSelector",
+            "value": value,
+            "case_sensitive": case_sensitive,
+        }
+    if sel_type in {
+        "id",
+        "class",
+        "name",
+        "href",
+        "placeholder",
+        "aria-label",
+        "aria_label",
+        "title",
+        "role",
+        "value",
+        "type",
+    }:
         value = first_text("value", "text", "label")
         if not value:
             return None
@@ -133,6 +173,10 @@ def normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
                 "case_sensitive": case_sensitive,
             }
         if value:
-            return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
+            return {
+                "type": "tagContainsSelector",
+                "value": value,
+                "case_sensitive": case_sensitive,
+            }
         return None
     return dict(selector)

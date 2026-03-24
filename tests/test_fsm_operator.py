@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any
+
 import pytest
 
 from src.operator.agents.fsm import (
-    FSMOperator,
     MAX_INTERNAL_META_STEPS,
     AgentFormProgress,
     AgentState,
@@ -13,22 +13,26 @@ from src.operator.agents.fsm import (
     CandidateExtractor,
     CandidateRanker,
     FlagDetector,
+    FSMOperator,
     ObsBuilder,
 )
 
 
-def _dummy_llm_invalid(**_: Any) -> Dict[str, Any]:
-    return {"choices": [{"message": {"content": "not-json"}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+def _dummy_llm_invalid(**_: Any) -> dict[str, Any]:
+    return {
+        "choices": [{"message": {"content": "not-json"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
 
 
-def _dummy_llm_meta_loop(**_: Any) -> Dict[str, Any]:
+def _dummy_llm_meta_loop(**_: Any) -> dict[str, Any]:
     return {
         "choices": [{"message": {"content": '{"type":"meta","meta_tool":{"name":"META.REPLAN","arguments":{}}}'}}],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
     }
 
 
-def _dummy_llm_final(**_: Any) -> Dict[str, Any]:
+def _dummy_llm_final(**_: Any) -> dict[str, Any]:
     return {
         "choices": [{"message": {"content": '{"type":"final","done":true,"content":"Treasury value found: T 399,29"}'}}],
         "usage": {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9},
@@ -36,7 +40,7 @@ def _dummy_llm_final(**_: Any) -> Dict[str, Any]:
     }
 
 
-def _dummy_llm_reasoning_trace_click(**_: Any) -> Dict[str, Any]:
+def _dummy_llm_reasoning_trace_click(**_: Any) -> dict[str, Any]:
     return {
         "choices": [
             {
@@ -61,7 +65,10 @@ def _dummy_llm_reasoning_trace_click(**_: Any) -> Dict[str, Any]:
                                 "next_milestone": "Open the visible pricing page.",
                                 "completion_state": "in_progress",
                             },
-                            "tool_call": {"name": "browser.click", "arguments": {"index": 0}},
+                            "tool_call": {
+                                "name": "browser.click",
+                                "arguments": {"index": 0},
+                            },
                         }
                     )
                 }
@@ -72,15 +79,13 @@ def _dummy_llm_reasoning_trace_click(**_: Any) -> Dict[str, Any]:
     }
 
 
-def _dummy_llm_type_login_username(**_: Any) -> Dict[str, Any]:
+def _dummy_llm_type_login_username(**_: Any) -> dict[str, Any]:
     return {
         "choices": [
             {
                 "message": {
                     "content": (
-                        '{"type":"browser","tool_call":{"name":"browser.input","arguments":{'
-                        '"selector":{"type":"attributeValueSelector","attribute":"id","value":"login-username","case_sensitive":false},'
-                        '"text":"<username>"}}}'
+                        '{"type":"browser","tool_call":{"name":"browser.input","arguments":{"selector":{"type":"attributeValueSelector","attribute":"id","value":"login-username","case_sensitive":false},"text":"<username>"}}}'
                     )
                 }
             }
@@ -90,7 +95,7 @@ def _dummy_llm_type_login_username(**_: Any) -> Dict[str, Any]:
     }
 
 
-def _dummy_vision_llm_apply(**_: Any) -> Dict[str, Any]:
+def _dummy_vision_llm_apply(**_: Any) -> dict[str, Any]:
     return {
         "choices": [
             {
@@ -111,7 +116,7 @@ def _dummy_vision_llm_apply(**_: Any) -> Dict[str, Any]:
     }
 
 
-def _base_payload() -> Dict[str, Any]:
+def _base_payload() -> dict[str, Any]:
     return {
         "task_id": "fsm-test",
         "prompt": "Go to example.com and find pricing information",
@@ -161,7 +166,7 @@ def test_meta_tool_loop_is_capped(monkeypatch: Any) -> None:
     monkeypatch.setenv("FSM_ALLOW_CONTROL_META_TOOLS", "1")
     engine = FSMOperator(llm_call=_dummy_llm_meta_loop)
     payload = _base_payload()
-    payload["allowed_tools"] = list(payload["allowed_tools"]) + [{"name": "META.REPLAN"}]
+    payload["allowed_tools"] = [*list(payload["allowed_tools"]), {"name": "META.REPLAN"}]
     out = engine.run(payload=payload)
     st = out.get("state_out") or {}
     counters = st.get("counters") if isinstance(st.get("counters"), dict) else {}
@@ -181,7 +186,12 @@ def test_stuck_recovery_triggers_with_loop_signals(monkeypatch: Any) -> None:
     out = engine.run(payload=payload)
     actions = out.get("actions") if isinstance(out.get("actions"), list) else []
     assert len(actions) == 1
-    assert actions[0].get("type") in {"NavigateAction", "GoBackAction", "WaitAction", "ScrollAction"}
+    assert actions[0].get("type") in {
+        "NavigateAction",
+        "GoBackAction",
+        "WaitAction",
+        "ScrollAction",
+    }
     st = out.get("state_out") or {}
     blocked = st.get("blocklist", {}).get("element_ids") if isinstance(st.get("blocklist"), dict) else []
     assert isinstance(blocked, list)
@@ -257,7 +267,10 @@ def test_allowed_tools_parses_function_definitions_shape() -> None:
 def test_browser_scroll_accepts_page_amount_keyword() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     action = engine._browser_action_from_tool_call(
-        tool_call={"name": "browser.scroll", "arguments": {"direction": "down", "amount": "page"}},
+        tool_call={
+            "name": "browser.scroll",
+            "arguments": {"direction": "down", "amount": "page"},
+        },
         prompt="Scroll down.",
         ranked_candidates=[],
         state=AgentState(),
@@ -276,7 +289,10 @@ def test_browser_scroll_accepts_page_amount_keyword() -> None:
 def test_browser_scroll_invalid_amount_falls_back_to_default() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     action = engine._browser_action_from_tool_call(
-        tool_call={"name": "browser.scroll", "arguments": {"direction": "up", "amount": "nonsense"}},
+        tool_call={
+            "name": "browser.scroll",
+            "arguments": {"direction": "up", "amount": "nonsense"},
+        },
         prompt="Scroll up.",
         ranked_candidates=[],
         state=AgentState(),
@@ -341,7 +357,12 @@ def test_meta_search_text_and_find_elements_update_state() -> None:
             text="Search films",
             href="",
             context="Search bar",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "search", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "search",
+                "case_sensitive": False,
+            },
             dom_path="html/body/input[1]",
             bbox=None,
         )
@@ -454,7 +475,12 @@ def test_coerce_type_text_replaces_low_quality_model_value() -> None:
         text="Password",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "password-input", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "password-input",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[1]",
         field_kind="password",
         input_type="password",
@@ -483,7 +509,12 @@ def test_candidate_with_low_quality_typed_value_is_not_considered_filled() -> No
         text="Password",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "password-input", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "password-input",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[1]",
         field_kind="password",
         input_type="password",
@@ -500,7 +531,12 @@ def test_coerce_type_text_preserves_better_remembered_value() -> None:
         text="Username",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-username-field", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-username-field",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[1]",
         field_kind="username",
     )
@@ -529,7 +565,12 @@ def test_coerce_type_text_prefers_prompt_anchored_identity_value_over_model_gues
         text="Username",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-username-field", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-username-field",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[1]",
         field_kind="username",
     )
@@ -540,7 +581,12 @@ def test_coerce_type_text_prefers_prompt_anchored_identity_value_over_model_gues
         text="Password",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "password-input", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "password-input",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[2]",
         field_kind="password",
         input_type="password",
@@ -568,7 +614,11 @@ def test_non_auth_prompt_on_login_page_does_not_trigger_auth_pre_actions() -> No
         "step_index": 1,
         "history": [],
         "state_in": {"mode": "NAV"},
-        "allowed_tools": [{"name": "browser.click"}, {"name": "browser.input"}, {"name": "browser.wait"}],
+        "allowed_tools": [
+            {"name": "browser.click"},
+            {"name": "browser.input"},
+            {"name": "browser.wait"},
+        ],
     }
     out = engine.run(payload=payload)
     reasoning = str(out.get("reasoning") or "")
@@ -578,9 +628,7 @@ def test_non_auth_prompt_on_login_page_does_not_trigger_auth_pre_actions() -> No
 
 def test_extract_credentials_ignores_empty_quoted_values() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
-    ids, pwds = engine._extract_credentials(
-        "Please register using username equals '', email equals '' and password equals ''."
-    )
+    ids, pwds = engine._extract_credentials("Please register using username equals '', email equals '' and password equals ''.")
     assert ids == []
     assert pwds == []
 
@@ -623,7 +671,12 @@ def test_infer_input_text_generates_missing_registration_values_generically() ->
         text="",
         href="",
         context="Registration form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-username", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-username",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[1]",
         field_hint="Username",
         field_kind="username",
@@ -635,7 +688,12 @@ def test_infer_input_text_generates_missing_registration_values_generically() ->
         text="",
         href="",
         context="Registration form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-email", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-email",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[2]",
         field_hint="Email",
         field_kind="email",
@@ -648,7 +706,12 @@ def test_infer_input_text_generates_missing_registration_values_generically() ->
         text="",
         href="",
         context="Registration form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-password", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-password",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[3]",
         field_hint="Password",
         field_kind="password",
@@ -673,7 +736,12 @@ def test_ranker_prefers_navigation_link_over_search_input_when_required_fields_m
             text="Search films",
             href="",
             context="Hero search",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "text-input", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "text-input",
+                "case_sensitive": False,
+            },
             dom_path="html/body/main/input[1]",
             field_hint="Search",
             field_kind="search",
@@ -687,7 +755,12 @@ def test_ranker_prefers_navigation_link_over_search_input_when_required_fields_m
             text="Login",
             href="https://example.com/login",
             context="Header navigation",
-            selector={"type": "attributeValueSelector", "attribute": "href", "value": "/login", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "href",
+                "value": "/login",
+                "case_sensitive": False,
+            },
             dom_path="html/body/header/nav/a[1]",
             field_kind="link",
             group_id="g-nav",
@@ -717,7 +790,10 @@ def test_browser_select_rejects_non_select_candidate_and_falls_back_to_real_sele
             text="Year desc",
             href="",
             context="Sort controls",
-            selector={"type": "xpathSelector", "value": "//button[contains(normalize-space(.), 'year desc')]"},
+            selector={
+                "type": "xpathSelector",
+                "value": "//button[contains(normalize-space(.), 'year desc')]",
+            },
             dom_path="html/body/div/button[1]",
             field_kind="button",
             group_id="g-sort",
@@ -730,7 +806,12 @@ def test_browser_select_rejects_non_select_candidate_and_falls_back_to_real_sele
             text="All years 2023 2022 2004 2003 2002",
             href="",
             context="Filter panel",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "year-filter", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "year-filter",
+                "case_sensitive": False,
+            },
             dom_path="html/body/div/select[1]",
             field_kind="year",
             group_id="g-filter",
@@ -741,7 +822,10 @@ def test_browser_select_rejects_non_select_candidate_and_falls_back_to_real_sele
         tool_call={
             "name": "browser.select_dropdown",
             "arguments": {
-                "selector": {"type": "xpathSelector", "value": "//button[contains(normalize-space(.), 'year desc')]"},
+                "selector": {
+                    "type": "xpathSelector",
+                    "value": "//button[contains(normalize-space(.), 'year desc')]",
+                },
                 "_element_id": "sort-button",
                 "text": "2003",
             },
@@ -769,7 +853,12 @@ def test_browser_type_blank_text_is_inferred_from_candidate_and_prompt() -> None
             text="Username",
             href="",
             context="Register form",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-username-field", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "register-username-field",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/input[1]",
             field_kind="username",
             group_id="g-register",
@@ -780,7 +869,12 @@ def test_browser_type_blank_text_is_inferred_from_candidate_and_prompt() -> None
         tool_call={
             "name": "browser.input",
             "arguments": {
-                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "register-username-field", "case_sensitive": False},
+                "selector": {
+                    "type": "attributeValueSelector",
+                    "attribute": "id",
+                    "value": "register-username-field",
+                    "case_sensitive": False,
+                },
                 "text": "",
             },
         },
@@ -816,7 +910,12 @@ def test_registration_intent_opens_signup_page_before_submit() -> None:
 def test_browser_action_mapping_attaches_candidate_element_id_from_selector() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     state = AgentState()
-    selector = {"type": "attributeValueSelector", "attribute": "id", "value": "message-button", "case_sensitive": False}
+    selector = {
+        "type": "attributeValueSelector",
+        "attribute": "id",
+        "value": "message-button",
+        "case_sensitive": False,
+    }
     ranked = [
         Candidate(
             id="el_message",
@@ -845,7 +944,12 @@ def test_browser_action_mapping_attaches_candidate_element_id_from_selector() ->
 def test_browser_action_mapping_accepts_underscore_element_id_alias() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     state = AgentState()
-    selector = {"type": "attributeValueSelector", "attribute": "id", "value": "entry-field", "case_sensitive": False}
+    selector = {
+        "type": "attributeValueSelector",
+        "attribute": "id",
+        "value": "entry-field",
+        "case_sensitive": False,
+    }
     ranked = [
         Candidate(
             id="el_rating",
@@ -860,7 +964,14 @@ def test_browser_action_mapping_accepts_underscore_element_id_alias() -> None:
         )
     ]
     action = engine._browser_action_from_tool_call(
-        tool_call={"name": "browser.input", "arguments": {"selector": selector, "_element_id": "el_rating", "text": "4.1"}},
+        tool_call={
+            "name": "browser.input",
+            "arguments": {
+                "selector": selector,
+                "_element_id": "el_rating",
+                "text": "4.1",
+            },
+        },
         ranked_candidates=ranked,
         state=state,
         prompt="Set rating to 4.1",
@@ -908,14 +1019,23 @@ def test_repeated_click_on_input_is_promoted_to_type_action() -> None:
         text="Name",
         href="",
         context="Contact form name",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "contact-name", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "contact-name",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[1]",
         bbox=None,
     )
     state = AgentState()
     state.counters.repeat_action_count = 1
     promoted = engine._promote_click_input_to_type(
-        action={"type": "ClickAction", "selector": cand.selector, "_element_id": "el_name"},
+        action={
+            "type": "ClickAction",
+            "selector": cand.selector,
+            "_element_id": "el_name",
+        },
         prompt="Submit contact form with a name that is NOT 'TestUser'.",
         ranked_candidates=[cand],
         state=state,
@@ -935,7 +1055,12 @@ def test_submit_click_is_guarded_with_missing_form_inputs() -> None:
         text="Sign Up",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "signup-button", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "signup-button",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/button[1]",
         bbox=None,
     )
@@ -946,12 +1071,21 @@ def test_submit_click_is_guarded_with_missing_form_inputs() -> None:
         text="Username",
         href="",
         context="Register form username",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-username", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-username",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[1]",
         bbox=None,
     )
     guarded = engine._guard_submit_without_inputs(
-        action={"type": "ClickAction", "selector": submit.selector, "_element_id": "el_submit"},
+        action={
+            "type": "ClickAction",
+            "selector": submit.selector,
+            "_element_id": "el_submit",
+        },
         prompt="Create account to continue.",
         history=[],
         ranked_candidates=[submit, username],
@@ -966,7 +1100,13 @@ def test_group_guard_finishes_missing_required_input_before_select() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     state = AgentState()
     state.form_progress.active_group_id = "g-register"
-    state.form_progress.active_group_candidate_ids = ["el_user", "el_email", "el_pass", "el_confirm", "el_year"]
+    state.form_progress.active_group_candidate_ids = [
+        "el_user",
+        "el_email",
+        "el_pass",
+        "el_confirm",
+        "el_year",
+    ]
     state.form_progress.typed_candidate_ids = ["el_user", "el_pass", "el_confirm"]
     username = Candidate(
         id="el_user",
@@ -975,7 +1115,12 @@ def test_group_guard_finishes_missing_required_input_before_select() -> None:
         text="Username",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-username", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-username",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[1]",
         field_kind="username",
         group_id="g-register",
@@ -988,7 +1133,12 @@ def test_group_guard_finishes_missing_required_input_before_select() -> None:
         text="Email",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-email", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-email",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[2]",
         field_kind="email",
         input_type="email",
@@ -1002,7 +1152,12 @@ def test_group_guard_finishes_missing_required_input_before_select() -> None:
         text="Password",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-password", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-password",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[3]",
         field_kind="password",
         input_type="password",
@@ -1016,7 +1171,12 @@ def test_group_guard_finishes_missing_required_input_before_select() -> None:
         text="Confirm password",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-confirm-password", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-confirm-password",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[4]",
         field_kind="confirm_password",
         input_type="password",
@@ -1037,7 +1197,12 @@ def test_group_guard_finishes_missing_required_input_before_select() -> None:
         group_label="Register form",
     )
     guarded = engine._guard_missing_group_inputs(
-        action={"type": "SelectDropDownOptionAction", "selector": year_select.selector, "text": "1917", "_element_id": "el_year"},
+        action={
+            "type": "SelectDropDownOptionAction",
+            "selector": year_select.selector,
+            "text": "1917",
+            "_element_id": "el_year",
+        },
         prompt="Please register an account using username equals '', email equals '' which ends with '@gmail.com', and password equals ''.",
         history=[],
         ranked_candidates=[username, email, password, confirm, year_select],
@@ -1053,7 +1218,13 @@ def test_group_guard_prefers_submit_over_optional_select_after_required_fields()
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     state = AgentState()
     state.form_progress.active_group_id = "g-register"
-    state.form_progress.active_group_candidate_ids = ["el_user", "el_pass", "el_confirm", "el_year", "el_submit"]
+    state.form_progress.active_group_candidate_ids = [
+        "el_user",
+        "el_pass",
+        "el_confirm",
+        "el_year",
+        "el_submit",
+    ]
     state.form_progress.typed_candidate_ids = ["el_user", "el_pass", "el_confirm"]
     username = Candidate(
         id="el_user",
@@ -1062,7 +1233,12 @@ def test_group_guard_prefers_submit_over_optional_select_after_required_fields()
         text="Username",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-username", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-username",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[1]",
         field_kind="username",
         group_id="g-register",
@@ -1075,7 +1251,12 @@ def test_group_guard_prefers_submit_over_optional_select_after_required_fields()
         text="Password",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-password", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-password",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[2]",
         field_kind="password",
         input_type="password",
@@ -1089,7 +1270,12 @@ def test_group_guard_prefers_submit_over_optional_select_after_required_fields()
         text="Confirm password",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-confirm-password", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-confirm-password",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[3]",
         field_kind="confirm_password",
         input_type="password",
@@ -1116,7 +1302,12 @@ def test_group_guard_prefers_submit_over_optional_select_after_required_fields()
         text="Create account",
         href="",
         context="Register form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "register-action", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "register-action",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/button[1]",
         field_kind="account_create",
         input_type="submit",
@@ -1124,7 +1315,12 @@ def test_group_guard_prefers_submit_over_optional_select_after_required_fields()
         group_label="Register form",
     )
     guarded = engine._guard_missing_group_inputs(
-        action={"type": "SelectDropDownOptionAction", "selector": year_select.selector, "text": "1917", "_element_id": "el_year"},
+        action={
+            "type": "SelectDropDownOptionAction",
+            "selector": year_select.selector,
+            "text": "1917",
+            "_element_id": "el_year",
+        },
         prompt="Please register an account using username equals '', and password equals ''.",
         history=[],
         ranked_candidates=[username, password, confirm, year_select, submit],
@@ -1145,7 +1341,12 @@ def test_submit_guard_uses_history_candidate_ids_to_avoid_retyping_same_field() 
         text="Login",
         href="",
         context="Sign in form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "signin-control", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "signin-control",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/button[1]",
         bbox=None,
     )
@@ -1156,7 +1357,12 @@ def test_submit_guard_uses_history_candidate_ids_to_avoid_retyping_same_field() 
         text="Username",
         href="",
         context="Sign in username",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "login-username", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "login-username",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[1]",
         bbox=None,
     )
@@ -1167,12 +1373,21 @@ def test_submit_guard_uses_history_candidate_ids_to_avoid_retyping_same_field() 
         text="Password",
         href="",
         context="Sign in password",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "password-entry-field", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "password-entry-field",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[2]",
         bbox=None,
     )
     guarded = engine._guard_submit_without_inputs(
-        action={"type": "ClickAction", "selector": submit.selector, "_element_id": "el_submit"},
+        action={
+            "type": "ClickAction",
+            "selector": submit.selector,
+            "_element_id": "el_submit",
+        },
         prompt="Login to continue.",
         history=[{"action": "TypeAction", "candidate_id": "el_user", "text": "user1"}],
         ranked_candidates=[submit, username, password],
@@ -1193,12 +1408,20 @@ def test_text_selector_click_is_resolved_to_candidate_selector() -> None:
         text="Enviar Mensaje",
         href="",
         context="contact form submit",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "message-button", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "message-button",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/button[1]",
         bbox=None,
     )
     action = engine._browser_action_from_tool_call(
-        tool_call={"name": "browser.click", "arguments": {"selector": {"type": "text", "value": "Enviar Mensaje"}}},
+        tool_call={
+            "name": "browser.click",
+            "arguments": {"selector": {"type": "text", "value": "Enviar Mensaje"}},
+        },
         ranked_candidates=[button],
         state=state,
         prompt="Send message",
@@ -1221,7 +1444,12 @@ def test_ranker_prefers_create_targets_for_create_tasks() -> None:
             text="View details",
             href="/movies/123",
             context="Movie card",
-            selector={"type": "attributeValueSelector", "attribute": "href", "value": "/movies/123", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "href",
+                "value": "/movies/123",
+                "case_sensitive": False,
+            },
             dom_path="html/body/a[1]",
             bbox=None,
         ),
@@ -1232,7 +1460,12 @@ def test_ranker_prefers_create_targets_for_create_tasks() -> None:
             text="Add Movie",
             href="",
             context="Create new movie",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "add-movie", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "add-movie",
+                "case_sensitive": False,
+            },
             dom_path="html/body/button[1]",
             bbox=None,
         ),
@@ -1249,7 +1482,9 @@ def test_ranker_prefers_create_targets_for_create_tasks() -> None:
     assert ranked[0].id == "el_add"
 
 
-def test_redundant_type_action_uses_state_roundtrip_and_advances_input(monkeypatch: Any) -> None:
+def test_redundant_type_action_uses_state_roundtrip_and_advances_input(
+    monkeypatch: Any,
+) -> None:
     monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
     engine = FSMOperator(llm_call=_dummy_llm_type_login_username)
     html = """
@@ -1338,7 +1573,12 @@ def test_click_href_with_conflicting_session_query_is_normalized_to_navigate() -
         text="Add Movies",
         href="http://84.247.180.192:8000/search?seed=999",
         context="Profile nav",
-        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/search?seed=999", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "href",
+            "value": "/search?seed=999",
+            "case_sensitive": False,
+        },
         dom_path="html/body/a[1]",
         bbox=None,
     )
@@ -1360,7 +1600,10 @@ def test_navigate_url_with_conflicting_session_query_is_pinned() -> None:
     state = AgentState()
     state.session_query = {"seed": "123"}
     action = engine._browser_action_from_tool_call(
-        tool_call={"name": "browser.navigate", "arguments": {"url": "http://84.247.180.192:8000/search?seed=999"}},
+        tool_call={
+            "name": "browser.navigate",
+            "arguments": {"url": "http://84.247.180.192:8000/search?seed=999"},
+        },
         ranked_candidates=[],
         state=state,
         prompt="Navigate to search",
@@ -1383,12 +1626,20 @@ def test_navigate_same_site_target_uses_visible_link_click_when_available() -> N
         text="Register",
         href="http://84.247.180.192:8001/signup?seed=7",
         context="Home Search Register Login",
-        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/signup?seed=7", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "href",
+            "value": "/signup?seed=7",
+            "case_sensitive": False,
+        },
         dom_path="html/body/a[1]",
         bbox=None,
     )
     action = engine._browser_action_from_tool_call(
-        tool_call={"name": "browser.navigate", "arguments": {"url": "http://84.247.180.192:8001/signup?seed=7"}},
+        tool_call={
+            "name": "browser.navigate",
+            "arguments": {"url": "http://84.247.180.192:8001/signup?seed=7"},
+        },
         ranked_candidates=[register_link],
         state=state,
         prompt="Open register page",
@@ -1411,12 +1662,20 @@ def test_navigate_same_site_target_uses_visible_link_click_when_query_differs() 
         text="Register",
         href="http://84.247.180.192:8001/signup",
         context="Home Search Register Login",
-        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/signup", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "href",
+            "value": "/signup",
+            "case_sensitive": False,
+        },
         dom_path="html/body/a[1]",
         bbox=None,
     )
     action = engine._browser_action_from_tool_call(
-        tool_call={"name": "browser.navigate", "arguments": {"url": "http://84.247.180.192:8001/signup?seed=7"}},
+        tool_call={
+            "name": "browser.navigate",
+            "arguments": {"url": "http://84.247.180.192:8001/signup?seed=7"},
+        },
         ranked_candidates=[register_link],
         state=state,
         prompt="Open register page",
@@ -1466,7 +1725,12 @@ def test_click_visible_same_site_link_keeps_click_when_query_differs() -> None:
         text="Register",
         href="http://84.247.180.192:8001/signup",
         context="Home Search Register Login",
-        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/signup", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "href",
+            "value": "/signup",
+            "case_sensitive": False,
+        },
         dom_path="html/body/a[1]",
         bbox=None,
     )
@@ -1474,7 +1738,12 @@ def test_click_visible_same_site_link_keeps_click_when_query_differs() -> None:
         tool_call={
             "name": "browser.click",
             "arguments": {
-                "selector": {"type": "attributeValueSelector", "attribute": "href", "value": "/signup", "case_sensitive": False},
+                "selector": {
+                    "type": "attributeValueSelector",
+                    "attribute": "href",
+                    "value": "/signup",
+                    "case_sensitive": False,
+                },
                 "element_id": "el_register",
             },
         },
@@ -1514,7 +1783,12 @@ def test_browser_type_rejects_non_input_selector_and_falls_back_to_input_candida
             text="Panel",
             href="",
             context="Container",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "panel", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "panel",
+                "case_sensitive": False,
+            },
             dom_path="html/body/div[1]",
             bbox=None,
         ),
@@ -1525,7 +1799,12 @@ def test_browser_type_rejects_non_input_selector_and_falls_back_to_input_candida
             text="Cast",
             href="",
             context="Cast (comma separated)",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "cast-input", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "cast-input",
+                "case_sensitive": False,
+            },
             dom_path="html/body/input[1]",
             bbox=None,
         ),
@@ -1534,7 +1813,12 @@ def test_browser_type_rejects_non_input_selector_and_falls_back_to_input_candida
         tool_call={
             "name": "browser.input",
             "arguments": {
-                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "panel", "case_sensitive": False},
+                "selector": {
+                    "type": "attributeValueSelector",
+                    "attribute": "id",
+                    "value": "panel",
+                    "case_sensitive": False,
+                },
                 "text": "cosmic",
             },
         },
@@ -1605,7 +1889,12 @@ def test_policy_obs_includes_grouped_item_cards() -> None:
             text="Interstellar",
             href="/movies/1",
             context="Interstellar 2014 169 min Matthew McConaughey View Delete",
-            selector={"type": "attributeValueSelector", "attribute": "href", "value": "/movies/1", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "href",
+                "value": "/movies/1",
+                "case_sensitive": False,
+            },
             dom_path="html/body/div[1]/a[1]",
             bbox=None,
         ),
@@ -1616,7 +1905,12 @@ def test_policy_obs_includes_grouped_item_cards() -> None:
             text="Delete",
             href="",
             context="Interstellar 2014 169 min Matthew McConaughey View Delete",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "delete-1", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "delete-1",
+                "case_sensitive": False,
+            },
             dom_path="html/body/div[1]/button[1]",
             bbox=None,
         ),
@@ -1627,7 +1921,12 @@ def test_policy_obs_includes_grouped_item_cards() -> None:
             text="",
             href="",
             context="Filters Year Genre Apply",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "year", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "year",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/select[1]",
             bbox=None,
         ),
@@ -1638,7 +1937,12 @@ def test_policy_obs_includes_grouped_item_cards() -> None:
             text="Apply",
             href="",
             context="Filters Year Genre Apply",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "apply", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "apply",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/button[1]",
             bbox=None,
         ),
@@ -1651,7 +1955,12 @@ def test_policy_obs_includes_grouped_item_cards() -> None:
         mode="NAV",
         flags={},
         state=state,
-        text_ir={"title": "Movies", "visible_text": "Interstellar 2014 Matthew McConaughey", "headings": ["Movies"], "forms": []},
+        text_ir={
+            "title": "Movies",
+            "visible_text": "Interstellar 2014 Matthew McConaughey",
+            "headings": ["Movies"],
+            "forms": [],
+        },
         candidates=candidates,
         history=[],
     )
@@ -1676,7 +1985,12 @@ def test_meta_vision_qa_updates_state_visual_memory() -> None:
             text="Apply",
             href="",
             context="Filters Year Genre Apply",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "apply-btn", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "apply-btn",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/button[1]",
             bbox=None,
         )
@@ -1687,7 +2001,11 @@ def test_meta_vision_qa_updates_state_visual_memory() -> None:
         args={"question": "Which visible control should be used next?"},
         state=state,
         prompt="Filter results by year",
-        text_ir={"headings": ["Movies"], "control_groups": [{"label": "Filters"}], "cards": []},
+        text_ir={
+            "headings": ["Movies"],
+            "control_groups": [{"label": "Filters"}],
+            "cards": [],
+        },
         candidates=candidates,
         url="https://example.com/movies",
         screenshot="aGVsbG8=",
@@ -1698,7 +2016,9 @@ def test_meta_vision_qa_updates_state_visual_memory() -> None:
     assert state.frontier.pending_elements and "el_apply" in state.frontier.pending_elements
 
 
-def test_auto_vision_on_loop_boosts_visual_target_for_fallback(monkeypatch: Any) -> None:
+def test_auto_vision_on_loop_boosts_visual_target_for_fallback(
+    monkeypatch: Any,
+) -> None:
     monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
     html = """
     <html><body>
@@ -1714,7 +2034,7 @@ def test_auto_vision_on_loop_boosts_visual_target_for_fallback(monkeypatch: Any)
     extracted = probe_engine.extractor.extract(snapshot_html=html, url="https://example.com/movies")
     apply_candidate = next(c for c in extracted if c.text == "Apply")
 
-    def _vision_llm(**_: Any) -> Dict[str, Any]:
+    def _vision_llm(**_: Any) -> dict[str, Any]:
         return {
             "choices": [
                 {
@@ -1723,7 +2043,10 @@ def test_auto_vision_on_loop_boosts_visual_target_for_fallback(monkeypatch: Any)
                             {
                                 "answer": "Use the Apply button in the filter form.",
                                 "element_ids": [apply_candidate.id],
-                                "signals": ["filter controls visible", "apply button visible"],
+                                "signals": [
+                                    "filter controls visible",
+                                    "apply button visible",
+                                ],
                                 "confidence": "high",
                             }
                         )
@@ -1746,7 +2069,11 @@ def test_auto_vision_on_loop_boosts_visual_target_for_fallback(monkeypatch: Any)
             "history": [],
             "state_in": {
                 "mode": "NAV",
-                "counters": {"stall_count": 2, "repeat_action_count": 1, "meta_steps_used": 0},
+                "counters": {
+                    "stall_count": 2,
+                    "repeat_action_count": 1,
+                    "meta_steps_used": 0,
+                },
                 "last_url": "https://example.com/movies",
                 "last_dom_hash": "samehash",
                 "last_action_sig": "ClickAction|same",
@@ -1779,7 +2106,12 @@ def test_policy_obs_includes_active_control_group() -> None:
             text="Year",
             href="",
             context="Filters Year Genre Apply",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "year", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "year",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/select[1]",
             bbox=None,
         ),
@@ -1790,7 +2122,12 @@ def test_policy_obs_includes_active_control_group() -> None:
             text="Apply",
             href="",
             context="Filters Year Genre Apply",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "apply", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "apply",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/button[1]",
             bbox=None,
         ),
@@ -1803,7 +2140,12 @@ def test_policy_obs_includes_active_control_group() -> None:
         mode="NAV",
         flags={},
         state=state,
-        text_ir={"title": "Movies", "visible_text": "Movies", "headings": ["Movies"], "forms": []},
+        text_ir={
+            "title": "Movies",
+            "visible_text": "Movies",
+            "headings": ["Movies"],
+            "forms": [],
+        },
         candidates=candidates,
         history=[],
     )
@@ -1828,7 +2170,12 @@ def test_policy_obs_includes_main_style_deltas_and_grouped_browser_state() -> No
             text="Year",
             href="",
             context="Filters Year Genre Apply",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "year", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "year",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/select[1]",
             group_label="Filters",
             field_kind="year",
@@ -1840,7 +2187,12 @@ def test_policy_obs_includes_main_style_deltas_and_grouped_browser_state() -> No
             text="Apply",
             href="",
             context="Filters Year Genre Apply",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "apply", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "apply",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/button[1]",
             group_label="Filters",
             field_kind="submit",
@@ -1852,7 +2204,12 @@ def test_policy_obs_includes_main_style_deltas_and_grouped_browser_state() -> No
             text="Interstellar",
             href="https://example.com/movies/1",
             context="Interstellar 2014 View details",
-            selector={"type": "attributeValueSelector", "attribute": "href", "value": "/movies/1", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "href",
+                "value": "/movies/1",
+                "case_sensitive": False,
+            },
             dom_path="html/body/main/a[1]",
             group_label="Featured Movies",
         ),
@@ -1865,7 +2222,12 @@ def test_policy_obs_includes_main_style_deltas_and_grouped_browser_state() -> No
         mode="NAV",
         flags={},
         state=state,
-        text_ir={"title": "Movies", "visible_text": "Interstellar 2014", "headings": ["Movies"], "forms": []},
+        text_ir={
+            "title": "Movies",
+            "visible_text": "Interstellar 2014",
+            "headings": ["Movies"],
+            "forms": [],
+        },
         candidates=candidates,
         history=[],
     )
@@ -1897,7 +2259,12 @@ def test_policy_obs_includes_focused_region_and_prioritizes_local_candidates() -
             text="Home",
             href="/",
             context="Top navigation",
-            selector={"type": "attributeValueSelector", "attribute": "href", "value": "/", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "href",
+                "value": "/",
+                "case_sensitive": False,
+            },
             dom_path="html/body/nav/a[1]",
             region_id="region-nav",
             region_kind="nav",
@@ -1910,7 +2277,12 @@ def test_policy_obs_includes_focused_region_and_prioritizes_local_candidates() -
             text="",
             href="",
             context="Login form Email Password Sign in",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "email", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "email",
+                "case_sensitive": False,
+            },
             dom_path="html/body/main/form/input[1]",
             field_kind="email",
             input_type="email",
@@ -1925,7 +2297,11 @@ def test_policy_obs_includes_focused_region_and_prioritizes_local_candidates() -
             text="Sign in",
             href="",
             context="Login form Email Password Sign in",
-            selector={"type": "xpathSelector", "value": "//button[contains(normalize-space(.), \"Sign in\")]", "case_sensitive": False},
+            selector={
+                "type": "xpathSelector",
+                "value": '//button[contains(normalize-space(.), "Sign in")]',
+                "case_sensitive": False,
+            },
             dom_path="html/body/main/form/button[1]",
             field_kind="submit",
             region_id="region-form",
@@ -1941,7 +2317,15 @@ def test_policy_obs_includes_focused_region_and_prioritizes_local_candidates() -
         mode="NAV",
         flags={"url_changed": False, "dom_changed": True},
         state=state,
-        text_ir={"title": "Login", "visible_text": "Login form", "headings": ["Login"], "forms": [], "control_groups": [], "cards": [], "html_excerpt": "<form></form>"},
+        text_ir={
+            "title": "Login",
+            "visible_text": "Login form",
+            "headings": ["Login"],
+            "forms": [],
+            "control_groups": [],
+            "cards": [],
+            "html_excerpt": "<form></form>",
+        },
         candidates=candidates,
         history=[],
         screenshot_available=False,
@@ -1974,7 +2358,12 @@ def test_progress_ledger_records_no_effect_and_releases_blocked_region() -> None
             "url": "https://example.com/login",
         }
     ]
-    flags = {"no_visual_progress": True, "url_changed": False, "dom_changed": False, "loop_level": "high"}
+    flags = {
+        "no_visual_progress": True,
+        "url_changed": False,
+        "dom_changed": False,
+        "loop_level": "high",
+    }
     engine._record_progress_effect(step_index=1, history=history, state=state, flags=flags)
     assert state.progress.last_effect == "BLOCKED"
     assert state.progress.no_progress_score >= 5
@@ -2001,7 +2390,12 @@ def test_ranker_prefers_focus_region_candidates_over_global_nav() -> None:
             text="Home",
             href="/",
             context="Top navigation",
-            selector={"type": "attributeValueSelector", "attribute": "href", "value": "/", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "href",
+                "value": "/",
+                "case_sensitive": False,
+            },
             dom_path="html/body/nav/a[1]",
             region_id="region-nav",
             region_kind="nav",
@@ -2014,7 +2408,12 @@ def test_ranker_prefers_focus_region_candidates_over_global_nav() -> None:
             text="",
             href="",
             context="Login form Email Password Sign in",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "email", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "email",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/input[1]",
             field_kind="email",
             input_type="email",
@@ -2036,7 +2435,7 @@ def test_ranker_prefers_focus_region_candidates_over_global_nav() -> None:
 
 
 def test_fsm_done_defaults_content_and_respects_reasoning_flag() -> None:
-    def _llm_empty_final(**_: Any) -> Dict[str, Any]:
+    def _llm_empty_final(**_: Any) -> dict[str, Any]:
         return {
             "choices": [{"message": {"content": '{"type":"final","done":true,"content":""}'}}],
             "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
@@ -2055,7 +2454,8 @@ def test_fsm_done_defaults_content_and_respects_reasoning_flag() -> None:
 
 def test_wait_only_flow_completes_after_successful_wait(monkeypatch: Any) -> None:
     monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
-    def _llm_wait(**_: Any) -> Dict[str, Any]:
+
+    def _llm_wait(**_: Any) -> dict[str, Any]:
         return {
             "choices": [{"message": {"content": '{"type":"browser","tool_call":{"name":"browser.wait","arguments":{"time_seconds":1}}}'}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
@@ -2076,7 +2476,14 @@ def test_wait_only_flow_completes_after_successful_wait(monkeypatch: Any) -> Non
             **base,
             "step_index": 1,
             "state_in": first.get("state_out"),
-            "history": [{"step": 0, "action": first.get("actions", [None])[0], "exec_ok": True, "url": "https://example.com"}],
+            "history": [
+                {
+                    "step": 0,
+                    "action": first.get("actions", [None])[0],
+                    "exec_ok": True,
+                    "url": "https://example.com",
+                }
+            ],
         }
     )
     assert second.get("done") is True
@@ -2084,7 +2491,9 @@ def test_wait_only_flow_completes_after_successful_wait(monkeypatch: Any) -> Non
     assert second.get("actions") == []
 
 
-def test_popup_pre_action_prefers_escape_after_overlay_intercept(monkeypatch: Any) -> None:
+def test_popup_pre_action_prefers_escape_after_overlay_intercept(
+    monkeypatch: Any,
+) -> None:
     monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     out = engine.run(
@@ -2116,15 +2525,7 @@ def test_popup_pre_action_prefers_escape_after_overlay_intercept(monkeypatch: An
 def test_flag_detector_marks_modal_auth_form_as_interactive_not_popup() -> None:
     flags = FlagDetector().detect(
         snapshot_html=(
-            "<html><body>"
-            "<div role='dialog' aria-modal='true'>"
-            "<form>"
-            "<input id='email' type='email' aria-label='Email' />"
-            "<input id='password' type='password' aria-label='Password' />"
-            "<button type='submit'>Sign in</button>"
-            "</form>"
-            "</div>"
-            "</body></html>"
+            "<html><body><div role='dialog' aria-modal='true'><form><input id='email' type='email' aria-label='Email' /><input id='password' type='password' aria-label='Password' /><button type='submit'>Sign in</button></form></div></body></html>"
         ),
         url="https://example.com/login",
         history=[],
@@ -2136,14 +2537,7 @@ def test_flag_detector_marks_modal_auth_form_as_interactive_not_popup() -> None:
 
 def test_flag_detector_marks_modal_auth_panel_as_interactive_not_popup() -> None:
     flags = FlagDetector().detect(
-        snapshot_html=(
-            "<html><body>"
-            "<div role='dialog' aria-modal='true'>"
-            "<a href='/auth/sign-in'>Sign in</a>"
-            "<a href='/auth/sign-up'>Sign up</a>"
-            "</div>"
-            "</body></html>"
-        ),
+        snapshot_html=("<html><body><div role='dialog' aria-modal='true'><a href='/auth/sign-in'>Sign in</a><a href='/auth/sign-up'>Sign up</a></div></body></html>"),
         url="https://example.com/auth",
         history=[],
         state=AgentState(),
@@ -2163,7 +2557,11 @@ def test_popup_solver_skips_disabled_buttons_and_form_groups() -> None:
                 text="",
                 href="",
                 context="Create your free account",
-                selector={"type": "attributeValueSelector", "attribute": "id", "value": "email"},
+                selector={
+                    "type": "attributeValueSelector",
+                    "attribute": "id",
+                    "value": "email",
+                },
                 dom_path="html/body/div/form/input[1]",
                 field_kind="email",
                 group_id="auth-group",
@@ -2176,7 +2574,11 @@ def test_popup_solver_skips_disabled_buttons_and_form_groups() -> None:
                 text="",
                 href="",
                 context="Create your free account",
-                selector={"type": "attributeValueSelector", "attribute": "id", "value": "password"},
+                selector={
+                    "type": "attributeValueSelector",
+                    "attribute": "id",
+                    "value": "password",
+                },
                 dom_path="html/body/div/form/input[2]",
                 field_kind="password",
                 group_id="auth-group",
@@ -2189,7 +2591,11 @@ def test_popup_solver_skips_disabled_buttons_and_form_groups() -> None:
                 text="Create your free account",
                 href="",
                 context="Create your free account",
-                selector={"type": "attributeValueSelector", "attribute": "id", "value": "create"},
+                selector={
+                    "type": "attributeValueSelector",
+                    "attribute": "id",
+                    "value": "create",
+                },
                 dom_path="html/body/div/form/button[1]",
                 group_id="auth-group",
                 group_label="Create your free account",
@@ -2202,7 +2608,11 @@ def test_popup_solver_skips_disabled_buttons_and_form_groups() -> None:
                 text="Cancel",
                 href="",
                 context="Cookie dialog overlay",
-                selector={"type": "attributeValueSelector", "attribute": "id", "value": "cancel"},
+                selector={
+                    "type": "attributeValueSelector",
+                    "attribute": "id",
+                    "value": "cancel",
+                },
                 dom_path="html/body/div/button[1]",
                 group_id="popup-group",
                 group_label="Cookie dialog",
@@ -2214,11 +2624,20 @@ def test_popup_solver_skips_disabled_buttons_and_form_groups() -> None:
 
 def test_router_replans_after_repeated_popup_failures() -> None:
     router = FSMOperator(llm_call=_dummy_llm_invalid).router
-    state = AgentState(mode="NAV", counters={"repeat_action_count": 1, "stall_count": 0, "meta_steps_used": 0})
+    state = AgentState(
+        mode="NAV",
+        counters={"repeat_action_count": 1, "stall_count": 0, "meta_steps_used": 0},
+    )
     mode, reason = router.next_mode(
         step_index=3,
         state=state,
-        flags={"modal_dialog": True, "interactive_modal_form": False, "cookie_banner": False, "captcha_suspected": False, "loop_level": "low"},
+        flags={
+            "modal_dialog": True,
+            "interactive_modal_form": False,
+            "cookie_banner": False,
+            "captcha_suspected": False,
+            "loop_level": "low",
+        },
     )
     assert mode == "PLAN"
     assert reason == "popup_stalled_replan"
@@ -2230,25 +2649,21 @@ def test_router_collapses_extract_like_modes_back_to_nav() -> None:
     mode, reason = router.next_mode(
         step_index=4,
         state=state,
-        flags={"modal_dialog": False, "cookie_banner": False, "captcha_suspected": False, "loop_level": "none"},
+        flags={
+            "modal_dialog": False,
+            "cookie_banner": False,
+            "captcha_suspected": False,
+            "loop_level": "none",
+        },
     )
     assert mode == "NAV"
     assert reason == "continue_navigation"
 
 
 def test_type_action_on_checkbox_is_converted_to_click() -> None:
-    def _llm_type_checkbox(**_: Any) -> Dict[str, Any]:
+    def _llm_type_checkbox(**_: Any) -> dict[str, Any]:
         return {
-            "choices": [
-                {
-                    "message": {
-                        "content": (
-                            '{"type":"browser","tool_call":{"name":"browser.input","arguments":{'
-                            '"element_id":"checkbox-1","text":"autoppia"}}}'
-                        )
-                    }
-                }
-            ],
+            "choices": [{"message": {"content": ('{"type":"browser","tool_call":{"name":"browser.input","arguments":{"element_id":"checkbox-1","text":"autoppia"}}}')}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             "model": "gpt-5.2",
         }
@@ -2280,7 +2695,11 @@ def test_password_retry_uses_next_prompt_password() -> None:
         text="",
         href="",
         context="Login form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "password"},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "password",
+        },
         dom_path="html/body/form/input[2]",
         field_kind="password",
         input_type="password",
@@ -2310,7 +2729,12 @@ def test_ranker_prefers_auth_entry_when_mutation_task_has_no_local_mutation_cont
         text="Nightmare Alley",
         href="/movies/real-movie-120?seed=7",
         context="Featured movies duration 120 minutes",
-        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/movies/real-movie-120?seed=7", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "href",
+            "value": "/movies/real-movie-120?seed=7",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/a[1]",
     )
     register_link = Candidate(
@@ -2320,7 +2744,12 @@ def test_ranker_prefers_auth_entry_when_mutation_task_has_no_local_mutation_cont
         text="Register",
         href="/register?seed=7",
         context="Header navigation create account",
-        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/register?seed=7", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "href",
+            "value": "/register?seed=7",
+            "case_sensitive": False,
+        },
         dom_path="html/body/header/nav/a[1]",
     )
     login_link = Candidate(
@@ -2330,7 +2759,12 @@ def test_ranker_prefers_auth_entry_when_mutation_task_has_no_local_mutation_cont
         text="Login",
         href="/login?seed=7",
         context="Header navigation sign in",
-        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/login?seed=7", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "href",
+            "value": "/login?seed=7",
+            "case_sensitive": False,
+        },
         dom_path="html/body/header/nav/a[2]",
     )
     ranked = ranker.rank(
@@ -2355,7 +2789,12 @@ def test_page_observations_expose_capability_gap_for_read_only_mutation_page() -
         text="Nightmare Alley",
         href="/movies/real-movie-120?seed=7",
         context="Featured movies duration 120 minutes",
-        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/movies/real-movie-120?seed=7", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "href",
+            "value": "/movies/real-movie-120?seed=7",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/a[1]",
     )
     register_link = Candidate(
@@ -2365,7 +2804,12 @@ def test_page_observations_expose_capability_gap_for_read_only_mutation_page() -
         text="Register",
         href="/register?seed=7",
         context="Header navigation create account",
-        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/register?seed=7", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "href",
+            "value": "/register?seed=7",
+            "case_sensitive": False,
+        },
         dom_path="html/body/header/nav/a[1]",
     )
     policy_obs = builder.build_policy_obs(
@@ -2376,7 +2820,12 @@ def test_page_observations_expose_capability_gap_for_read_only_mutation_page() -
         mode="NAV",
         flags={},
         state=state,
-        text_ir={"title": "Movies", "visible_text": "Movies", "headings": ["Movies"], "forms": []},
+        text_ir={
+            "title": "Movies",
+            "visible_text": "Movies",
+            "headings": ["Movies"],
+            "forms": [],
+        },
         candidates=[movie_link, register_link],
         history=[],
     )
@@ -2400,7 +2849,12 @@ def test_ranker_prefers_local_mutation_control_over_unrelated_profile_fields() -
         text="Delete Film",
         href="",
         context="Profile movie card manage actions",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "delete-film", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "delete-film",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/section/button[1]",
     )
     profile_name = Candidate(
@@ -2412,7 +2866,12 @@ def test_ranker_prefers_local_mutation_control_over_unrelated_profile_fields() -
         context="Profile settings update your account",
         field_hint="Name",
         field_kind="name",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "profile-name", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "profile-name",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/form/input[1]",
     )
     ranked = ranker.rank(
@@ -2437,7 +2896,12 @@ def test_ranker_prefers_non_form_controls_on_delete_only_task_after_auth() -> No
         text="Movies",
         href="",
         context="Profile movies manage entries",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "movie-button", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "movie-button",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/section/button[1]",
     )
     profile_email = Candidate(
@@ -2449,7 +2913,12 @@ def test_ranker_prefers_non_form_controls_on_delete_only_task_after_auth() -> No
         context="Profile settings",
         field_hint="Email",
         field_kind="email",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "profile-email-field", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "profile-email-field",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/form/input[1]",
     )
     ranked = ranker.rank(
@@ -2475,7 +2944,12 @@ def test_ranker_prefers_section_switch_over_profile_form_on_delete_task() -> Non
         href="",
         context="tablist profile movies add film",
         ui_state="inactive",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "radix-_r_0_-trigger-movies", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "radix-_r_0_-trigger-movies",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/div/button[2]",
     )
     profile_tab = Candidate(
@@ -2486,7 +2960,12 @@ def test_ranker_prefers_section_switch_over_profile_form_on_delete_task() -> Non
         href="",
         context="tablist profile movies add film",
         ui_state="active",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "radix-_r_0_-trigger-profile", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "radix-_r_0_-trigger-profile",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/div/button[1]",
     )
     save_profile = Candidate(
@@ -2498,7 +2977,12 @@ def test_ranker_prefers_section_switch_over_profile_form_on_delete_task() -> Non
         context="Edit Profile form",
         field_hint="Save Profile",
         field_kind="submit",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "save-profile", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "save-profile",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/form/button[1]",
     )
     profile_email = Candidate(
@@ -2510,7 +2994,12 @@ def test_ranker_prefers_section_switch_over_profile_form_on_delete_task() -> Non
         context="Profile settings",
         field_hint="Email",
         field_kind="email",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "profile-email-field", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "profile-email-field",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/form/input[1]",
     )
     ranked = ranker.rank(
@@ -2534,7 +3023,12 @@ def test_delete_guard_redirects_unrelated_type_to_click() -> None:
         text="Movies",
         href="",
         context="Profile movies manage entries",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "movie-button", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "movie-button",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/section/button[1]",
     )
     profile_email = Candidate(
@@ -2546,7 +3040,12 @@ def test_delete_guard_redirects_unrelated_type_to_click() -> None:
         context="Profile settings",
         field_hint="Email",
         field_kind="email",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "profile-email-field", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "profile-email-field",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/form/input[1]",
     )
     action = {
@@ -2576,7 +3075,12 @@ def test_browser_action_from_tool_call_redirects_delete_only_type_to_click() -> 
         href="",
         context="tablist profile movies add film",
         ui_state="active",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "radix-_r_0_-trigger-profile", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "radix-_r_0_-trigger-profile",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/div/button[1]",
     )
     movie_button = Candidate(
@@ -2587,7 +3091,12 @@ def test_browser_action_from_tool_call_redirects_delete_only_type_to_click() -> 
         href="",
         context="tablist profile movies add film",
         ui_state="inactive",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "radix-_r_0_-trigger-movies", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "radix-_r_0_-trigger-movies",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/div/button[2]",
     )
     profile_email = Candidate(
@@ -2599,13 +3108,21 @@ def test_browser_action_from_tool_call_redirects_delete_only_type_to_click() -> 
         context="Profile settings",
         field_hint="Email",
         field_kind="email",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "profile-email-field", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "profile-email-field",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/form/input[1]",
     )
     action = engine._browser_action_from_tool_call(
         tool_call={
             "name": "browser.input",
-            "arguments": {"element_id": "el_profile_email", "text": "autoppia@example.com"},
+            "arguments": {
+                "element_id": "el_profile_email",
+                "text": "autoppia@example.com",
+            },
         },
         ranked_candidates=[profile_tab, movie_button, profile_email],
         state=AgentState(),
@@ -2626,12 +3143,7 @@ def test_read_only_mutation_page_promotes_plan_mode(monkeypatch: Any) -> None:
             **_base_payload(),
             "prompt": "Delete a film whose duration is NOT '142' minutes.",
             "url": "https://example.com/movies/real-movie-120?seed=7",
-            "snapshot_html": (
-                "<html><body><h1>Nightmare Alley</h1>"
-                "<a href='/register?seed=7'>Register</a>"
-                "<button id='watchlist-action'>Add to Watchlist</button>"
-                "</body></html>"
-            ),
+            "snapshot_html": ("<html><body><h1>Nightmare Alley</h1><a href='/register?seed=7'>Register</a><button id='watchlist-action'>Add to Watchlist</button></body></html>"),
             "step_index": 1,
             "state_in": {"mode": "NAV"},
         }
@@ -2660,7 +3172,12 @@ def test_missing_group_guard_does_not_override_section_switch() -> None:
         href="",
         context="tablist profile movies add film",
         ui_state="inactive",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "radix-_r_0_-trigger-movies", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "radix-_r_0_-trigger-movies",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/div/button[2]",
     )
     profile_email = Candidate(
@@ -2672,11 +3189,20 @@ def test_missing_group_guard_does_not_override_section_switch() -> None:
         context="Edit Profile",
         field_hint="Email",
         field_kind="email",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "profile-email-field", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "profile-email-field",
+            "case_sensitive": False,
+        },
         dom_path="html/body/main/form/input[1]",
         group_id="profile-group",
     )
-    action = {"type": "ClickAction", "selector": movies_tab.selector, "_element_id": "el_movies_tab"}
+    action = {
+        "type": "ClickAction",
+        "selector": movies_tab.selector,
+        "_element_id": "el_movies_tab",
+    }
     guarded = engine._guard_missing_group_inputs(
         action=action,
         prompt="Delete a film whose duration is NOT '142' minutes.",
@@ -2696,7 +3222,12 @@ def test_redundant_select_prefers_same_group_submit() -> None:
         text="Year",
         href="",
         context="Filters Year Genre Apply",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "year", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "year",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/select[1]",
         bbox=None,
     )
@@ -2707,7 +3238,12 @@ def test_redundant_select_prefers_same_group_submit() -> None:
         text="Apply",
         href="",
         context="Filters Year Genre Apply",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "apply", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "apply",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/button[1]",
         bbox=None,
     )
@@ -2778,7 +3314,12 @@ def test_fallback_prefers_local_escape_candidate_before_global_back() -> None:
             {
                 "id": "global-link",
                 "role": "link",
-                "selector": {"type": "attributeValueSelector", "attribute": "href", "value": "/elsewhere", "case_sensitive": False},
+                "selector": {
+                    "type": "attributeValueSelector",
+                    "attribute": "href",
+                    "value": "/elsewhere",
+                    "case_sensitive": False,
+                },
             }
         ],
         "candidate_partitions": {
@@ -2788,7 +3329,12 @@ def test_fallback_prefers_local_escape_candidate_before_global_back() -> None:
                     "id": "save-btn",
                     "role": "button",
                     "text": "Save",
-                    "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "save-btn", "case_sensitive": False},
+                    "selector": {
+                        "type": "attributeValueSelector",
+                        "attribute": "id",
+                        "value": "save-btn",
+                        "case_sensitive": False,
+                    },
                 }
             ],
             "global": [],
@@ -2818,10 +3364,20 @@ def test_fallback_prefers_dropdown_options_over_generic_select_value() -> None:
                 "index": 0,
                 "role": "select",
                 "text": "Genre",
-                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre", "case_sensitive": False},
+                "selector": {
+                    "type": "attributeValueSelector",
+                    "attribute": "id",
+                    "value": "genre",
+                    "case_sensitive": False,
+                },
             }
         ],
-        "candidate_partitions": {"local": [], "escape": [], "global": [], "suppressed_global_count": 0},
+        "candidate_partitions": {
+            "local": [],
+            "escape": [],
+            "global": [],
+            "suppressed_global_count": 0,
+        },
         "memory": {"typed_candidate_ids": [], "visual_element_hints": []},
         "flags": {},
         "counters": {"stall_count": 0, "repeat_action_count": 0},
@@ -2843,7 +3399,10 @@ def test_normalize_decision_rejects_generic_browser_input_text() -> None:
         engine.policy._normalize_decision(
             {
                 "type": "browser",
-                "tool_call": {"name": "browser.input", "arguments": {"index": 0, "text": "<text>"}},
+                "tool_call": {
+                    "name": "browser.input",
+                    "arguments": {"index": 0, "text": "<text>"},
+                },
             },
             {"browser.input"},
         )
@@ -2854,7 +3413,10 @@ def test_normalize_decision_downgrades_generic_select_to_dropdown_options() -> N
     out = engine.policy._normalize_decision(
         {
             "type": "browser",
-            "tool_call": {"name": "browser.select_dropdown", "arguments": {"index": 1, "text": "Option"}},
+            "tool_call": {
+                "name": "browser.select_dropdown",
+                "arguments": {"index": 1, "text": "Option"},
+            },
         },
         {"browser.select_dropdown", "browser.dropdown_options"},
     )
@@ -2911,7 +3473,12 @@ def test_ranker_demotes_local_pager_when_submit_is_available() -> None:
         field_kind="pager",
         region_id="wizard",
         region_kind="group",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "next-btn", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "next-btn",
+            "case_sensitive": False,
+        },
         dom_path="html/body/div/button[1]",
     )
     save_btn = Candidate(
@@ -2924,7 +3491,12 @@ def test_ranker_demotes_local_pager_when_submit_is_available() -> None:
         field_kind="submit",
         region_id="wizard",
         region_kind="group",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "save-btn", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "save-btn",
+            "case_sensitive": False,
+        },
         dom_path="html/body/div/button[2]",
     )
     ranked = ranker.rank(
@@ -2943,7 +3515,12 @@ def test_ranker_prefers_remaining_relevant_form_inputs_before_submit() -> None:
     ranker = CandidateRanker()
     state = AgentState()
     state.form_progress.active_group_id = "auth-group"
-    state.form_progress.active_group_candidate_ids = ["user", "pass", "confirm", "submit"]
+    state.form_progress.active_group_candidate_ids = [
+        "user",
+        "pass",
+        "confirm",
+        "submit",
+    ]
     state.form_progress.typed_candidate_ids = ["user"]
     state.form_progress.typed_values_by_candidate = {"user": "<signup_username>"}
     candidates = [
@@ -2954,7 +3531,12 @@ def test_ranker_prefers_remaining_relevant_form_inputs_before_submit() -> None:
             text="Username",
             href="",
             context="Create account Username Password Confirm Password Create account",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "username-input", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "username-input",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/input[1]",
             field_kind="username",
             group_id="auth-group",
@@ -2967,7 +3549,12 @@ def test_ranker_prefers_remaining_relevant_form_inputs_before_submit() -> None:
             text="Password",
             href="",
             context="Create account Username Password Confirm Password Create account",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "password-input", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "password-input",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/input[2]",
             field_kind="password",
             input_type="password",
@@ -2981,7 +3568,12 @@ def test_ranker_prefers_remaining_relevant_form_inputs_before_submit() -> None:
             text="Confirm Password",
             href="",
             context="Create account Username Password Confirm Password Create account",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "confirm-password-input", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "confirm-password-input",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/input[3]",
             field_kind="confirm_password",
             input_type="password",
@@ -2995,7 +3587,12 @@ def test_ranker_prefers_remaining_relevant_form_inputs_before_submit() -> None:
             text="Create account",
             href="",
             context="Create account Username Password Confirm Password Create account",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "signup-submit-button", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "signup-submit-button",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/button[1]",
             field_kind="account_create",
             group_id="auth-group",
@@ -3029,7 +3626,12 @@ def test_constraint_progress_demotes_already_satisfied_choice_candidates() -> No
         context="Genre choices",
         group_label="Genres",
         region_label="Genres",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "memoir-btn", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "memoir-btn",
+            "case_sensitive": False,
+        },
         dom_path="html/body/div/button[1]",
     )
     author_input = Candidate(
@@ -3040,12 +3642,21 @@ def test_constraint_progress_demotes_already_satisfied_choice_candidates() -> No
         href="",
         context="Author field",
         field_hint="Author",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "author-input", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "author-input",
+            "case_sensitive": False,
+        },
         dom_path="html/body/input[1]",
     )
     engine._remember_form_progress_from_action(
         prompt="genres equals 'Memoir' and author equals 'thunder'",
-        action={"type": "ClickAction", "selector": memoir_button.selector, "_element_id": memoir_button.id},
+        action={
+            "type": "ClickAction",
+            "selector": memoir_button.selector,
+            "_element_id": memoir_button.id,
+        },
         ranked_candidates=[memoir_button, author_input],
         state=state,
     )
@@ -3073,7 +3684,12 @@ def test_ranker_prefers_exact_constraint_value_choice_over_wrong_choice() -> Non
         href="",
         context="Genres chooser",
         group_label="Genres",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "memoir", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "memoir",
+            "case_sensitive": False,
+        },
         dom_path="html/body/div/button[1]",
     )
     mystery = Candidate(
@@ -3084,7 +3700,12 @@ def test_ranker_prefers_exact_constraint_value_choice_over_wrong_choice() -> Non
         href="",
         context="Genres chooser",
         group_label="Genres",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "mystery", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "mystery",
+            "case_sensitive": False,
+        },
         dom_path="html/body/div/button[2]",
     )
     ranked = ranker.rank(
@@ -3115,7 +3736,12 @@ def test_select_candidates_for_policy_keeps_local_shortlist_and_limits_global_no
         field_hint="Title",
         region_id="editor",
         region_kind="form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "title", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "title",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/input[1]",
     )
     local_save = Candidate(
@@ -3128,7 +3754,12 @@ def test_select_candidates_for_policy_keeps_local_shortlist_and_limits_global_no
         field_kind="submit",
         region_id="editor",
         region_kind="form",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "save", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "save",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/button[1]",
     )
     global_candidates = [
@@ -3139,8 +3770,13 @@ def test_select_candidates_for_policy_keeps_local_shortlist_and_limits_global_no
             text=f"Section {i}",
             href=f"https://example.com/section-{i}",
             context="Main navigation links",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": f"nav-{i}", "case_sensitive": False},
-            dom_path=f"html/body/nav/a[{i+1}]",
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": f"nav-{i}",
+                "case_sensitive": False,
+            },
+            dom_path=f"html/body/nav/a[{i + 1}]",
         )
         for i in range(20)
     ]
@@ -3167,8 +3803,13 @@ def test_build_policy_obs_exposes_short_action_list_not_large_candidate_dump() -
             text=f"Candidate {i}",
             href=f"https://example.com/item-{i}" if i % 2 else "",
             context="Page controls" if i < 5 else "Global navigation",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": f"cand-{i}", "case_sensitive": False},
-            dom_path=f"html/body/div[{i+1}]",
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": f"cand-{i}",
+                "case_sensitive": False,
+            },
+            dom_path=f"html/body/div[{i + 1}]",
         )
         for i in range(40)
     ]
@@ -3205,7 +3846,12 @@ def test_store_expected_effect_for_submit_click() -> None:
         href="",
         context="Edit form",
         field_kind="submit",
-        selector={"type": "attributeValueSelector", "attribute": "id", "value": "save", "case_sensitive": False},
+        selector={
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": "save",
+            "case_sensitive": False,
+        },
         dom_path="html/body/form/button[1]",
     )
     action = {"type": "ClickAction", "_element_id": "save", "selector": submit.selector}
@@ -3226,7 +3872,12 @@ def test_policy_obs_includes_site_knowledge_when_enabled(monkeypatch: Any) -> No
             text="Movie details",
             href="/movies/123",
             context="Movie grid",
-            selector={"type": "attributeValueSelector", "attribute": "href", "value": "/movies/123", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "href",
+                "value": "/movies/123",
+                "case_sensitive": False,
+            },
             dom_path="html/body/a[1]",
         )
     ]
@@ -3234,7 +3885,10 @@ def test_policy_obs_includes_site_knowledge_when_enabled(monkeypatch: Any) -> No
         task_id="site-knowledge",
         prompt="Post a comment to a movie",
         web_project_id="autocinema",
-        use_case={"name": "ADD_COMMENT", "description": "The user posts a comment on a movie detail page."},
+        use_case={
+            "name": "ADD_COMMENT",
+            "description": "The user posts a comment on a movie detail page.",
+        },
         step_index=1,
         url="https://example.com",
         mode="NAV",
@@ -3279,7 +3933,9 @@ def test_policy_obs_does_not_expose_browser_evaluate() -> None:
     assert "browser.evaluate" not in unavailable
 
 
-def test_policy_obs_uses_crawler_routes_when_static_map_missing(monkeypatch: Any) -> None:
+def test_policy_obs_uses_crawler_routes_when_static_map_missing(
+    monkeypatch: Any,
+) -> None:
     from src.operator import fsm_operator as fsm
 
     monkeypatch.setenv("FSM_USE_SITE_KNOWLEDGE", "1")
@@ -3341,7 +3997,12 @@ def test_policy_obs_exposes_local_workflow_closure_when_ready_to_commit() -> Non
             href="",
             context="Comment form",
             field_kind="name",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "name-input", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "name-input",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/input[1]",
         ),
         Candidate(
@@ -3352,7 +4013,12 @@ def test_policy_obs_exposes_local_workflow_closure_when_ready_to_commit() -> Non
             href="",
             context="Comment form",
             field_kind="text",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "message-area", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "message-area",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/textarea[1]",
         ),
         Candidate(
@@ -3363,7 +4029,12 @@ def test_policy_obs_exposes_local_workflow_closure_when_ready_to_commit() -> Non
             href="",
             context="Comment form",
             field_kind="submit",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "post-comment", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "post-comment",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/button[1]",
         ),
     ]
@@ -3371,7 +4042,10 @@ def test_policy_obs_exposes_local_workflow_closure_when_ready_to_commit() -> Non
         task_id="commit-ready",
         prompt="Post a comment to the movie",
         web_project_id="autocinema",
-        use_case={"name": "ADD_COMMENT", "description": "The user posts a comment on a movie detail page."},
+        use_case={
+            "name": "ADD_COMMENT",
+            "description": "The user posts a comment on a movie detail page.",
+        },
         step_index=2,
         url="https://example.com/movies/123",
         mode="NAV",
@@ -3389,7 +4063,9 @@ def test_policy_obs_exposes_local_workflow_closure_when_ready_to_commit() -> Non
     assert "LOCAL WORKFLOW CLOSURE (JSON):" in policy_obs["policy_input_text"]
 
 
-def test_policy_obs_includes_local_html_context_for_active_form(monkeypatch: Any) -> None:
+def test_policy_obs_includes_local_html_context_for_active_form(
+    monkeypatch: Any,
+) -> None:
     monkeypatch.setenv("FSM_USE_LOCAL_HTML_CONTEXT", "1")
     builder = ObsBuilder()
     state = AgentState(
@@ -3412,7 +4088,12 @@ def test_policy_obs_includes_local_html_context_for_active_form(monkeypatch: Any
             href="",
             context="Comment form",
             field_kind="name",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "name-input", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "name-input",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/input[1]",
             region_id="comment-form",
             region_kind="form",
@@ -3426,7 +4107,12 @@ def test_policy_obs_includes_local_html_context_for_active_form(monkeypatch: Any
             href="",
             context="Comment form",
             field_kind="text",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "message-area", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "message-area",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/textarea[1]",
             region_id="comment-form",
             region_kind="form",
@@ -3440,7 +4126,12 @@ def test_policy_obs_includes_local_html_context_for_active_form(monkeypatch: Any
             href="",
             context="Comment form",
             field_kind="submit",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "post-comment", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "post-comment",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/button[1]",
             region_id="comment-form",
             region_kind="form",
@@ -3451,7 +4142,10 @@ def test_policy_obs_includes_local_html_context_for_active_form(monkeypatch: Any
         task_id="local-html",
         prompt="Post a comment to the movie",
         web_project_id="autocinema",
-        use_case={"name": "ADD_COMMENT", "description": "The user posts a comment on a movie detail page."},
+        use_case={
+            "name": "ADD_COMMENT",
+            "description": "The user posts a comment on a movie detail page.",
+        },
         snapshot_html="""
         <html><body>
           <form id="comment-form">
@@ -3489,7 +4183,16 @@ def test_policy_obs_exposes_active_objective_and_avoid_repeating_signals() -> No
     builder = ObsBuilder()
     state = AgentState(
         mode="NAV",
-        plan={"active_id": "sg-login", "subgoals": [{"id": "sg-login", "text": "Complete the login form", "status": "active"}]},
+        plan={
+            "active_id": "sg-login",
+            "subgoals": [
+                {
+                    "id": "sg-login",
+                    "text": "Complete the login form",
+                    "status": "active",
+                }
+            ],
+        },
         focus_region={
             "region_id": "region-form",
             "region_kind": "form",
@@ -3527,7 +4230,12 @@ def test_policy_obs_exposes_active_objective_and_avoid_repeating_signals() -> No
             text="Email",
             href="",
             context="Login form Email Password Sign in",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "email", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "email",
+                "case_sensitive": False,
+            },
             dom_path="html/body/main/form/input[1]",
             field_kind="email",
             region_id="region-form",
@@ -3541,7 +4249,11 @@ def test_policy_obs_exposes_active_objective_and_avoid_repeating_signals() -> No
             text="Sign in",
             href="",
             context="Login form Email Password Sign in",
-            selector={"type": "xpathSelector", "value": "//button[contains(normalize-space(.), \"Sign in\")]", "case_sensitive": False},
+            selector={
+                "type": "xpathSelector",
+                "value": '//button[contains(normalize-space(.), "Sign in")]',
+                "case_sensitive": False,
+            },
             dom_path="html/body/main/form/button[1]",
             field_kind="submit",
             region_id="region-form",
@@ -3557,7 +4269,14 @@ def test_policy_obs_exposes_active_objective_and_avoid_repeating_signals() -> No
         mode="NAV",
         flags={"url_changed": False, "dom_changed": False, "no_visual_progress": True},
         state=state,
-        text_ir={"title": "Login", "visible_text": "Login form", "headings": ["Login"], "forms": [], "control_groups": [], "cards": []},
+        text_ir={
+            "title": "Login",
+            "visible_text": "Login form",
+            "headings": ["Login"],
+            "forms": [],
+            "control_groups": [],
+            "cards": [],
+        },
         candidates=candidates,
         history=[],
         screenshot_available=False,
@@ -3593,10 +4312,19 @@ def test_record_progress_effect_marks_expected_effect_miss() -> None:
     assert state.progress.consecutive_no_effect_steps >= 1
 
 
-def test_obs_extract_uses_small_model_and_caches_by_dom_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_obs_extract_uses_small_model_and_caches_by_dom_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = {"n": 0}
 
-    def _obs_llm(*, task_id: str, messages: list[dict], model: str, temperature: float, max_tokens: int) -> dict:
+    def _obs_llm(
+        *,
+        task_id: str,
+        messages: list[dict],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> dict:
         calls["n"] += 1
         assert model == "gpt-4o-mini"
         return {
@@ -3632,7 +4360,12 @@ def test_obs_extract_uses_small_model_and_caches_by_dom_hash(monkeypatch: pytest
             text="Apply",
             href="",
             context="Filters Apply",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "apply-btn", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "apply-btn",
+                "case_sensitive": False,
+            },
             dom_path="html/body/form/button[1]",
         )
     ]
@@ -3812,8 +4545,6 @@ def test_candidate_extractor_includes_current_selected_value_for_select() -> Non
     assert "current=Allegory" in genre.text
 
 
-
-
 def test_prompt_field_needs_and_field_kind_detect_genre() -> None:
     ranker = CandidateRanker()
     assert "genre" in ranker._prompt_field_needs("Show me books where the genres equal Allegory")
@@ -3824,7 +4555,13 @@ def test_augment_text_ir_merges_form_and_candidate_control_groups() -> None:
     form_payload = {
         "id": "form_1",
         "controls": [
-            {"tag": "input", "type": "text", "label": "Username", "options": [], "value": ""},
+            {
+                "tag": "input",
+                "type": "text",
+                "label": "Username",
+                "options": [],
+                "value": "",
+            },
         ],
         "text": "Create account",
         "commit_controls": ["Sign up"],
@@ -3846,7 +4583,12 @@ def test_augment_text_ir_merges_form_and_candidate_control_groups() -> None:
             field_hint="Genre",
             href="",
             dom_path="html/body/main/section/div/select[1]",
-            selector={"type": "attributeValueSelector", "attribute": "id", "value": "genre-filter", "case_sensitive": False},
+            selector={
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "genre-filter",
+                "case_sensitive": False,
+            },
             context="Living catalog Curated books Genre Allegory Clear filters",
             group_id="group_1",
             group_label="Living catalog",
@@ -3862,7 +4604,11 @@ def test_augment_text_ir_merges_form_and_candidate_control_groups() -> None:
             field_hint="",
             href="",
             dom_path="html/body/main/section/div/button[1]",
-            selector={"type": "xpathSelector", "value": "//button[contains(normalize-space(.), \"Clear filters\")]", "case_sensitive": False},
+            selector={
+                "type": "xpathSelector",
+                "value": '//button[contains(normalize-space(.), "Clear filters")]',
+                "case_sensitive": False,
+            },
             context="Living catalog Curated books Genre Allegory Clear filters",
             group_id="group_1",
             group_label="Living catalog",
@@ -3918,7 +4664,9 @@ def test_pre_done_verification_allows_informational_answer_from_page_evidence() 
     assert reason == "ok"
 
 
-def test_meta_loop_auto_finalizes_informational_task_when_page_fact_is_visible(monkeypatch: Any) -> None:
+def test_meta_loop_auto_finalizes_informational_task_when_page_fact_is_visible(
+    monkeypatch: Any,
+) -> None:
     monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     out = engine.run(
@@ -4037,15 +4785,9 @@ def test_completion_only_does_not_finish_on_root_page_even_with_numeric_fact() -
 
 
 def test_browser_end_tool_call_normalizes_to_final_content() -> None:
-    def _llm_end(**_: Any) -> Dict[str, Any]:
+    def _llm_end(**_: Any) -> dict[str, Any]:
         return {
-            "choices": [
-                {
-                    "message": {
-                        "content": '{"type":"browser","tool_call":{"name":"browser.done","arguments":{"content":"Total Treasury: 2.8K"}}}'
-                    }
-                }
-            ],
+            "choices": [{"message": {"content": '{"type":"browser","tool_call":{"name":"browser.done","arguments":{"content":"Total Treasury: 2.8K"}}}'}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             "model": "gpt-5.2",
         }
@@ -4065,7 +4807,7 @@ def test_browser_end_tool_call_normalizes_to_final_content() -> None:
             """,
             "state_in": {},
             "include_reasoning": True,
-                "allowed_tools": [{"name": "browser.done"}],
+            "allowed_tools": [{"name": "browser.done"}],
         }
     )
     assert out.get("done") is True
@@ -4075,15 +4817,9 @@ def test_browser_end_tool_call_normalizes_to_final_content() -> None:
 def test_direct_loop_final_reasoning_uses_final_content(monkeypatch: Any) -> None:
     monkeypatch.setenv("FSM_DIRECT_LOOP", "1")
 
-    def _llm_end(**_: Any) -> Dict[str, Any]:
+    def _llm_end(**_: Any) -> dict[str, Any]:
         return {
-            "choices": [
-                {
-                    "message": {
-                        "content": '{"type":"final","done":true,"content":"Total Treasury: 2.8K"}'
-                    }
-                }
-            ],
+            "choices": [{"message": {"content": '{"type":"final","done":true,"content":"Total Treasury: 2.8K"}'}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             "model": "gpt-5.2",
         }
@@ -4112,7 +4848,9 @@ def test_direct_loop_final_reasoning_uses_final_content(monkeypatch: Any) -> Non
     assert "Current page answer not clear yet" not in reasoning
 
 
-def test_direct_loop_does_not_auto_finalize_from_page_evidence(monkeypatch: Any) -> None:
+def test_direct_loop_does_not_auto_finalize_from_page_evidence(
+    monkeypatch: Any,
+) -> None:
     monkeypatch.setenv("FSM_DIRECT_LOOP", "1")
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     out = engine.run(
