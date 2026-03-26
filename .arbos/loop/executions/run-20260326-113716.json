@@ -1,0 +1,14 @@
+{
+  "started_at": "2026-03-26T11:37:16+00:00",
+  "status": "stopped",
+  "target_repo": "/home/usuario1/daryxx/autoppia/operator/autoppia_operator",
+  "project": "autoppia_operator",
+  "provider": "codex",
+  "agent_model": "gpt-5.3-codex",
+  "supervisor_provider": "codex",
+  "supervisor_model": "gpt-5.4",
+  "last_iteration": 0,
+  "result": "interrupted",
+  "execution_id": "run-20260326-113716",
+  "finished_at": "2026-03-26T11:37:51+00:00"
+}

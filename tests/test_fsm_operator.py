@@ -130,20 +130,20 @@ def _base_payload() -> Dict[str, Any]:
     }
 
 
-def test_state_out_roundtrip_without_process_local_state() -> None:
+def test_internal_state_roundtrip_without_process_local_state() -> None:
     engine1 = FSMOperator(llm_call=_dummy_llm_invalid)
     first = engine1.run(payload=_base_payload())
-    st = first.get("state_out")
+    st = first.get("internal_state")
     assert isinstance(st, dict)
     assert st.get("visited", {}).get("urls") == ["https://example.com"]
 
-    # New instance: same decision context must still continue from state_in.
+    # New instance: same decision context must still continue from internal_state.
     engine2 = FSMOperator(llm_call=_dummy_llm_invalid)
     payload = dict(_base_payload())
     payload["step_index"] = 1
-    payload["state_in"] = st
+    payload["internal_state"] = st
     second = engine2.run(payload=payload)
-    st2 = second.get("state_out")
+    st2 = second.get("internal_state")
     assert isinstance(st2, dict)
     assert "https://example.com" in (st2.get("visited", {}).get("urls") or [])
 
@@ -163,7 +163,7 @@ def test_meta_tool_loop_is_capped(monkeypatch: Any) -> None:
     payload = _base_payload()
     payload["allowed_tools"] = list(payload["allowed_tools"]) + [{"name": "META.REPLAN"}]
     out = engine.run(payload=payload)
-    st = out.get("state_out") or {}
+    st = out.get("internal_state") or {}
     counters = st.get("counters") if isinstance(st.get("counters"), dict) else {}
     assert int(counters.get("meta_steps_used") or 0) == MAX_INTERNAL_META_STEPS
 
@@ -172,7 +172,7 @@ def test_stuck_recovery_triggers_with_loop_signals(monkeypatch: Any) -> None:
     monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     payload = _base_payload()
-    payload["state_in"] = {
+    payload["internal_state"] = {
         "mode": "NAV",
         "counters": {"stall_count": 3, "repeat_action_count": 2, "meta_steps_used": 0},
         "last_action_element_id": "el_repeat",
@@ -182,7 +182,7 @@ def test_stuck_recovery_triggers_with_loop_signals(monkeypatch: Any) -> None:
     actions = out.get("actions") if isinstance(out.get("actions"), list) else []
     assert len(actions) == 1
     assert actions[0].get("type") in {"NavigateAction", "GoBackAction", "WaitAction", "ScrollAction"}
-    st = out.get("state_out") or {}
+    st = out.get("internal_state") or {}
     blocked = st.get("blocklist", {}).get("element_ids") if isinstance(st.get("blocklist"), dict) else []
     assert isinstance(blocked, list)
 
@@ -191,7 +191,7 @@ def test_done_and_content_emitted_without_report_result_action() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_final)
     payload = _base_payload()
     payload["step_index"] = 2
-    payload["state_in"] = {
+    payload["internal_state"] = {
         "mode": "REPORT",
         "memory": {"facts": ["Treasury value found: T 399,29"], "checkpoints": []},
     }
@@ -215,8 +215,8 @@ def test_reasoning_trace_is_persisted_in_state_and_response() -> None:
     assert "Next proof:" in str(out.get("reasoning") or "")
     working_state = out.get("working_state") if isinstance(out.get("working_state"), dict) else {}
     assert working_state.get("active_workflow") == "open pricing"
-    state_out = out.get("state_out") if isinstance(out.get("state_out"), dict) else {}
-    memory = state_out.get("memory") if isinstance(state_out.get("memory"), dict) else {}
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    memory = internal_state.get("memory") if isinstance(internal_state.get("memory"), dict) else {}
     stored_trace = memory.get("reasoning_trace") if isinstance(memory.get("reasoning_trace"), dict) else {}
     stored_working_state = memory.get("working_state") if isinstance(memory.get("working_state"), dict) else {}
     assert stored_trace.get("current_subgoal") == "Follow the visible pricing control."
@@ -243,7 +243,7 @@ def test_allowed_tools_parses_function_definitions_shape() -> None:
         {"type": "function", "function": {"name": "navigate"}},
         {"type": "function", "function": {"name": "wait"}},
     ]
-    payload["state_in"] = {
+    payload["internal_state"] = {
         "mode": "NAV",
         "counters": {"stall_count": 3, "repeat_action_count": 2, "meta_steps_used": 0},
     }
@@ -323,7 +323,7 @@ def test_obs_builder_compacts_history_and_provides_tagged_input() -> None:
         )
     payload["history"] = long_history
     out = engine.run(payload=payload)
-    st = out.get("state_out") or {}
+    st = out.get("internal_state") or {}
     mem = st.get("memory") if isinstance(st.get("memory"), dict) else {}
     summary = str(mem.get("history_summary") or "")
     assert summary
@@ -421,7 +421,7 @@ def test_auth_flow_is_not_forced_by_pre_actions() -> None:
         """,
         "step_index": 0,
         "history": [],
-        "state_in": {"mode": "NAV"},
+        "internal_state": {"mode": "NAV"},
         "allowed_tools": [{"name": "browser.input"}, {"name": "browser.click"}],
     }
     out = engine.run(payload=payload)
@@ -567,7 +567,7 @@ def test_non_auth_prompt_on_login_page_does_not_trigger_auth_pre_actions() -> No
         """,
         "step_index": 1,
         "history": [],
-        "state_in": {"mode": "NAV"},
+        "internal_state": {"mode": "NAV"},
         "allowed_tools": [{"name": "browser.click"}, {"name": "browser.input"}, {"name": "browser.wait"}],
     }
     out = engine.run(payload=payload)
@@ -886,13 +886,13 @@ def test_repeated_same_element_is_added_to_blocklist() -> None:
     out1 = engine.run(payload=payload)
     payload2 = dict(payload)
     payload2["step_index"] = 1
-    payload2["state_in"] = out1.get("state_out")
+    payload2["internal_state"] = out1.get("internal_state")
     out2 = engine.run(payload=payload2)
     payload3 = dict(payload)
     payload3["step_index"] = 2
-    payload3["state_in"] = out2.get("state_out")
+    payload3["internal_state"] = out2.get("internal_state")
     out3 = engine.run(payload=payload3)
-    st3 = out3.get("state_out") or {}
+    st3 = out3.get("internal_state") or {}
     blocklist = st3.get("blocklist") if isinstance(st3.get("blocklist"), dict) else {}
     ids = blocklist.get("element_ids") if isinstance(blocklist.get("element_ids"), list) else []
     assert isinstance(ids, list)
@@ -1284,7 +1284,7 @@ def test_redundant_type_action_uses_state_roundtrip_and_advances_input(monkeypat
     assert first_actions[0].get("type") == "TypeAction"
     first_selector = first_actions[0].get("selector") if isinstance(first_actions[0].get("selector"), dict) else {}
     assert first_selector.get("value") == "login-username"
-    state = AgentState.from_state_in(first.get("state_out"), prompt="Login to continue")
+    state = AgentState.from_internal_state(first.get("internal_state"), prompt="Login to continue")
     ranked = engine.ranker.rank(
         task="Login to continue",
         mode="NAV",
@@ -1744,7 +1744,7 @@ def test_auto_vision_on_loop_boosts_visual_target_for_fallback(monkeypatch: Any)
             "screenshot": "aGVsbG8=",
             "step_index": 2,
             "history": [],
-            "state_in": {
+            "internal_state": {
                 "mode": "NAV",
                 "counters": {"stall_count": 2, "repeat_action_count": 1, "meta_steps_used": 0},
                 "last_url": "https://example.com/movies",
@@ -1754,8 +1754,8 @@ def test_auto_vision_on_loop_boosts_visual_target_for_fallback(monkeypatch: Any)
             "allowed_tools": [{"name": "browser.click"}, {"name": "browser.wait"}],
         }
     )
-    state_out = out.get("state_out") if isinstance(out.get("state_out"), dict) else {}
-    memory = state_out.get("memory") if isinstance(state_out.get("memory"), dict) else {}
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    memory = internal_state.get("memory") if isinstance(internal_state.get("memory"), dict) else {}
     assert apply_candidate.id in (memory.get("visual_element_hints") or [])
     actions = out.get("actions") if isinstance(out.get("actions"), list) else []
     assert actions
@@ -2046,7 +2046,7 @@ def test_fsm_done_defaults_content_and_respects_reasoning_flag() -> None:
     engine = FSMOperator(llm_call=_llm_empty_final)
     payload = _base_payload()
     payload["step_index"] = 2
-    payload["state_in"] = {"mode": "REPORT", "memory": {"facts": ["done"]}}
+    payload["internal_state"] = {"mode": "REPORT", "memory": {"facts": ["done"]}}
     out = engine.run(payload=payload)
     assert out.get("done") is True
     assert isinstance(out.get("content"), str) and str(out.get("content")).strip()
@@ -2075,7 +2075,7 @@ def test_wait_only_flow_completes_after_successful_wait(monkeypatch: Any) -> Non
         payload={
             **base,
             "step_index": 1,
-            "state_in": first.get("state_out"),
+            "internal_state": first.get("internal_state"),
             "history": [{"step": 0, "action": first.get("actions", [None])[0], "exec_ok": True, "url": "https://example.com"}],
         }
     )
@@ -2103,7 +2103,7 @@ def test_popup_pre_action_prefers_escape_after_overlay_intercept(monkeypatch: An
                     "url": "https://example.com/auth",
                 }
             ],
-            "state_in": {"last_action_sig": "ClickAction|same", "mode": "NAV"},
+            "internal_state": {"last_action_sig": "ClickAction|same", "mode": "NAV"},
             "allowed_tools": [{"name": "browser.send_keys"}, {"name": "browser.click"}],
         }
     )
@@ -2261,7 +2261,7 @@ def test_type_action_on_checkbox_is_converted_to_click() -> None:
             "url": "https://example.com",
             "snapshot_html": "<html><body><input id='checkbox-1' type='checkbox' /><button>Continue</button></body></html>",
             "step_index": 1,
-            "state_in": {"mode": "NAV"},
+            "internal_state": {"mode": "NAV"},
             "allowed_tools": [{"name": "browser.input"}, {"name": "browser.click"}],
         }
     )
@@ -2633,13 +2633,13 @@ def test_read_only_mutation_page_promotes_plan_mode(monkeypatch: Any) -> None:
                 "</body></html>"
             ),
             "step_index": 1,
-            "state_in": {"mode": "NAV"},
+            "internal_state": {"mode": "NAV"},
         }
     )
-    state_out = out.get("state_out") if isinstance(out.get("state_out"), dict) else {}
-    assert state_out.get("mode") in {"PLAN", "NAV", "DONE"}
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    assert internal_state.get("mode") in {"PLAN", "NAV", "DONE"}
     reasoning = str(out.get("reasoning") or "")
-    assert "capability_gap_model_replan" in reasoning or state_out.get("memory", {}).get("strategy_summary")
+    assert "capability_gap_model_replan" in reasoning or internal_state.get("memory", {}).get("strategy_summary")
 
 
 def test_missing_group_guard_does_not_override_section_switch() -> None:
@@ -3153,10 +3153,10 @@ def test_select_candidates_for_policy_keeps_local_shortlist_and_limits_global_no
     ids = [cand.id for cand in selected]
     assert ids[:2] == ["title", "save"]
     assert len(selected) < len([local_input, local_save, *global_candidates])
-    assert len(selected) <= 24
+    assert len(selected) <= 96
 
 
-def test_build_policy_obs_exposes_short_action_list_not_large_candidate_dump() -> None:
+def test_build_policy_obs_exposes_richer_action_list_and_page_structure() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     state = AgentState()
     candidates = [
@@ -3180,13 +3180,25 @@ def test_build_policy_obs_exposes_short_action_list_not_large_candidate_dump() -
         mode="NAV",
         flags={},
         state=state,
-        text_ir={"title": "Example", "visible_text": "Example page", "headings": []},
+        text_ir={
+            "title": "Example",
+            "visible_text": "Example page",
+            "visible_lines": ["Example page", "Candidate 1", "Candidate 2"],
+            "page_facts": ["Section: Main navigation"],
+            "value_lines": ["Candidate count: 40"],
+            "headings": [],
+            "html_excerpt": "<main><button id='cand-0'>Candidate 0</button></main>",
+        },
         candidates=candidates,
         history=[],
         screenshot_available=False,
     )
-    assert len(policy_obs["candidates"]) <= 24
+    assert len(policy_obs["candidates"]) <= 64
+    assert "visible_lines" in policy_obs["text_ir"]
+    assert "page_facts" in policy_obs["text_ir"]
+    assert "value_lines" in policy_obs["text_ir"]
     assert "INTERACTIVE ELEMENT SHORTLIST (JSON):" in policy_obs["policy_input_text"]
+    assert "DOM / HTML EXCERPT:" in policy_obs["policy_input_text"]
     assert "UNAVAILABLE TOOLS:" in policy_obs["policy_input_text"]
     assert "ACTIVE OBJECTIVE (JSON):" in policy_obs["policy_input_text"]
     assert "WORKING STATE (JSON):" in policy_obs["policy_input_text"]
@@ -3935,7 +3947,7 @@ def test_meta_loop_auto_finalizes_informational_task_when_page_fact_is_visible(m
               </main>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
             "allowed_tools": [{"name": "browser.navigate"}, {"name": "browser.click"}],
             "history": [],
         }
@@ -3968,7 +3980,7 @@ def test_completion_only_returns_done_only_with_concrete_page_evidence() -> None
             "completion_only": True,
             "url": "https://example.com/",
             "snapshot_html": "<html><body><h1>Treasury Details</h1><p>Overview page</p></body></html>",
-            "state_in": {},
+            "internal_state": {},
         }
     )
     assert incomplete.get("done") is False
@@ -3987,7 +3999,7 @@ def test_completion_only_returns_done_only_with_concrete_page_evidence() -> None
               <div><span>Total Treasury</span><span>2.8K</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
         }
     )
     assert complete.get("done") is True
@@ -4009,7 +4021,7 @@ def test_completion_only_requires_page_context_overlap_for_informational_answer(
               <div><span>Total Value Locked</span><span>2844</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
         }
     )
     assert out.get("done") is False
@@ -4030,7 +4042,7 @@ def test_completion_only_does_not_finish_on_root_page_even_with_numeric_fact() -
               <div><span>Total Treasury</span><span>2.8K</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
         }
     )
     assert out.get("done") is False
@@ -4063,7 +4075,7 @@ def test_browser_end_tool_call_normalizes_to_final_content() -> None:
               <div><span>Total Treasury</span><span>2.8K</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
             "include_reasoning": True,
                 "allowed_tools": [{"name": "browser.done"}],
         }
@@ -4101,7 +4113,7 @@ def test_direct_loop_final_reasoning_uses_final_content(monkeypatch: Any) -> Non
               <div><span>Total Treasury</span><span>2.8K</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
             "include_reasoning": True,
             "allowed_tools": [{"name": "browser.done"}],
         }
@@ -4127,7 +4139,7 @@ def test_direct_loop_does_not_auto_finalize_from_page_evidence(monkeypatch: Any)
               <div><span>Total Treasury</span><span>2.8K</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
             "include_reasoning": True,
             "allowed_tools": [{"name": "browser.done"}],
         }

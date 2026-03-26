@@ -21,6 +21,9 @@ class Policy:
         except Exception:
             return
 
+    def _repair_enabled(self) -> bool:
+        return _env_bool("FSM_POLICY_REPAIR", False)
+
     def decide(
         self,
         *,
@@ -227,13 +230,13 @@ class Policy:
                             if isinstance(policy_obs.get("page_observations"), dict)
                             and isinstance(policy_obs.get("page_observations", {}).get("likely_answers"), list)
                             else []
-                        )[:6],
+                        )[:8],
                         "relevant_lines": (
                             policy_obs.get("page_observations", {}).get("relevant_lines")
                             if isinstance(policy_obs.get("page_observations"), dict)
                             and isinstance(policy_obs.get("page_observations", {}).get("relevant_lines"), list)
                             else []
-                        )[:10],
+                        )[:16],
                     },
                     ensure_ascii=False,
                 ),
@@ -245,11 +248,11 @@ class Policy:
                 json.dumps(policy_obs.get("page_observations") if isinstance(policy_obs.get("page_observations"), dict) else {}, ensure_ascii=False),
                 "",
                 "INTERACTIVE ELEMENTS (indexed tree-style):",
-                str(policy_obs.get("browser_state_text") or "")[:9000],
+                str(policy_obs.get("browser_state_text") or "")[:16000],
                 "",
                 "INTERACTIVE ELEMENT SHORTLIST (JSON):",
                 json.dumps(
-                    (policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else [])[:14],
+                    (policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else [])[:48],
                     ensure_ascii=False,
                 ),
                 "",
@@ -358,21 +361,21 @@ class Policy:
             "VISIBLE TEXT / PAGE SUMMARY:",
             str(policy_obs.get("page_ir_text") or "")[:14000],
             "",
-            "VISIBLE EVIDENCE (JSON):",
-            json.dumps(
-                {
+                "VISIBLE EVIDENCE (JSON):",
+                json.dumps(
+                    {
                     "likely_answers": (
                         policy_obs.get("page_observations", {}).get("likely_answers")
                         if isinstance(policy_obs.get("page_observations"), dict)
                         and isinstance(policy_obs.get("page_observations", {}).get("likely_answers"), list)
                         else []
-                    )[:6],
+                    )[:8],
                     "relevant_lines": (
                         policy_obs.get("page_observations", {}).get("relevant_lines")
                         if isinstance(policy_obs.get("page_observations"), dict)
                         and isinstance(policy_obs.get("page_observations", {}).get("relevant_lines"), list)
                         else []
-                    )[:10],
+                    )[:16],
                 },
                 ensure_ascii=False,
             ),
@@ -382,7 +385,7 @@ class Policy:
             "",
             "INTERACTIVE ELEMENT SHORTLIST (JSON):",
             json.dumps(
-                (policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else [])[:24],
+                (policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else [])[:64],
                 ensure_ascii=False,
             ),
             "",
@@ -402,18 +405,36 @@ class Policy:
                         policy_obs.get("text_ir", {}).get("forms")
                         if isinstance(policy_obs.get("text_ir"), dict) and isinstance(policy_obs.get("text_ir", {}).get("forms"), list)
                         else []
-                    )[:6],
+                    )[:8],
                     "control_groups": (
                         policy_obs.get("text_ir", {}).get("control_groups")
                         if isinstance(policy_obs.get("text_ir"), dict)
                         and isinstance(policy_obs.get("text_ir", {}).get("control_groups"), list)
                         else []
-                    )[:8],
+                    )[:12],
                     "cards": (
                         policy_obs.get("text_ir", {}).get("cards")
                         if isinstance(policy_obs.get("text_ir"), dict) and isinstance(policy_obs.get("text_ir", {}).get("cards"), list)
                         else []
-                    )[:8],
+                    )[:12],
+                    "visible_lines": (
+                        policy_obs.get("text_ir", {}).get("visible_lines")
+                        if isinstance(policy_obs.get("text_ir"), dict)
+                        and isinstance(policy_obs.get("text_ir", {}).get("visible_lines"), list)
+                        else []
+                    )[:32],
+                    "page_facts": (
+                        policy_obs.get("text_ir", {}).get("page_facts")
+                        if isinstance(policy_obs.get("text_ir"), dict)
+                        and isinstance(policy_obs.get("text_ir", {}).get("page_facts"), list)
+                        else []
+                    )[:16],
+                    "value_lines": (
+                        policy_obs.get("text_ir", {}).get("value_lines")
+                        if isinstance(policy_obs.get("text_ir"), dict)
+                        and isinstance(policy_obs.get("text_ir", {}).get("value_lines"), list)
+                        else []
+                    )[:16],
                 },
                 ensure_ascii=False,
             ),
@@ -550,6 +571,8 @@ class Policy:
                 obj = self._parse_json(content)
                 normalized = self._normalize_decision(obj, allowed_tools)
             except Exception as parse_or_schema_err:
+                if not self._repair_enabled():
+                    raise parse_or_schema_err
                 repaired = self._attempt_repair(
                     task_id=str(task_id or "local"),
                     model=model,
@@ -1003,4 +1026,3 @@ class Policy:
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]
-

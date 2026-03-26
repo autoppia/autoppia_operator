@@ -7,7 +7,7 @@ from .observation import *
 from .meta_tools import *
 from .policy import *
 
-class FSMOperator:
+class StepEngine:
     def __init__(
         self,
         llm_call: Callable[..., Dict[str, Any]],
@@ -57,9 +57,9 @@ class FSMOperator:
         return self._skills, self._meta
 
     def _obs_extract_mode(self) -> str:
-        mode = _env_str("FSM_OBS_EXTRACT_MODE", "auto").lower()
+        mode = _env_str("FSM_OBS_EXTRACT_MODE", "off").lower()
         if mode not in {"off", "auto", "always"}:
-            mode = "auto"
+            mode = "off"
         return mode
 
     def _completion_only_result(
@@ -1340,7 +1340,7 @@ class FSMOperator:
             "actions": actions,
             "done": bool(done),
             "content": final_content if done else None,
-            "state_out": state.to_state_out(),
+            "internal_state": state.to_internal_state(),
         }
         if isinstance(reasoning, str) and reasoning:
             out["reasoning"] = reasoning
@@ -1438,7 +1438,7 @@ class FSMOperator:
             "content": content if done else None,
             "reasoning": policy_reasoning[:200] if include_reasoning and policy_reasoning else None,
             "actions": [],
-            "state_out": state.to_state_out(),
+            "internal_state": state.to_internal_state(),
             "usage": usage_payload.get("usage") if isinstance(usage_payload.get("usage"), dict) else None,
             "model": policy_model_used,
             "helper_models": usage_payload.get("helper_models") if isinstance(usage_payload.get("helper_models"), list) else [],
@@ -1637,21 +1637,24 @@ class FSMOperator:
             "browser_allowed": browser_allowed,
         }
 
-    def run(self, *, payload: Dict[str, Any], model_override: str = "") -> Dict[str, Any]:
-        prompt = str(payload.get("prompt") or payload.get("task_prompt") or "")
-        web_project_id = _candidate_text(payload.get("web_project_id"))
-        use_case = _normalize_use_case_info(payload.get("use_case"))
-        url = str(payload.get("url") or "")
-        html = str(payload.get("snapshot_html") or "")
-        screenshot = payload.get("screenshot")
-        task_id = str(payload.get("task_id") or "")
-        step_index = int(payload.get("step_index") or 0)
-        completion_only = bool(payload.get("completion_only"))
-        include_reasoning = bool(payload.get("include_reasoning"))
-        history = payload.get("history") if isinstance(payload.get("history"), list) else []
-        state = AgentState.from_state_in(payload.get("state_in"), prompt=prompt)
+    def run(self, *, payload: Dict[str, Any] | Any, model_override: str = "") -> Dict[str, Any]:
+        payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
+        prompt = str(payload_dict.get("prompt") or payload_dict.get("task_prompt") or "")
+        web_project_id = _candidate_text(payload_dict.get("web_project_id"))
+        use_case = _normalize_use_case_info(payload_dict.get("use_case"))
+        url = str(payload_dict.get("url") or "")
+        html = str(payload_dict.get("snapshot_html") or "")
+        screenshot = payload_dict.get("screenshot")
+        task_id = str(payload_dict.get("task_id") or "")
+        step_index = int(payload_dict.get("step_index") or 0)
+        completion_only = bool(payload_dict.get("completion_only"))
+        include_reasoning = bool(payload_dict.get("include_reasoning"))
+        history = payload_dict.get("history") if isinstance(payload_dict.get("history"), list) else []
+        state = AgentState.from_internal_state(payload_dict.get("internal_state"), prompt=prompt)
+        if isinstance(payload_dict.get("score_feedback"), dict):
+            state.score_feedback = dict(payload_dict.get("score_feedback") or {})
         state_before = state.model_copy(deep=True)
-        allowed = self._normalize_allowed(payload.get("allowed_tools"))
+        allowed = self._normalize_allowed(payload_dict.get("allowed_tools"))
         mode_in = state.mode
         if url and not state.session_query:
             state.session_query = _query_map(url)

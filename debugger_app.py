@@ -324,8 +324,8 @@ class ReplayManager:
         import eval as eval_mod
         from autoppia_iwa.src.data_generation.tasks.classes import Task
         from autoppia_iwa.src.execution.actions.base import BaseAction
+        from src.operator.eval.session import build_task_execution_session
 
-        previous_headless = getattr(eval_mod, "EVALUATOR_HEADLESS", True)
         episode_meta = episode_payload.get("episode") if isinstance(episode_payload.get("episode"), dict) else {}
         episode_task_id = str(episode_meta.get("episode_task_id") or "")
         task_id = str(episode_meta.get("task_id") or "")
@@ -337,13 +337,13 @@ class ReplayManager:
             if not isinstance(task_payload, dict):
                 raise RuntimeError(f"task_not_found_in_cache:{task_id}")
             task = Task(**task_payload)
-            eval_mod.EVALUATOR_HEADLESS = False
-            evaluator = eval_mod._ScopedAsyncStatefulEvaluator(
+            evaluator = build_task_execution_session(
                 task=task,
                 web_agent_id=web_agent_id,
                 validator_id=validator_id,
                 enable_score_cheating=False,
                 capture_screenshot=False,
+                headless=False,
             )
             self._evaluator = evaluator
             step_result = await evaluator.reset()
@@ -375,7 +375,6 @@ class ReplayManager:
                 with contextlib.suppress(Exception):
                     await self._evaluator.close()
             self._evaluator = None
-            eval_mod.EVALUATOR_HEADLESS = previous_headless
 
 
 REPLAY = ReplayManager()

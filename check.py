@@ -222,9 +222,6 @@ def _validate_actions_shape(resp: dict[str, Any]) -> Optional[str]:
         if not isinstance(pv, str) or not pv.strip():
             return "protocol_version must be a non-empty string when present"
 
-    if "state_out" not in resp or not isinstance(resp.get("state_out"), dict):
-        return "state_out must be a JSON object"
-
     if "done" in resp and not isinstance(resp.get("done"), bool):
         return "done must be boolean when present"
 

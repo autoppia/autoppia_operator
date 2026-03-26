@@ -1,0 +1,45 @@
+{
+  "added": [
+    ".arbos/loop/runs/step-0001/events.jsonl",
+    ".arbos/loop/runs/step-0001/last-agent-message.txt",
+    ".arbos/loop/runs/step-0001/prompt.md",
+    ".arbos/loop/runs/step-0001/repo-before.json",
+    ".arbos/loop/runs/step-0001/response.json",
+    ".arbos/loop/runs/step-0001/stderr.txt",
+    "data/eval_migration_run.json",
+    "data/eval_migration_smoke.json"
+  ],
+  "removed": [],
+  "changed": [
+    ".arbos/INBOX.md",
+    ".arbos/loop/STATUS.json",
+    ".arbos/loop/response.schema.json",
+    ".arbos/loop/supervisor.log",
+    "__pycache__/agent.cpython-313.pyc",
+    "__pycache__/llm_gateway.cpython-313.pyc",
+    "__pycache__/main.cpython-313.pyc",
+    "eval.py"
+  ],
+  "all": [
+    ".arbos/INBOX.md",
+    ".arbos/loop/STATUS.json",
+    ".arbos/loop/response.schema.json",
+    ".arbos/loop/runs/step-0001/events.jsonl",
+    ".arbos/loop/runs/step-0001/last-agent-message.txt",
+    ".arbos/loop/runs/step-0001/prompt.md",
+    ".arbos/loop/runs/step-0001/repo-before.json",
+    ".arbos/loop/runs/step-0001/response.json",
+    ".arbos/loop/runs/step-0001/stderr.txt",
+    ".arbos/loop/supervisor.log",
+    "__pycache__/agent.cpython-313.pyc",
+    "__pycache__/llm_gateway.cpython-313.pyc",
+    "__pycache__/main.cpython-313.pyc",
+    "data/eval_migration_run.json",
+    "data/eval_migration_smoke.json",
+    "eval.py"
+  ],
+  "bytes_added": 971407,
+  "bytes_removed": 0,
+  "bytes_delta": 975726,
+  "bytes_modified": 975726
+}

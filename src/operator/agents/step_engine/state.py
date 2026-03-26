@@ -126,10 +126,10 @@ class AgentState(BaseModel):
     score_feedback: Dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
-    def from_state_in(cls, state_in: Any, prompt: str) -> "AgentState":
-        if isinstance(state_in, dict):
+    def from_internal_state(cls, internal_state: Any, prompt: str) -> "AgentState":
+        if isinstance(internal_state, dict):
             try:
-                st = cls.model_validate(state_in)
+                st = cls.model_validate(internal_state)
             except Exception:
                 st = cls()
         else:
@@ -335,7 +335,7 @@ class AgentState(BaseModel):
             self.plan.active_id = ""
         return self
 
-    def to_state_out(self) -> Dict[str, Any]:
+    def to_internal_state(self) -> Dict[str, Any]:
         self._sanitize()
         return self.model_dump(mode="json", exclude_none=True)
 
@@ -505,4 +505,3 @@ class FlagDetector:
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]
-

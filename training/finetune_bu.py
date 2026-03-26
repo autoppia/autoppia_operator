@@ -5,8 +5,8 @@ Installs dependencies, loads SFT data, trains LoRA adapters, and saves weights.
 
 Usage:
     python -m training.finetune_bu \
-        --data data/sft/train.jsonl \
-        --val-data data/sft/val.jsonl \
+        --data data/autocinema_trajectory_harvest/sft/train.jsonl \
+        --val-data data/autocinema_trajectory_harvest/sft/val.jsonl \
         --output-dir models/bu-30b-lora \
         --epochs 3 --lr 2e-4 --lora-rank 32
 
@@ -81,6 +81,7 @@ def train(
     data_path: str,
     output_dir: str,
     val_data_path: Optional[str] = None,
+    base_model: str = MODEL_ID,
     epochs: int = 3,
     lr: float = 2e-4,
     lora_rank: int = 32,
@@ -116,13 +117,13 @@ def train(
     )
 
     # --- Load model + tokeniser ---
-    logger.info("Loading model %s (4-bit) …", MODEL_ID)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+    logger.info("Loading model %s (4-bit) …", base_model)
+    tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
+        base_model,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
@@ -219,6 +220,7 @@ def train(
         "trainable_params": trainable,
         "total_params": total,
         "train_examples": len(train_examples),
+        "base_model": base_model,
     }
     # Save metrics
     with open(os.path.join(output_dir, "train_metrics.json"), "w") as fh:
@@ -237,9 +239,10 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    parser = argparse.ArgumentParser(description="Fine-tune bu-30b with LoRA")
-    parser.add_argument("--data", default="data/sft/train.jsonl", help="SFT train JSONL")
-    parser.add_argument("--val-data", default="data/sft/val.jsonl", help="SFT val JSONL")
+    parser = argparse.ArgumentParser(description="Fine-tune bu-30b with LoRA/QLoRA")
+    parser.add_argument("--data", default="data/autocinema_trajectory_harvest/sft/train.jsonl", help="SFT train JSONL")
+    parser.add_argument("--val-data", default="data/autocinema_trajectory_harvest/sft/val.jsonl", help="SFT val JSONL")
+    parser.add_argument("--base-model", default=MODEL_ID, help="Base model name/path")
     parser.add_argument("--output-dir", default="models/bu-30b-lora", help="Output dir")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=2e-4)
@@ -254,6 +257,7 @@ def main() -> None:
     train(
         data_path=args.data,
         val_data_path=args.val_data,
+        base_model=args.base_model,
         output_dir=args.output_dir,
         epochs=args.epochs,
         lr=args.lr,

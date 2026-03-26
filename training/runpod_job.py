@@ -2,8 +2,8 @@
 
 Usage:
     python -m training.runpod_job \
-        --data data/sft/train.jsonl \
-        --val-data data/sft/val.jsonl \
+        --data data/autocinema_trajectory_harvest/sft/train.jsonl \
+        --val-data data/autocinema_trajectory_harvest/sft/val.jsonl \
         --output-dir models/bu-30b-lora
 
 Requires RunPod API key in RUNPOD_API_KEY environment variable.
@@ -59,7 +59,7 @@ def create_pod(
     image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04",
     cloud_type: str = "COMMUNITY",
     volume_gb: int = 50,
-    name: str = "autoppia-finetune",
+    name: str = "bu-30b-a3b-bootstrap",
 ) -> str:
     """Create a RunPod GPU pod. Returns pod ID."""
     import runpodctl  # type: ignore
@@ -144,8 +144,8 @@ def terminate_pod(pod_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 def run_job(
-    data_path: str = "data/sft/train.jsonl",
-    val_data_path: str = "data/sft/val.jsonl",
+    data_path: str = "data/autocinema_trajectory_harvest/sft/train.jsonl",
+    val_data_path: str = "data/autocinema_trajectory_harvest/sft/val.jsonl",
     output_dir: str = "models/bu-30b-lora",
     gpu_type: str = "NVIDIA A100 80GB PCIe",
     epochs: int = 3,
@@ -243,8 +243,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
     parser = argparse.ArgumentParser(description="Run LoRA fine-tune on RunPod")
-    parser.add_argument("--data", default="data/sft/train.jsonl")
-    parser.add_argument("--val-data", default="data/sft/val.jsonl")
+    parser.add_argument("--data", default="data/autocinema_trajectory_harvest/sft/train.jsonl")
+    parser.add_argument("--val-data", default="data/autocinema_trajectory_harvest/sft/val.jsonl")
     parser.add_argument("--output-dir", default="models/bu-30b-lora")
     parser.add_argument("--gpu-type", default="NVIDIA A100 80GB PCIe")
     parser.add_argument("--epochs", type=int, default=3)

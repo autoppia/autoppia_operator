@@ -271,6 +271,15 @@ class CandidateExtractor:
         node_name = _norm_ws(attrs.get("name"))
         if node_name and tag in {"input", "textarea", "select"}:
             return {"type": "attributeValueSelector", "attribute": "name", "value": node_name, "case_sensitive": False}
+        for attr_name in ("data-testid", "aria-label", "placeholder", "title"):
+            attr_value = _norm_ws(attrs.get(attr_name))
+            if attr_value:
+                return {
+                    "type": "attributeValueSelector",
+                    "attribute": attr_name,
+                    "value": attr_value,
+                    "case_sensitive": False,
+                }
         if raw_href and tag == "a":
             return {
                 "type": "attributeValueSelector",
@@ -1073,4 +1082,3 @@ class CandidateRanker:
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]
-

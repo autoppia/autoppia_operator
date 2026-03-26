@@ -1,0 +1,47 @@
+{
+  "plan_version": "browser_use_runpod_bootstrap_v1",
+  "repo_branch": "daryxx",
+  "base_model": "browser-use/bu-30b-a3b-preview",
+  "training_method": "lora_qlora",
+  "preferred_gpu": "NVIDIA A100 80GB PCIe",
+  "fallback_gpus": [
+    "NVIDIA H100 PCIe"
+  ],
+  "existing_bootstrap_pod_id": "59dd4g1snevkqs",
+  "existing_bootstrap_pod_name": "bu-30b-a3b-bootstrap",
+  "runpod_defaults": {
+    "gpu_count": 1,
+    "volume_size_gb": 80,
+    "cloud_type": "COMMUNITY",
+    "max_cost_per_hour_usd": 4.5,
+    "max_total_budget_usd": 75.0
+  },
+  "sft_dataset": {
+    "episodes_path": "data/autocinema_trajectory_harvest/episodes.jsonl",
+    "summary_path": "data/autocinema_trajectory_harvest/summary.json",
+    "train_path": "data/autocinema_trajectory_harvest/sft/train.jsonl",
+    "val_path": "data/autocinema_trajectory_harvest/sft/val.jsonl",
+    "manifest_path": "data/autocinema_trajectory_harvest/sft/manifest.json"
+  },
+  "local_prerequisites": [
+    "python check.py",
+    "python -m training.format_for_sft --input data/autocinema_trajectory_harvest/episodes.jsonl --summary data/autocinema_trajectory_harvest/summary.json --output-dir data/autocinema_trajectory_harvest/sft",
+    "python -m training.finetune_bu --help",
+    "python -m training.runpod_job --help",
+    "python -m training.serve_model --help"
+  ],
+  "pod_bootstrap_steps": [
+    "Inspect or clone the existing RunPod pod configuration anchored by 59dd4g1snevkqs",
+    "Provision a RunPod pod with NVIDIA A100 80GB PCIe and 80GB persistent storage",
+    "SSH into the pod or use runpodctl exec after the pod reports RUNNING",
+    "Clone the repo, checkout branch daryxx, create a venv, and install requirements"
+  ],
+  "training_command": "python -m training.finetune_bu --base-model browser-use/bu-30b-a3b-preview --data data/autocinema_trajectory_harvest/sft/train.jsonl --val-data data/autocinema_trajectory_harvest/sft/val.jsonl --output-dir models/bu-30b-lora --epochs 3 --lr 2e-4 --lora-rank 32 --lora-alpha 64 --batch-size 2 --grad-accum 8",
+  "serve_command": "python -m training.serve_model --base-model browser-use/bu-30b-a3b-preview --adapter-path models/bu-30b-lora",
+  "verify_before_spend": [
+    "SFT train.jsonl and val.jsonl are non-empty",
+    "manifest.json reports browser-use/bu-30b-a3b-preview and selected successful episodes",
+    "RunPod balance and hourly pricing are acceptable before launch",
+    "The training and serving CLIs still return --help locally"
+  ]
+}

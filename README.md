@@ -212,6 +212,50 @@ python scripts/eval/generate_tasks.py --project-id autocinema --prompts-per-use-
 
 Outputs are written to `data/` (gitignored).
 
+## Autocinema Trajectory Harvest
+
+For fine-tuning, treat old score-only eval JSONs as weak evidence. The preferred
+dataset is a fresh, replayable harvest with persisted per-episode trace files.
+
+Recommended fresh collection flow:
+
+```bash
+python scripts/autocinema_harvest.py \
+  --run-eval \
+  --project-id autocinema \
+  --provider openai \
+  --model gpt-5.2 \
+  --repeat 3 \
+  --seed-start 7000 \
+  --task-concurrency 2 \
+  --include-reasoning \
+  --use-site-knowledge \
+  --use-local-html-context \
+  --out-dir data/autocinema_trajectory_harvest
+```
+
+This writes:
+- `data/autocinema_trajectory_harvest/summary.json`
+- `data/autocinema_trajectory_harvest/episodes.jsonl`
+- `data/autocinema_trajectory_harvest/collection_manifest.json`
+- `data/autocinema_trajectory_harvest/golden_seeds.json`
+- `data/autocinema_trajectory_harvest/raw_eval_runs/...`
+
+Important:
+- The harvest script now defaults to `--require-trace-files`.
+- If an old eval result has no persisted trace bundle, it will be excluded from the replayable dataset.
+- `golden_seeds.json` lists the observed `score=1.0` seeds by use case, but those are historical winners, not guarantees. Re-verify them with a fresh eval before treating them as stable training goldens.
+
+If you already have a fresh eval result plus a matching trace root, aggregate them explicitly:
+
+```bash
+python scripts/autocinema_harvest.py \
+  --project-id autocinema \
+  --result-glob data/autocinema_trajectory_harvest/raw_eval_runs/eval_autocinema_*.json \
+  --trace-root data/autocinema_trajectory_harvest/raw_eval_runs/traces_autocinema_20260326T120000Z \
+  --out-dir data/autocinema_trajectory_harvest
+```
+
 
 ## Model comparison
 
