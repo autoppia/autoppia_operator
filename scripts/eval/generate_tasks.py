@@ -7,8 +7,7 @@ Why this exists:
 - We want an explicit way to load autoppia_operator/.env (override=True) so
   OPENAI_API_KEY is always the one we expect.
 
-Default output matches what eval.py consumes:
-  ../autoppia_rl/data/task_cache/autoppia_cinema_tasks.json
+Default output matches what `src/eval/runner.py` consumes.
 """
 
 from __future__ import annotations
@@ -58,7 +57,7 @@ async def _generate(project_id: str, prompts_per_use_case: int, dynamic: bool) -
 
 
 def main() -> None:
-    operator_dir = Path(__file__).resolve().parents[1]
+    operator_dir = Path(__file__).resolve().parents[2]
 
     parser = argparse.ArgumentParser(description="Generate and cache tasks via autoppia_iwa.")
     parser.add_argument(

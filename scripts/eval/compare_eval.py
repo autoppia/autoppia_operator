@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """compare_eval.py
 
-Run eval.py across multiple provider/model combos and aggregate results.
+Run the local eval runner across multiple provider/model combos and aggregate results.
 
 Example:
-  python scripts/compare_eval.py     --runs openai:gpt-5.2 openai:gpt-4o openai:o4-mini     --runs anthropic:claude-sonnet-4-5-20250929     --num-tasks 5 --distinct-use-cases
+  python scripts/eval/compare_eval.py --runs openai:gpt-5.2 openai:gpt-4o openai:o4-mini --runs anthropic:claude-sonnet-4-5-20250929 --num-tasks 5 --distinct-use-cases
 
 This script writes:
   data/compare/<provider>__<model>.json
@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-REPO_DIR = Path(__file__).resolve().parent.parent
+REPO_DIR = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)

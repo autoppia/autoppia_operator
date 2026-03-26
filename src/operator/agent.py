@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.operator.agent import (
+from src.operator.entrypoint import (
     ApifiedWebAgent,
     AutoppiaOperator,
     FSMAgent,
@@ -9,8 +9,8 @@ from src.operator.agent import (
     _normalize_demo_url,
     _sanitize_action_payload,
     _task_from_payload,
-    app,
 )
+from src.operator.server import app  # noqa: E402
 
 __all__ = [
     "ApifiedWebAgent",
