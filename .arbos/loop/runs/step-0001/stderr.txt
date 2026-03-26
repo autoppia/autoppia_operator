@@ -1,1 +1,0 @@
-2026-03-16T14:30:12.915104Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(Reqwest(reqwest::Error { kind: Request, url: "http://127.0.0.1:5050/mcp", source: hyper_util::client::legacy::Error(Connect, ConnectError("tcp connect error", 127.0.0.1:5050, Os { code: 111, kind: ConnectionRefused, message: "Connection refused" })) }))
