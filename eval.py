@@ -196,7 +196,12 @@ from autoppia_iwa.src.demo_webs.config import demo_web_projects
 from autoppia_iwa.src.demo_webs.demo_webs_service import BackendDemoWebService
 from autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator
 from autoppia_iwa.src.execution.actions.base import BaseAction
-from autoppia_iwa.src.execution.browser_executor import PlaywrightBrowserExecutor
+
+try:
+    from autoppia_iwa.src.execution.playwright_browser_executor import PlaywrightBrowserExecutor
+except ModuleNotFoundError:  # pragma: no cover - older autoppia_iwa layouts
+    from autoppia_iwa.src.execution.browser_executor import PlaywrightBrowserExecutor
+
 from loguru import logger
 
 from infra.llm_gateway import openai_chat_completions
