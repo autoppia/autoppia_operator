@@ -5,9 +5,8 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from src.operator.agents.fsm import AgentState, Candidate
-
-from .state import _split_prompt_subgoals
+from .candidates import Candidate
+from .state import AgentState, _split_prompt_subgoals
 from .utils import (
     FSM_MODES,
     MAX_CHECKPOINTS,

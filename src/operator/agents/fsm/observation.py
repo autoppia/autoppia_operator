@@ -11,8 +11,8 @@ from bs4 import BeautifulSoup
 
 from agent_test_support import _norm_ws
 
-from . import AgentState, Candidate
-from .state import ProgressEffect
+from .candidates import Candidate
+from .state import AgentState, ProgressEffect
 from .utils import (
     HISTORY_RECENT_LIMIT,
     MAX_HISTORY_SUMMARY_CHARS,

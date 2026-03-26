@@ -9,8 +9,7 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 
-from src.operator.agents.fsm import AgentState
-
+from .state import AgentState
 from .utils import (
     _candidate_text,
     _constraint_key_tokens,
