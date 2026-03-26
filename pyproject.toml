@@ -1,0 +1,114 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autoppia-operator"
+version = "0.0.1"
+description = "Autoppia Web Agent API operator (FastAPI service for web automation decisions)"
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "Proprietary" }
+authors = []
+keywords = ["autoppia", "web-agent", "automation", "fastapi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: FastAPI",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+# Flat layout: agent.py and main.py at repo root (no top-level package)
+[tool.setuptools]
+py-modules = ["agent", "main"]
+
+# Black configuration
+[tool.black]
+line-length = 200
+target-version = ["py311"]
+skip-string-normalization = true
+
+# Ruff configuration
+[tool.ruff]
+line-length = 200
+target-version = "py311"
+
+fix = true  # Enables auto-fixing
+unsafe-fixes = true  # Allows unsafe fixes
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E402", "E501"]
+
+# F821 (undefined name) only in project events.py: forward refs in type hints (BackendEvent, etc.)
+# avoid circular imports. F821 still reported everywhere else (e.g. missing imports).
+[tool.ruff.lint.per-file-ignores]
+"**/demo_webs/projects/*/events.py" = ["F821"]
+"**/demo_webs/projects/base_events.py" = ["F821"]
+"**/generated_projects/*/events.py" = ["F821"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["agent", "main"]
+known-third-party = [
+    "PIL", "aiohttp", "bs4", "dependency_injector", "distutils", "dotenv", "faker", "flask", "flask_cors",
+    "httpx", "json_repair", "loguru", "matplotlib", "networkx", "openai", "playwright", "pydantic",
+     "requests", "rich", "tiktoken", "torch", "transformers", "typing_extensions", "xmldiff"
+]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+# Pytest configuration
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "--import-mode=importlib"
+testpaths = ["tests"]
+markers = [
+    "dynamic_audit: expensive Playwright crawl over demo webs (requires RUN_DYNAMIC_AUDIT=1)",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.3.0",
+]
+lint = [
+    "ruff>=0.3.0",
+]
+
+# -----------------------------------------------------------------------------
+# Coverage (pytest-cov)
+# -----------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", ".github/*", "**/__pycache__/*"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+]
+fail_under = 0
+
+# -----------------------------------------------------------------------------
+# MyPy (optional: run with mypy .)
+# -----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
