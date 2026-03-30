@@ -4,7 +4,9 @@ import json
 from typing import Any
 
 import pytest
+from bs4 import BeautifulSoup
 
+import src.operator.agents.fsm.state as fsm_state
 from src.operator.agents.fsm import (
     MAX_INTERNAL_META_STEPS,
     AgentFormProgress,
@@ -3821,6 +3823,113 @@ def test_prompt_field_needs_and_field_kind_detect_genre() -> None:
     assert "genre" in ranker._prompt_field_needs("Show me books where the genres equal Allegory")
 
 
+def test_candidate_extractor_field_kind_covers_pager_select_and_name_cases() -> None:
+    extractor = CandidateExtractor()
+
+    assert (
+        extractor._field_kind(
+            tag="button",
+            attrs={"id": "next-page"},
+            role_name="button",
+            text="Next page",
+            field_hint="",
+            context="Pagination controls",
+        )
+        == "pager"
+    )
+    assert (
+        extractor._field_kind(
+            tag="a",
+            attrs={"href": "/page/2"},
+            role_name="link",
+            text="Previous page",
+            field_hint="",
+            context="Pagination controls",
+        )
+        == "pager"
+    )
+    assert (
+        extractor._field_kind(
+            tag="select",
+            attrs={"id": "sort-order"},
+            role_name="select",
+            text="Sort by rating",
+            field_hint="Sort order",
+            context="Order by newest",
+        )
+        == "sort"
+    )
+    assert (
+        extractor._field_kind(
+            tag="select",
+            attrs={"id": "genre-filter"},
+            role_name="select",
+            text="Genre",
+            field_hint="Movie genre",
+            context="Category filters",
+        )
+        == "genre"
+    )
+    assert (
+        extractor._field_kind(
+            tag="select",
+            attrs={"id": "release-year"},
+            role_name="select",
+            text="Released 2024",
+            field_hint="Release year",
+            context="Choose year",
+        )
+        == "year"
+    )
+    assert (
+        extractor._field_kind(
+            tag="input",
+            attrs={"type": "password", "id": "confirm-password"},
+            role_name="input",
+            text="",
+            field_hint="Confirm password",
+            context="Create account",
+        )
+        == "confirm_password"
+    )
+    assert (
+        extractor._field_kind(
+            tag="input",
+            attrs={"type": "text", "id": "full-name"},
+            role_name="input",
+            text="",
+            field_hint="Full name",
+            context="Profile details",
+        )
+        == "name"
+    )
+
+
+def test_candidate_extractor_field_hint_uses_label_parent_and_context() -> None:
+    extractor = CandidateExtractor()
+
+    soup = BeautifulSoup(
+        """
+        <html><body>
+          <label for="email-field">Email address</label>
+          <input id="email-field" />
+          <label>Password <input id="password-field" /></label>
+          <section>
+            <div class="search-panel">
+              <span>Search the catalog</span>
+              <input id="query-field" />
+            </div>
+          </section>
+        </body></html>
+        """,
+        "lxml",
+    )
+
+    assert extractor._field_hint(soup.find("input", attrs={"id": "email-field"})) == "Email address"
+    assert extractor._field_hint(soup.find("input", attrs={"id": "password-field"})) == "Password"
+    assert "Search the catalog" in extractor._field_hint(soup.find("input", attrs={"id": "query-field"}))
+
+
 def test_augment_text_ir_merges_form_and_candidate_control_groups() -> None:
     builder = ObsBuilder()
     form_payload = {
@@ -4136,3 +4245,115 @@ def test_direct_loop_does_not_auto_finalize_from_page_evidence(monkeypatch: Any)
     )
     assert out.get("done") is False
     assert out.get("content") is None
+
+
+def test_agent_state_from_state_in_and_sanitize_trim_fields() -> None:
+    state = AgentState.from_state_in({"mode": "NOT_A_MODE"}, "Open dashboard then export report")
+
+    assert state.mode == "BOOTSTRAP"
+    assert len(state.plan.subgoals) == 2
+    assert state.plan.subgoals[0].status == "active"
+    assert state.plan.active_id == state.plan.subgoals[0].id
+
+    state.visited.page_hashes = {f"k{i}": "x" * 90 for i in range(fsm_state.MAX_PAGE_HASHES + 3)}
+    state.session_query = {f"q{i}": "value" * 40 for i in range(20)}
+    state.plan.subgoals[0].status = "broken"
+    state.plan.active_id = "missing"
+
+    sanitized = state._sanitize()
+
+    assert len(sanitized.visited.page_hashes) == fsm_state.MAX_PAGE_HASHES
+    assert all(len(value) <= 64 for value in sanitized.visited.page_hashes.values())
+    assert len(sanitized.session_query) == 16
+    assert sanitized.plan.subgoals[0].status == "pending"
+    assert sanitized.plan.active_id == ""
+
+
+def test_agent_state_helpers_handle_empty_prompt_and_state_out() -> None:
+    state = AgentState.from_state_in({"mode": "NAV"}, "")
+
+    assert state.plan.subgoals == []
+    assert state.to_state_out()["mode"] == "NAV"
+
+
+def test_flag_detector_fallbacks_without_beautifulsoup(monkeypatch: Any) -> None:
+    detector = FlagDetector()
+    monkeypatch.setattr(fsm_state, "BeautifulSoup", None)
+
+    assert detector._visible_text("") == ""
+    assert detector._visible_text("<html><body><script>hide</script><h1>Hello</h1></body></html>") == "hide Hello"
+    assert detector._interactive_modal_form("") is False
+    assert detector._interactive_modal_form("<dialog><form><input type='email'/><input type='password'/></form></dialog>") is True
+
+
+def test_flag_detector_visible_text_and_modal_form_with_parser(monkeypatch: Any) -> None:
+    detector = FlagDetector()
+
+    class _BrokenTag:
+        def decompose(self) -> None:
+            raise RuntimeError("ignore")
+
+    class _FakeSoup:
+        def __call__(self, _names):
+            return [_BrokenTag()]
+
+        def get_text(self, _sep: str, strip: bool = True) -> str:
+            assert strip is True
+            return " Visible page text "
+
+    monkeypatch.setattr(fsm_state, "BeautifulSoup", lambda html, parser: _FakeSoup())
+    assert detector._visible_text("<html></html>") == "Visible page text"
+
+    class _FakeInput:
+        def __init__(self, attrs: dict[str, str]):
+            self.attrs = attrs
+
+    class _FakeNode:
+        def get_text(self, _sep: str, strip: bool = True) -> str:
+            assert strip is True
+            return "Account sign in"
+
+        def select(self, selector: str):
+            assert selector == "input, select, textarea"
+            return [_FakeInput({"type": "password", "name": "password", "id": "login-password"})]
+
+        def find(self, selector: str):
+            assert selector == "form"
+            return None
+
+    class _FakeModalSoup:
+        def select(self, selector: str):
+            assert selector == "[role='dialog'], dialog, [aria-modal='true'], .modal, .popup"
+            return [_FakeNode()]
+
+    monkeypatch.setattr(fsm_state, "BeautifulSoup", lambda html, parser: _FakeModalSoup())
+    assert detector._interactive_modal_form("<div></div>") is True
+
+
+def test_flag_detector_modal_form_detects_input_attributes_with_parser(monkeypatch: Any) -> None:
+    detector = FlagDetector()
+
+    class _FakeInput:
+        def __init__(self, attrs: dict[str, str]):
+            self.attrs = attrs
+
+    class _FakeNode:
+        def get_text(self, _sep: str, strip: bool = True) -> str:
+            assert strip is True
+            return "Account access panel"
+
+        def select(self, selector: str):
+            assert selector == "input, select, textarea"
+            return [_FakeInput({"type": "text", "name": "username", "placeholder": "Username"})]
+
+        def find(self, selector: str):
+            assert selector == "form"
+            return None
+
+    class _FakeModalSoup:
+        def select(self, selector: str):
+            assert selector == "[role='dialog'], dialog, [aria-modal='true'], .modal, .popup"
+            return [_FakeNode()]
+
+    monkeypatch.setattr(fsm_state, "BeautifulSoup", lambda html, parser: _FakeModalSoup())
+    assert detector._interactive_modal_form("<div></div>") is True
