@@ -2,139 +2,157 @@
 
 ## Mission
 
-Turn `autoppia_operator` into a fine-tuning-ready Browser Use training repo on top of the replayable Autocinema harvest that already exists on branch `daryxx`.
+Turn `autoppia_operator` into a strong Autocinema trajectory-harvesting and correction loop.
 
-This project is not about doing full RL or blindly starting GPU jobs. It is about making the next step operationally clean:
+The goal is not just to "have a harvest script". The goal is to leave the repo with a reproducible system that can drive Autocinema use case by use case, use every legitimate debugging aid available, and accumulate a training-quality dataset with broad successful coverage.
 
-- the current replayable Autocinema harvest can be exported into a real SFT split
-- the chosen base model and training method are explicit and consistent
-- the RunPod defaults are realistic for this model family
-- the repo contains a concrete, reproducible RunPod + SSH execution plan that a human can run immediately
+This run is complete only when the committed dataset contains at least 10 successful trajectories for every Autocinema use case, each from distinct seeds, with replayable traces and machine-readable provenance.
 
-## External Facts To Use
+## Target Repo And Branch Discipline
 
-These facts were established before this run and should guide the implementation:
+- target repo: `/home/usuario1/daryxx/autoppia/operator/autoppia_operator`
+- work only on target repo branch `arbos`
+- that branch must start from `main`
+- do not silently switch back to `daryxx`
 
-- the current replayable harvest lives under `data/autocinema_trajectory_harvest/`
-- `summary.json` currently reports:
-  - `project_id = autocinema`
-  - `episodes_total = 170`
-  - `successes_total = 36`
-  - `failures_total = 134`
-  - `replayable_episodes_total = 170`
-- the current `training.format_for_sft` path is broken against this harvest because the episode structure does not match what the formatter expects
-- `training.export` currently fails to import because it references `training.schema`
-- the recommended starting model is `browser-use/bu-30b-a3b-preview`
-- the preferred first training method is LoRA/QLoRA SFT, not full fine-tuning
-- the preferred first GPU target is `NVIDIA A100 80GB PCIe`
-- an existing RunPod pod named `bu-30b-a3b-bootstrap` exists with pod id `59dd4g1snevkqs`
-- the current RunPod account balance is healthy, around `$699`
+If branch handling is wrong, fix it first.
 
-## Hard Constraints
+## Autocinema Use Cases
 
-- Work only in `/home/usuario1/daryxx/autoppia/operator/autoppia_operator`
-- Keep the repo on branch `daryxx`
-- Do not weaken or discard the existing replayable harvest just to make exports easier
-- Do not claim a training pipeline is ready if the SFT export still crashes on the real harvest
-- Do not switch to a different base model without strong evidence
-- Do not pretend the repo has already completed fine-tuning; the target is readiness, not a fake finished model
-- Keep the plan grounded in actual files and commands that match the repo
+All 16 Autocinema use cases must be covered:
 
-## What The Repo Must Contain After This Run
+- `ADD_COMMENT`
+- `ADD_FILM`
+- `ADD_TO_WATCHLIST`
+- `CONTACT`
+- `DELETE_FILM`
+- `EDIT_FILM`
+- `EDIT_USER`
+- `FILM_DETAIL`
+- `FILTER_FILM`
+- `LOGIN`
+- `LOGOUT`
+- `REGISTRATION`
+- `REMOVE_FROM_WATCHLIST`
+- `SEARCH_FILM`
+- `SHARE_MOVIE`
+- `WATCH_TRAILER`
 
-### 1. A working SFT export bridge from the replayable Autocinema harvest
+## What Is Allowed
 
-The repo must be able to convert the current replayable dataset into SFT-ready JSONL files for Browser Use fine-tuning.
+Use everything legitimate that helps collect correct trajectories:
 
-Required output artifacts under the target repo:
+- improve the harvesting loop
+- improve trace persistence and aggregation
+- improve the operator policy
+- inject advice / DAgger-style hints
+- inspect Autocinema demo-web code under the operator repo to understand intended workflows, validation semantics, and success conditions
+- use the existing trajectory, SFT, reward, and eval code if it helps
 
-- `data/autocinema_trajectory_harvest/sft/train.jsonl`
-- `data/autocinema_trajectory_harvest/sft/val.jsonl`
-- `data/autocinema_trajectory_harvest/sft/manifest.json`
+## What Is Not Allowed
 
-The manifest must include at least:
+- do not fake success counts
+- do not count score-only result rows without replayable traces
+- do not hardcode brittle task scripts directly into the live policy just to satisfy one seed
+- do not hide failed use cases or collapse them out of the dataset
+- do not stop after a few smoke wins
+- do not declare success because tests pass while the dataset target is still far away
 
-- source dataset paths used
-- total episodes seen
-- successful episodes used for SFT
-- example counts for train and val
-- system prompt or format version
-- base model target
+## Dataset Goal
 
-The export path should use the replayable harvest as input and should not depend on ad hoc manual editing.
+The final harvest artifact must be under:
 
-### 2. The Browser Use base model decision must be explicit and consistent
+- `data/autocinema_trajectory_harvest/summary.json`
+- `data/autocinema_trajectory_harvest/episodes.jsonl`
+- `data/autocinema_trajectory_harvest/collection_manifest.json`
+- `data/autocinema_trajectory_harvest/golden_seeds.json`
 
-The repo should consistently treat `browser-use/bu-30b-a3b-preview` as the starting point for Autocinema browser-agent fine-tuning unless a concrete repo-level blocker is discovered.
+And it must satisfy:
 
-If multiple files set base model defaults, align them. If there is a better config abstraction, use it.
+- every use case present
+- at least 10 successful trajectories per use case
+- those 10 successes must use distinct seeds
+- every kept episode is trace-backed and replayable
+- the dataset still retains failures and near-misses
 
-### 3. RunPod configuration must be realistic for this model
+This implies a minimum of:
 
-The repo must not default to an underpowered cheap GPU profile for this job.
+- `successes_total >= 160`
 
-The default RunPod recommendation should reflect the chosen model and first-pass training method:
+If a use case requires many failed attempts and advice iterations before reaching 10 successes, keep those failures in the dataset and keep iterating.
 
-- preferred GPU: `NVIDIA A100 80GB PCIe`
-- method: LoRA/QLoRA SFT
-- enough disk / budget guardrails for a real bootstrap job
+## Required Summary Fields
 
-It is acceptable to keep cheaper alternatives documented, but the default path should match the recommended model.
+`summary.json` must include at least:
 
-### 4. A concrete RunPod + SSH runbook and machine-readable plan must exist
+- `project_id = "autocinema"`
+- `branch = "arbos"`
+- `iwa_branch`
+- `generated_at`
+- `require_trace_files = true`
+- `use_cases`
+- `seeds`
+- `episodes_total`
+- `successes_total`
+- `failures_total`
+- `replayable_episodes_total`
+- `per_use_case`
 
-Add both:
+For each use case in `per_use_case`, record at minimum:
 
-- a human-readable runbook doc
-- a machine-readable plan/manifest
+- `attempted`
+- `successes`
+- `failures`
+- optional `near_miss`
+- `distinct_seeds`
+- `successful_seeds`
+- `golden_seed_count`
+- references to trace / output roots when possible
 
-Required artifacts:
+## DAgger / Advice Requirements
 
-- `docs/browser_use_finetune_runpod.md`
-- `training/runpod_bootstrap_plan.json`
+This run should not rely on blind harvesting alone. It must leave a reusable correction path.
 
-They must cover at least:
+At minimum, the repo should end with:
 
-- why `browser-use/bu-30b-a3b-preview` is the chosen starting point
-- why LoRA/QLoRA is the recommended first training method
-- preferred GPU and fallback options
-- the existing bootstrap pod id `59dd4g1snevkqs`
-- the expected dataset paths for SFT
-- the exact local commands to export data and start training
-- the expected SSH or RunPod access flow a human should use
-- what to verify before spending more GPU money
+- a harvesting entrypoint that can run fresh evals and save traces
+- an advice / correction mechanism or artifact format that captures when the base policy drifted and what the corrective guidance was
+- machine-readable metadata showing which episodes were harvested under plain policy vs corrected / advised policy when that information exists
 
-Be concrete. The runbook should help a human bring up the A100 pod and launch the first SFT run.
+The exact implementation can vary, but the run must improve the loop itself as it learns what works.
 
-### 5. The training package must pass the key local checks
+## Demo-Web Code Use
 
-At minimum, the following must work on the checked-out repo without a GPU:
+Use the Autocinema demo-web code inside the operator repo to:
 
-- `training.export` imports successfully
-- the real replayable Autocinema harvest can be converted into non-empty SFT train/val JSONL
-- the fine-tuning and RunPod CLIs still expose a useful `--help`
+- understand intended page flows
+- understand what constitutes task success
+- identify stable local workflows
+- diagnose why specific seeds or use cases fail
+
+Do not use it to bake in one-off site hacks that only work for a single prompt.
 
 ## Recommended Workflow
 
-1. Start from the real replayable harvest under `data/autocinema_trajectory_harvest/`
-2. Fix the training bridge so the current dataset can be exported cleanly
-3. Add or update tests around the broken points before or while fixing them
-4. Align model defaults and RunPod defaults with the Browser Use plan
-5. Generate the committed SFT artifacts and manifest from the real dataset
-6. Write the runbook and machine-readable bootstrap plan
+1. Keep `python check.py` and the local eval path healthy.
+2. Inspect the current harvest and identify weakest use cases.
+3. Improve the harvest loop itself before burning large eval batches.
+4. Use small focused runs on weak use cases and seeds.
+5. When the base policy drifts, inject advice / corrected continuation rather than only collecting repeated failures.
+6. Keep building the trace-backed dataset and summary as the single source of truth.
+7. Repeat until every use case reaches 10 successful distinct-seed trajectories.
 
 ## Definition Of Done
 
-This project is done only when all `.arbos/tests/` pass.
+The project is done only when all `.arbos/tests/` pass.
 
-That means all of the following are true:
+That means:
 
-- `python check.py` still passes
-- the repo stays on `daryxx`
-- `training.export` imports
-- the replayable Autocinema harvest exports into non-empty SFT train/val files
-- `data/autocinema_trajectory_harvest/sft/manifest.json` exists and describes the export
-- `docs/browser_use_finetune_runpod.md` exists and is concrete
-- `training/runpod_bootstrap_plan.json` exists and is concrete
-- the default model choice is `browser-use/bu-30b-a3b-preview`
-- the default RunPod recommendation is suitable for that model and points first to `NVIDIA A100 80GB PCIe`
+- branch discipline is correct
+- the harvest flow is reproducible
+- all 16 use cases are present
+- every use case has at least 10 successful trajectories from distinct seeds
+- the dataset contains failures too
+- all committed episodes are replayable
+- provenance and golden seeds are saved
+- the harvesting loop itself is improved enough to support further DAgger/SFT/RL work

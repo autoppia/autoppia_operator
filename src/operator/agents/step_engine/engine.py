@@ -682,6 +682,25 @@ class StepEngine:
         content = ""
         policy_reasoning = ""
         direct_browser_allowed = {tool for tool in browser_allowed if tool != "browser.go_back"}
+        preferred_seed_navigation = _preferred_seed_stable_navigation(
+            prompt,
+            policy_obs,
+            allowed_tools=direct_browser_allowed,
+        )
+        if isinstance(preferred_seed_navigation, dict):
+            action_candidates = list(ranked)
+            ranked_ids = {cand.id for cand in ranked if cand.id}
+            action_candidates.extend(cand for cand in candidates if cand.id not in ranked_ids)
+            action = self._browser_action_from_tool_call(
+                tool_call=preferred_seed_navigation.get("tool_call") if isinstance(preferred_seed_navigation.get("tool_call"), dict) else preferred_seed_navigation,
+                ranked_candidates=action_candidates,
+                state=state,
+                prompt=prompt,
+                allowed=direct_browser_allowed,
+                current_url=url,
+            )
+            if action is not None:
+                return [action], False, "", "preferred_seed_navigation", policy_model_used
         decision, usage = self.policy.decide(
             task_id=task_id or "task",
             prompt=prompt,
@@ -2088,7 +2107,7 @@ class StepEngine:
             flags=re.I,
         ):
             value = next((g for g in hit.groups() if g), "")
-            value = _norm_ws(value).strip(" \t\r\n'\"`.,;:!?")
+            value = _norm_ws(value).strip(" \t\r\n'\"`.,;:")
             if value and value.lower() not in {"and", "then", "attempt", "retry", "with"}:
                 passwords.append(value[:80])
         for token in re.findall(r"<(?:password|pass|pwd|signup_password)>", text, flags=re.I):
@@ -2564,10 +2583,32 @@ class StepEngine:
         if not isinstance(action, dict) or str(action.get("type") or "") != "ClickAction":
             return action
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
-        if target is None or not self._is_submit_like(target):
-            return action
         typed_sigs = self._typed_selector_signatures(history, state)
         typed_candidate_ids = self._typed_candidate_ids(history, state)
+        auth_inputs = [
+            cand
+            for cand in ranked_candidates
+            if cand.role == "input" and cand.field_kind in {"username", "email", "password", "confirm_password"}
+        ]
+        required_auth_inputs = [
+            cand for cand in auth_inputs if cand.field_kind in {"username", "email", "password"}
+        ]
+        auth_ready = bool(required_auth_inputs) and all(
+            (
+                cand.id in typed_candidate_ids
+                or (self._selector_signature(cand.selector) and self._selector_signature(cand.selector) in typed_sigs)
+            )
+            and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state)
+            for cand in required_auth_inputs
+        )
+        if auth_ready and target is not None and not self._is_submit_like(target):
+            for cand in ranked_candidates:
+                if cand.id in state.blocklist.element_ids:
+                    continue
+                if cand.role == "button" and cand.field_kind in {"auth_entry", "submit"}:
+                    return {"type": "ClickAction", "selector": cand.selector, "_element_id": cand.id}
+        if target is None or not self._is_submit_like(target):
+            return action
         for cand in ranked_candidates:
             if cand.role != "input":
                 continue

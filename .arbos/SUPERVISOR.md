@@ -1,3 +1,4 @@
-Review progress against the Browser Use fine-tuning readiness goal only.
+Review progress against the Autocinema trajectory-harvesting goal only.
 
-This project is successful only if the repo can take the real replayable Autocinema harvest, export a usable SFT dataset, and leave a concrete RunPod A100 bootstrap path for `browser-use/bu-30b-a3b-preview`.
+This project is not successful because it has more training abstractions or more speculative RL code.
+It is successful only if the operator keeps working on `daryxx` and produces a real, reusable Autocinema dataset with saved successful and failed trajectories across all use cases.

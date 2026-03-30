@@ -6,6 +6,729 @@ from .candidates import *
 from .observation import *
 from .meta_tools import *
 
+
+@lru_cache(maxsize=1)
+def _autocinema_success_examples() -> list[dict[str, Any]]:
+    manifest_path = _REPO_ROOT / "data" / "autocinema_trajectory_harvest" / "sft" / "manifest.json"
+    if not manifest_path.exists():
+        return []
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    examples: list[dict[str, Any]] = []
+    for trace_file in list(manifest.get("trace_files") or [])[:64]:
+        trace_path = Path(str(trace_file)).expanduser()
+        if not trace_path.exists():
+            continue
+        try:
+            trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        episode = trace.get("episode") if isinstance(trace.get("episode"), dict) else {}
+        use_case = str(episode.get("use_case") or "")[:64]
+        for step in list(trace.get("steps") or [])[:6]:
+            if not isinstance(step, dict):
+                continue
+            request = step.get("act_request") if isinstance(step.get("act_request"), dict) else {}
+            response = step.get("act_response") if isinstance(step.get("act_response"), dict) else {}
+            tool_calls = response.get("tool_calls") if isinstance(response.get("tool_calls"), list) else []
+            if not tool_calls:
+                continue
+            url = str(request.get("url") or trace.get("task_url") or "")
+            examples.append(
+                {
+                    "use_case": use_case,
+                    "url_path": str(urlsplit(url).path or "/").rstrip("/") or "/",
+                    "step_index": int(step.get("step_index") or 0),
+                    "prompt": str(request.get("prompt") or trace.get("task_prompt") or "")[:280],
+                    "tool_calls": tool_calls[:3],
+                }
+            )
+    return examples
+
+
+def _infer_autocinema_use_case(prompt: str, policy_obs: Dict[str, Any]) -> str:
+    explicit = (
+        policy_obs.get("use_case")
+        or policy_obs.get("active_objective", {}).get("use_case")
+        or policy_obs.get("working_state", {}).get("active_workflow")
+    )
+    if isinstance(explicit, dict):
+        explicit = explicit.get("name")
+    explicit_text = str(explicit or "").strip().upper().replace(" ", "_")
+    if explicit_text:
+        return explicit_text
+
+    prompt_text = str(prompt or "").lower()
+    heuristic_map = [
+        ("remove from watchlist", "REMOVE_FROM_WATCHLIST"),
+        ("remove from wishlist", "REMOVE_FROM_WATCHLIST"),
+        ("add to watchlist", "ADD_TO_WATCHLIST"),
+        ("add to wishlist", "ADD_TO_WATCHLIST"),
+        ("watch trailer", "WATCH_TRAILER"),
+        ("trailer", "WATCH_TRAILER"),
+        ("share", "SHARE_MOVIE"),
+        ("comment", "ADD_COMMENT"),
+        ("review", "ADD_COMMENT"),
+        ("registration", "REGISTRATION"),
+        ("register", "REGISTRATION"),
+        ("sign up", "REGISTRATION"),
+        ("logout", "LOGOUT"),
+        ("log out", "LOGOUT"),
+        ("login", "LOGIN"),
+        ("log in", "LOGIN"),
+        ("contact", "CONTACT"),
+        ("search", "SEARCH_FILM"),
+        ("filter", "FILTER_FILM"),
+        ("edit user", "EDIT_USER"),
+        ("edit profile", "EDIT_USER"),
+        ("edit film", "EDIT_FILM"),
+        ("add film", "ADD_FILM"),
+        ("delete", "DELETE_FILM"),
+        ("remove", "DELETE_FILM"),
+        ("watchlist", "ADD_TO_WATCHLIST"),
+        ("details", "FILM_DETAIL"),
+        ("detail", "FILM_DETAIL"),
+    ]
+    for needle, use_case in heuristic_map:
+        if needle in prompt_text:
+            return use_case
+    return ""
+
+
+def _related_autocinema_use_cases(use_case: str) -> set[str]:
+    groups = [
+        {"LOGIN", "LOGOUT", "REGISTRATION"},
+        {"ADD_TO_WATCHLIST", "REMOVE_FROM_WATCHLIST", "LOGIN"},
+        {"ADD_FILM", "EDIT_FILM", "DELETE_FILM", "EDIT_USER", "LOGIN", "REGISTRATION"},
+        {"FILM_DETAIL", "WATCH_TRAILER", "SHARE_MOVIE", "ADD_COMMENT", "ADD_TO_WATCHLIST"},
+        {"SEARCH_FILM", "FILTER_FILM", "FILM_DETAIL"},
+        {"CONTACT"},
+    ]
+    normalized = str(use_case or "").strip().upper()
+    for group in groups:
+        if normalized in group:
+            return set(group)
+    return {normalized} if normalized else set()
+
+
+def _autocinema_example_block(prompt: str, policy_obs: Dict[str, Any]) -> list[str]:
+    examples = _autocinema_success_examples()
+    if not examples:
+        return []
+
+    inferred_use_case = _infer_autocinema_use_case(prompt, policy_obs)
+    related_use_cases = _related_autocinema_use_cases(inferred_use_case)
+    current_url = str(policy_obs.get("url") or "")
+    current_path = str(urlsplit(current_url).path or "/").rstrip("/") or "/"
+    current_step = int(policy_obs.get("step_index") or 0)
+
+    ranked: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+    for example in examples:
+        example_use_case = str(example.get("use_case") or "").strip().upper()
+        if inferred_use_case and example_use_case == inferred_use_case:
+            use_case_score = 0
+        elif example_use_case in related_use_cases:
+            use_case_score = 1
+        else:
+            use_case_score = 2
+        path_score = 0 if current_path != "/" and example.get("url_path") == current_path else 1
+        step_score = abs(int(example.get("step_index") or 0) - current_step)
+        if use_case_score >= 2 and path_score == 1:
+            continue
+        ranked.append(((use_case_score, path_score, step_score), example))
+    ranked.sort(key=lambda item: item[0])
+
+    selected: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, int]] = set()
+    for _, example in ranked:
+        key = (str(example.get("url_path") or ""), int(example.get("step_index") or 0))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        selected.append(example)
+        if len(selected) >= 2:
+            break
+    if not selected:
+        return []
+
+    lines = [
+        "RETRIEVED SUCCESSFUL AUTOCINEMA EXAMPLES:",
+        "- These are short action snippets from successful harvest traces. Reuse the same local workflow only when the current page state matches.",
+    ]
+    for idx, example in enumerate(selected, start=1):
+        lines.extend(
+            [
+                f"Example {idx}: use_case={example.get('use_case') or 'unknown'} path={example.get('url_path') or '/'} step={int(example.get('step_index') or 0)}",
+                f"Prompt excerpt: {str(example.get('prompt') or '')[:180]}",
+                "Successful action JSON:",
+                json.dumps(example.get("tool_calls") or [], ensure_ascii=False),
+            ]
+        )
+    lines.append("")
+    return lines
+
+
+def _prompt_prefers_text_input(prompt: str, policy_obs: Dict[str, Any]) -> bool:
+    use_case = _infer_autocinema_use_case(prompt, policy_obs)
+    if use_case in {"SEARCH_FILM", "LOGIN", "REGISTRATION", "CONTACT", "ADD_COMMENT"}:
+        return True
+    prompt_text = str(prompt or "").lower()
+    return any(
+        needle in prompt_text
+        for needle in (
+            "search for",
+            "look up",
+            "find the movie",
+            "log in",
+            "login",
+            "register",
+            "sign up",
+            "contact",
+            "comment",
+        )
+    )
+
+
+def _autocinema_task_intent_tags(prompt: str, policy_obs: Dict[str, Any]) -> set[str]:
+    use_case = _infer_autocinema_use_case(prompt, policy_obs)
+    tags: set[str] = set()
+    tags.update(
+        {
+            "ADD_TO_WATCHLIST": {"watchlist_add"},
+            "REMOVE_FROM_WATCHLIST": {"watchlist_remove"},
+            "WATCH_TRAILER": {"trailer"},
+            "SHARE_MOVIE": {"share"},
+            "ADD_COMMENT": {"comment"},
+            "FILM_DETAIL": {"detail"},
+        }.get(use_case, set())
+    )
+    text = str(prompt or "").lower()
+    if ("watchlist" in text or "wishlist" in text) and re.search(r"\b(remove|delete|drop)\b", text):
+        tags.add("watchlist_remove")
+    elif "watchlist" in text or "wishlist" in text:
+        tags.add("watchlist_add")
+    if re.search(r"\bwatch trailer\b|\btrailer\b", text):
+        tags.add("trailer")
+    if re.search(r"\bshare\b", text):
+        tags.add("share")
+    if re.search(r"\b(comment|review|note|feedback|reply)\b", text):
+        tags.add("comment")
+    if re.search(r"\b(detail|details|view detail)\b", text):
+        tags.add("detail")
+    return tags
+
+
+def _obs_candidate_intent_tags(item: Dict[str, Any]) -> set[str]:
+    blob = " ".join(
+        [
+            str(item.get("text") or ""),
+            str(item.get("href") or ""),
+            str(item.get("field_hint") or ""),
+            str(item.get("field_kind") or ""),
+            str(item.get("group_label") or ""),
+            str(item.get("context") or ""),
+            str(item.get("aria_label") or ""),
+            str(item.get("placeholder") or ""),
+            str(item.get("ui_state") or ""),
+            str(item.get("current_value") or ""),
+        ]
+    ).lower()
+    tags: set[str] = set()
+    if re.search(r"\b(remove|delete)\s+(from\s+)?(watchlist|wishlist)\b", blob):
+        tags.add("watchlist_remove")
+    elif re.search(r"\b(add|save)\s+(to\s+)?(watchlist|wishlist)\b", blob):
+        tags.add("watchlist_add")
+    elif re.search(r"\b(in|on|inside)\s+(the\s+)?(watchlist|wishlist)\b", blob):
+        tags.add("watchlist_remove")
+    elif "watchlist" in blob or "wishlist" in blob:
+        if re.search(r"\b(active|selected|pressed|saved|added)\b", blob):
+            tags.add("watchlist_remove")
+        else:
+            tags.add("watchlist_add")
+    if re.search(r"\bwatch trailer\b|\btrailer\b", blob):
+        tags.add("trailer")
+    if re.search(r"\bshare\b", blob):
+        tags.add("share")
+    if re.search(r"\b(comment|review|note|feedback|reply)\b", blob):
+        tags.add("comment")
+    if re.search(r"\bview details?\b|\bmovie details?\b", blob) or "/movies/" in str(item.get("href") or "").lower():
+        tags.add("detail")
+    return tags
+
+
+def _obs_candidate_primary_intent_tags(item: Dict[str, Any]) -> set[str]:
+    blob = " ".join(
+        [
+            str(item.get("text") or ""),
+            str(item.get("field_hint") or ""),
+            str(item.get("aria_label") or ""),
+            str(item.get("placeholder") or ""),
+        ]
+    ).lower()
+    return _obs_candidate_intent_tags({"text": blob})
+
+
+def _extract_seed_from_url(url: str) -> str:
+    try:
+        query_pairs = dict(parse_qsl(urlsplit(str(url or "")).query, keep_blank_values=True))
+        seed = query_pairs.get("seed", "")
+    except Exception:
+        seed = ""
+    seed_text = str(seed or "").strip()
+    return seed_text if seed_text else "999"
+
+
+def _extract_prompt_title_literal(prompt: str) -> str:
+    text = str(prompt or "")
+    patterns = [
+        r"\bname\s+equals\s+'([^']+)'",
+        r"\btitle\s+equals\s+'([^']+)'",
+        r"\bmovie\s+titled\s+'([^']+)'",
+        r"\bfilm\s+titled\s+'([^']+)'",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            value = str(match.group(1) or "").strip()
+            if value:
+                return value[:160]
+    return ""
+
+
+def _page_mentions_title(policy_obs: Dict[str, Any], title_literal: str) -> bool:
+    needle = str(title_literal or "").strip().lower()
+    if not needle:
+        return False
+    haystacks = [
+        str(policy_obs.get("page_ir_text") or ""),
+        str(policy_obs.get("browser_state_snapshot") or ""),
+        str(policy_obs.get("snapshot_html") or ""),
+        str(policy_obs.get("html") or ""),
+        str(policy_obs.get("url") or ""),
+    ]
+    page_obs = policy_obs.get("page_observations") if isinstance(policy_obs.get("page_observations"), dict) else {}
+    haystacks.extend(str(line or "") for line in (page_obs.get("relevant_lines") or [])[:16])
+    haystacks.extend(str(line or "") for line in (page_obs.get("likely_answers") or [])[:8])
+    blob = " \n".join(haystacks).lower()
+    return needle in blob
+
+
+def _policy_markup(policy_obs: Dict[str, Any]) -> str:
+    for key in ("snapshot_html", "html", "browser_state_snapshot", "page_ir_text"):
+        value = str(policy_obs.get(key) or "")
+        if value.strip():
+            return value
+    return ""
+
+
+def _selector_for_html_id(markup: str, element_id: str) -> Dict[str, Any] | None:
+    if not markup or not element_id:
+        return None
+    if re.search(rf'id=["\']{re.escape(element_id)}["\']', markup, flags=re.I):
+        return {
+            "type": "attributeValueSelector",
+            "attribute": "id",
+            "value": element_id,
+            "case_sensitive": False,
+        }
+    return None
+
+
+def _selector_for_visible_button_text(markup: str, button_text: str) -> Dict[str, Any] | None:
+    if not markup or not button_text:
+        return None
+    if re.search(rf"<button\b[^>]*>\s*(?:<[^>]+>\s*)*{re.escape(button_text)}\s*</button>", markup, flags=re.I):
+        return {
+            "type": "tagContainsSelector",
+            "value": button_text,
+            "case_sensitive": False,
+        }
+    return None
+
+
+def _preferred_direct_intent_action_from_markup(
+    prompt: str,
+    policy_obs: Dict[str, Any],
+    *,
+    allowed_tools: set[str],
+) -> Dict[str, Any] | None:
+    if allowed_tools and "browser.click" not in allowed_tools:
+        return None
+    current_path = str(urlsplit(str(policy_obs.get("url") or "")).path or "").rstrip("/") or "/"
+    if not current_path.startswith("/movies/"):
+        return None
+    markup = _policy_markup(policy_obs)
+    if not markup:
+        return None
+    title_literal = _extract_prompt_title_literal(prompt)
+    if title_literal and not _page_mentions_title(policy_obs, title_literal):
+        return None
+    task_intents = _autocinema_task_intent_tags(prompt, policy_obs)
+    selector_specs = [
+        ("watchlist_remove", "remove-list-btn", "Remove from watchlist"),
+        ("watchlist_remove", "", "In Watchlist"),
+        ("watchlist_add", "add-list-btn", "Add to watchlist"),
+        ("trailer", "play-trailer", "Watch trailer"),
+        ("share", "share-widget", "Share"),
+    ]
+    for intent, preferred_id, button_text in selector_specs:
+        if intent not in task_intents:
+            continue
+        selector = _selector_for_html_id(markup, preferred_id) if preferred_id else None
+        if selector is None:
+            selector = _selector_for_visible_button_text(markup, button_text)
+        if selector is None:
+            continue
+        return {
+            "type": "browser",
+            "tool_call": {
+                "name": "browser.click",
+                "arguments": {"selector": selector},
+            },
+        }
+    return None
+
+
+def _seeded_search_url(current_url: str, seed: str, title_literal: str) -> str:
+    query_items: list[tuple[str, str]] = []
+    if seed:
+        query_items.append(("seed", seed))
+    title_text = str(title_literal or "").strip()
+    if title_text:
+        query_items.append(("search", title_text))
+    query = urlencode(query_items)
+    return _safe_url(f"/?{query}" if query else "/", base=current_url)
+
+
+def _candidate_mentions_title(item: Dict[str, Any], title_literal: str) -> bool:
+    needle = str(title_literal or "").strip().lower()
+    if not needle:
+        return False
+    blob = " ".join(
+        [
+            str(item.get("text") or ""),
+            str(item.get("href") or ""),
+            str(item.get("field_hint") or ""),
+            str(item.get("group_label") or ""),
+            str(item.get("context") or ""),
+            str(item.get("aria_label") or ""),
+        ]
+    ).lower()
+    return needle in blob
+
+
+def _preferred_title_result_action(
+    prompt: str,
+    policy_obs: Dict[str, Any],
+    *,
+    allowed_tools: set[str],
+) -> Dict[str, Any] | None:
+    if allowed_tools and "browser.click" not in allowed_tools:
+        return None
+    use_case = _infer_autocinema_use_case(prompt, policy_obs)
+    if use_case not in {
+        "ADD_TO_WATCHLIST",
+        "REMOVE_FROM_WATCHLIST",
+        "WATCH_TRAILER",
+        "SHARE_MOVIE",
+        "ADD_COMMENT",
+        "FILM_DETAIL",
+    }:
+        return None
+    title_literal = _extract_prompt_title_literal(prompt)
+    if not title_literal:
+        return None
+    current_url = str(policy_obs.get("url") or "")
+    current_path = str(urlsplit(current_url).path or "").rstrip("/") or "/"
+    capability_gap = (
+        policy_obs.get("page_observations", {}).get("capability_gap")
+        if isinstance(policy_obs.get("page_observations"), dict)
+        and isinstance(policy_obs.get("page_observations", {}).get("capability_gap"), dict)
+        else {}
+    )
+    auth_gated_mutation_use_cases = {
+        "ADD_TO_WATCHLIST",
+        "REMOVE_FROM_WATCHLIST",
+        "ADD_FILM",
+        "EDIT_FILM",
+        "DELETE_FILM",
+        "EDIT_USER",
+    }
+    if bool(capability_gap.get("read_only_for_task")) and use_case in auth_gated_mutation_use_cases:
+        return None
+    if current_path.startswith("/movies/") and _page_mentions_title(policy_obs, title_literal):
+        return None
+    candidates = policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else []
+    ranked: list[tuple[tuple[int, int, int], Dict[str, Any]]] = []
+    for item in candidates[:32]:
+        if not isinstance(item, dict):
+            continue
+        if not _candidate_mentions_title(item, title_literal):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        href = str(item.get("href") or "").strip().lower()
+        blob = " ".join(
+            [
+                str(item.get("text") or ""),
+                str(item.get("field_hint") or ""),
+                str(item.get("context") or ""),
+                str(item.get("aria_label") or ""),
+            ]
+        ).lower()
+        if role not in {"button", "link"}:
+            continue
+        if re.search(r"\b(home|about|contact|login|log in|register|sign up)\b", blob):
+            continue
+        if re.fullmatch(r"/(?:\?.*)?", href):
+            continue
+        item_id = str(item.get("id") or item.get("element_id") or item.get("_element_id") or "").strip().lower()
+        if item_id.startswith("related-card-"):
+            continue
+        detail_bias = 0 if "/movies/" in href else 1
+        role_bias = 0 if role == "link" else 1
+        index_bias = 0 if isinstance(item.get("index"), int) else 1
+        ranked.append(((detail_bias, role_bias, index_bias), item))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: item[0])
+    chosen = ranked[0][1]
+    args: Dict[str, Any] = {}
+    if isinstance(chosen.get("index"), int):
+        args["index"] = int(chosen["index"])
+    elif isinstance(chosen.get("selector"), dict):
+        args["selector"] = chosen["selector"]
+    else:
+        chosen_id = str(chosen.get("id") or chosen.get("element_id") or chosen.get("_element_id") or "").strip()
+        if not chosen_id:
+            return None
+        args["element_id"] = chosen_id
+    return {"type": "browser", "tool_call": {"name": "browser.click", "arguments": args}}
+
+
+def _preferred_seed_stable_navigation(
+    prompt: str,
+    policy_obs: Dict[str, Any],
+    *,
+    allowed_tools: set[str],
+) -> Dict[str, Any] | None:
+    if allowed_tools and "browser.navigate" not in allowed_tools:
+        return None
+    current_url = str(policy_obs.get("url") or "")
+    current_path = str(urlsplit(current_url).path or "").rstrip("/") or "/"
+    seed = _extract_seed_from_url(current_url)
+    use_case = _infer_autocinema_use_case(prompt, policy_obs)
+    title_literal = _extract_prompt_title_literal(prompt)
+    public_detail_use_cases = {
+        "ADD_TO_WATCHLIST",
+        "REMOVE_FROM_WATCHLIST",
+        "WATCH_TRAILER",
+        "SHARE_MOVIE",
+        "ADD_COMMENT",
+        "FILM_DETAIL",
+    }
+    auth_gated_mutation_use_cases = {
+        "ADD_TO_WATCHLIST",
+        "REMOVE_FROM_WATCHLIST",
+        "ADD_FILM",
+        "EDIT_FILM",
+        "DELETE_FILM",
+        "EDIT_USER",
+    }
+    capability_gap = (
+        policy_obs.get("page_observations", {}).get("capability_gap")
+        if isinstance(policy_obs.get("page_observations"), dict)
+        and isinstance(policy_obs.get("page_observations", {}).get("capability_gap"), dict)
+        else {}
+    )
+
+    if use_case == "LOGIN" and seed is not None and current_path not in {"/login"}:
+        return {
+            "type": "browser",
+            "tool_call": {
+                "name": "browser.navigate",
+                "arguments": {
+                    "url": _safe_url(f"/login?seed={seed}", base=current_url),
+                    "go_back": False,
+                    "go_forward": False,
+                },
+            },
+        }
+
+    if bool(capability_gap.get("read_only_for_task")) and (
+        use_case not in public_detail_use_cases or use_case in auth_gated_mutation_use_cases
+    ):
+        preferred_transition = str(capability_gap.get("preferred_transition") or "").strip().lower()
+        transition_targets = {
+            "login": f"/login?seed={seed}",
+            "register": f"/register?seed={seed}",
+            "manage": f"/profile?seed={seed}",
+        }
+        target_url = transition_targets.get(preferred_transition)
+        if target_url and current_path not in {"/login", "/register", "/profile"}:
+            return {
+                "type": "browser",
+                "tool_call": {
+                    "name": "browser.navigate",
+                    "arguments": {"url": _safe_url(target_url, base=current_url), "go_back": False, "go_forward": False},
+                },
+            }
+
+    title_focused_use_cases = {
+        "ADD_TO_WATCHLIST",
+        "REMOVE_FROM_WATCHLIST",
+        "SHARE_MOVIE",
+        "WATCH_TRAILER",
+        "ADD_COMMENT",
+        "FILM_DETAIL",
+        "SEARCH_FILM",
+    }
+    if use_case in title_focused_use_cases and title_literal:
+        off_target_detail = current_path.startswith("/movies/") and not _page_mentions_title(policy_obs, title_literal)
+    else:
+        off_target_detail = False
+    if use_case in title_focused_use_cases and (current_path in {"/", "/about", "/contact", "/login", "/register"} or off_target_detail):
+        return {
+            "type": "browser",
+            "tool_call": {
+                "name": "browser.navigate",
+                "arguments": {"url": _seeded_search_url(current_url, seed, title_literal), "go_back": False, "go_forward": False},
+            },
+        }
+    return None
+
+
+def _direct_intent_region_bias(item: Dict[str, Any], task_intents: set[str], current_path: str) -> tuple[int, int]:
+    blob = " ".join(
+        [
+            str(item.get("text") or ""),
+            str(item.get("href") or ""),
+            str(item.get("field_hint") or ""),
+            str(item.get("group_label") or ""),
+            str(item.get("context") or ""),
+            str(item.get("aria_label") or ""),
+        ]
+    ).lower()
+    href = str(item.get("href") or "").strip().lower()
+    cluster_bonus = 0
+    penalty = 0
+
+    if any(tag in task_intents for tag in {"watchlist_add", "watchlist_remove", "share", "trailer"}):
+        if re.search(r"\bwatch trailer\b|\bwatchlist\b|\bwishlist\b|\bshare\b", blob):
+            cluster_bonus = -1
+        if re.search(r"\b(comment|review|note|feedback|reply)\b", blob):
+            penalty += 2
+        if re.search(r"\b(login|log in|sign in|register|sign up|profile|account|search|filter)\b", blob):
+            penalty += 2
+        if href and not href.startswith(current_path) and not href.startswith("#"):
+            penalty += 3
+
+    if "comment" not in task_intents and re.search(r"\b(comment|review|note|feedback|reply)\b", blob):
+        penalty += 1
+    if "detail" not in task_intents and re.search(r"\bview details?\b|\bmovie details?\b", blob):
+        penalty += 1
+    return cluster_bonus, penalty
+
+
+def _candidate_matches_tool_args(item: Dict[str, Any], args: Dict[str, Any]) -> bool:
+    try:
+        item_index = int(item.get("index"))
+    except (TypeError, ValueError):
+        item_index = None
+    try:
+        arg_index = int(args.get("index"))
+    except (TypeError, ValueError):
+        arg_index = None
+    if item_index is not None and arg_index is not None and item_index == arg_index:
+        return True
+    item_id = str(item.get("id") or item.get("element_id") or item.get("_element_id") or "").strip()
+    if item_id and item_id in {
+        str(args.get("element_id") or "").strip(),
+        str(args.get("_element_id") or "").strip(),
+    }:
+        return True
+    item_selector = item.get("selector") if isinstance(item.get("selector"), dict) else {}
+    arg_selector = args.get("selector") if isinstance(args.get("selector"), dict) else {}
+    if item_selector and arg_selector:
+        return (
+            str(item_selector.get("type") or "") == str(arg_selector.get("type") or "")
+            and str(item_selector.get("attribute") or "") == str(arg_selector.get("attribute") or "")
+            and str(item_selector.get("value") or "") == str(arg_selector.get("value") or "")
+        )
+    return False
+
+
+def _tool_call_matches(preferred: Dict[str, Any], actual: Dict[str, Any]) -> bool:
+    preferred_name = str(preferred.get("name") or "").strip()
+    actual_name = str(actual.get("name") or "").strip()
+    if preferred_name != actual_name:
+        return False
+    preferred_args = preferred.get("arguments") if isinstance(preferred.get("arguments"), dict) else {}
+    actual_args = actual.get("arguments") if isinstance(actual.get("arguments"), dict) else {}
+    if preferred_name == "browser.navigate":
+        return str(preferred_args.get("url") or "").strip() == str(actual_args.get("url") or "").strip()
+    if preferred_name == "browser.click":
+        preferred_item = {
+            "index": preferred_args.get("index"),
+            "selector": preferred_args.get("selector"),
+            "id": preferred_args.get("element_id"),
+            "element_id": preferred_args.get("element_id"),
+            "_element_id": preferred_args.get("_element_id"),
+        }
+        return _candidate_matches_tool_args(preferred_item, actual_args)
+    return preferred_args == actual_args
+
+
+def _preferred_direct_intent_action(
+    prompt: str,
+    policy_obs: Dict[str, Any],
+    *,
+    allowed_tools: set[str],
+) -> tuple[Dict[str, Any], Dict[str, Any]] | None:
+    if allowed_tools and "browser.click" not in allowed_tools:
+        return None
+    current_path = str(urlsplit(str(policy_obs.get("url") or "")).path or "").rstrip("/") or "/"
+    task_intents = _autocinema_task_intent_tags(prompt, policy_obs).intersection(
+        {"watchlist_add", "watchlist_remove", "trailer", "share", "comment", "detail"}
+    )
+    if not task_intents or not current_path.startswith("/movies/"):
+        return None
+    candidates = policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else []
+    intent_priority = ["watchlist_remove", "watchlist_add", "trailer", "share", "comment", "detail"]
+    ranked: list[tuple[tuple[int, int, int], Dict[str, Any]]] = []
+    for item in candidates[:24]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if role not in {"button", "link", "input", "textarea"}:
+            continue
+        matched = task_intents.intersection(_obs_candidate_intent_tags(item))
+        if not matched:
+            continue
+        best_intent = min(intent_priority.index(tag) for tag in matched if tag in intent_priority)
+        exact_match = 0 if task_intents.intersection(_obs_candidate_primary_intent_tags(item)) else 1
+        role_bias = 0 if role in {"button", "link"} else 1
+        has_index = 0 if isinstance(item.get("index"), int) else 1
+        cluster_bias, drift_penalty = _direct_intent_region_bias(item, task_intents, current_path)
+        ranked.append(((best_intent, exact_match, cluster_bias, role_bias, drift_penalty, has_index), item))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: item[0])
+    chosen = ranked[0][1]
+    args: Dict[str, Any] = {}
+    if isinstance(chosen.get("index"), int):
+        args["index"] = int(chosen["index"])
+    else:
+        chosen_id = str(chosen.get("id") or chosen.get("element_id") or chosen.get("_element_id") or "").strip()
+        if chosen_id:
+            args["element_id"] = chosen_id
+        elif isinstance(chosen.get("selector"), dict):
+            args["selector"] = chosen["selector"]
+    return {"name": "browser.click", "arguments": args}, chosen
+
+
 class Policy:
     def __init__(self, llm_call: Callable[..., Dict[str, Any]]) -> None:
         self.llm_call = llm_call
@@ -77,6 +800,8 @@ class Policy:
                 "- Update reasoning_trace.current_subgoal and reasoning_trace.plan to reflect the current local milestone, not the whole task from scratch.\n"
                 "- Do not replan the whole task every step unless the page changed materially or the current workflow clearly failed.\n"
                 "- If SCORE FEEDBACK is present in state and marks success=true or score=1.0, treat it as strong completion evidence and prefer final/browser.done unless visible evidence clearly contradicts it.\n"
+                "- If a login or registration form is visible, do not submit until the visible credential fields are filled.\n"
+                "- If the task shows empty quoted credentials, replace them with placeholders such as <username>, <password>, <signup_username>, <signup_email>, or <signup_password> instead of empty strings.\n"
             )
         else:
             system = (
@@ -112,11 +837,15 @@ class Policy:
             "- Update reasoning_trace.current_subgoal and reasoning_trace.plan to reflect the current local milestone, not the whole task from scratch.\n"
             "- Do not replan the whole task every step unless the page changed materially or the current workflow clearly failed.\n"
             "- If SCORE FEEDBACK is present in state and marks success=true or score=1.0, treat it as strong completion evidence and prefer final/browser.done unless visible evidence clearly contradicts it.\n"
+            "- If a login or registration form is visible, do not submit until the visible credential fields are filled.\n"
+            "- If the task shows empty quoted credentials, replace them with placeholders such as <username>, <password>, <signup_username>, <signup_email>, or <signup_password> instead of empty strings.\n"
             )
+        autoplay_examples = _autocinema_example_block(prompt, policy_obs)
         if direct_mode:
             user_parts = [
                 "Choose the next browser step sequence.",
                 f"TASK: {str(policy_obs.get('prompt') or '')[:1600]}",
+                *autoplay_examples,
                 "TASK CONSTRAINTS:",
                 json.dumps(
                     (
@@ -268,6 +997,7 @@ class Policy:
             user_parts = [
             "You have a task and must choose the next browser step sequence.",
             f"TASK: {str(policy_obs.get('prompt') or '')[:1600]}",
+            *autoplay_examples,
             f"STEP: {int(policy_obs.get('step_index') or 0)}",
             f"MODE: {mode}",
             f"URL: {str(policy_obs.get('url') or '')[:1000]}",
@@ -566,10 +1296,10 @@ class Policy:
             content = str(
                 (((raw or {}).get("choices") or [{}])[0].get("message", {}) or {}).get("content") or ""
             )
-            usage = self._normalize_usage(raw)
+            usage = self._normalize_usage(raw, prompt_text=f"{system}\n{user_text}", response_text=content)
             try:
                 obj = self._parse_json(content)
-                normalized = self._normalize_decision(obj, allowed_tools)
+                normalized = self._normalize_decision(obj, allowed_tools, policy_obs=policy_obs)
             except Exception as parse_or_schema_err:
                 if not self._repair_enabled():
                     raise parse_or_schema_err
@@ -642,12 +1372,29 @@ class Policy:
             )
             return fallback, {"source": "fallback"}
 
-    def _normalize_usage(self, raw: Dict[str, Any] | None) -> Dict[str, int]:
+    def _normalize_usage(
+        self,
+        raw: Dict[str, Any] | None,
+        *,
+        prompt_text: str = "",
+        response_text: str = "",
+    ) -> Dict[str, int]:
         usage = (raw or {}).get("usage") if isinstance((raw or {}).get("usage"), dict) else {}
-        return {
+        out = {
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
             "completion_tokens": int(usage.get("completion_tokens") or 0),
             "total_tokens": int(usage.get("total_tokens") or 0),
+        }
+        if int(out["total_tokens"] or 0) > 0:
+            return out
+        prompt_chars = len(str(prompt_text or ""))
+        response_chars = len(str(response_text or ""))
+        est_prompt = max(1, prompt_chars // 4) if prompt_chars > 0 else 0
+        est_completion = max(1, response_chars // 4) if response_chars > 0 else 0
+        return {
+            "prompt_tokens": int(est_prompt),
+            "completion_tokens": int(est_completion),
+            "total_tokens": int(est_prompt + est_completion),
         }
 
     def _extract_first_json_object(self, raw: str) -> str | None:
@@ -708,7 +1455,13 @@ class Policy:
                 pass
         raise ValueError("invalid_json_policy_output")
 
-    def _normalize_decision(self, obj: Dict[str, Any], allowed_tools: set[str]) -> Dict[str, Any]:
+    def _normalize_decision(
+        self,
+        obj: Dict[str, Any],
+        allowed_tools: set[str],
+        *,
+        policy_obs: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         reasoning_trace = _normalize_reasoning_trace(obj.get("reasoning_trace"))
         working_state = _normalize_working_state(obj.get("working_state"))
         reasoning_summary = _candidate_text(_reasoning_trace_summary(reasoning_trace), obj.get("reasoning"))
@@ -821,6 +1574,70 @@ class Policy:
                     "working_state": working_state,
                 }
             if cleaned_calls:
+                if isinstance(policy_obs, dict):
+                    preferred_title_result = _preferred_title_result_action(
+                        str(policy_obs.get("prompt") or ""),
+                        policy_obs,
+                        allowed_tools=allowed_tools,
+                    )
+                    if preferred_title_result is not None:
+                        preferred_title_call = preferred_title_result.get("tool_call")
+                        if isinstance(preferred_title_call, dict) and not any(
+                            _tool_call_matches(preferred_title_call, call) for call in cleaned_calls
+                        ):
+                            cleaned_calls = [preferred_title_call]
+                    preferred_seed_navigation = _preferred_seed_stable_navigation(
+                        str(policy_obs.get("prompt") or ""),
+                        policy_obs,
+                        allowed_tools=allowed_tools,
+                    )
+                    if preferred_seed_navigation is not None:
+                        preferred_seed_call = preferred_seed_navigation.get("tool_call")
+                        if isinstance(preferred_seed_call, dict) and not any(
+                            _tool_call_matches(preferred_seed_call, call) for call in cleaned_calls
+                        ):
+                            cleaned_calls = [preferred_seed_call]
+                    preferred = _preferred_direct_intent_action(
+                        str(policy_obs.get("prompt") or ""),
+                        policy_obs,
+                        allowed_tools=allowed_tools,
+                    )
+                    if preferred is not None:
+                        preferred_call, preferred_candidate = preferred
+                        current_task_intents = _autocinema_task_intent_tags(
+                            str(policy_obs.get("prompt") or ""),
+                            policy_obs,
+                        )
+                        keeps_direct_intent = False
+                        for call in cleaned_calls:
+                            args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+                            if _candidate_matches_tool_args(preferred_candidate, args):
+                                keeps_direct_intent = True
+                                break
+                            for item in policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else []:
+                                if not isinstance(item, dict):
+                                    continue
+                                if (
+                                    _obs_candidate_primary_intent_tags(item).intersection(current_task_intents)
+                                    and _candidate_matches_tool_args(item, args)
+                                ):
+                                    keeps_direct_intent = True
+                                    break
+                            if keeps_direct_intent:
+                                break
+                        if not keeps_direct_intent:
+                            cleaned_calls = [preferred_call]
+                    preferred_markup_action = _preferred_direct_intent_action_from_markup(
+                        str(policy_obs.get("prompt") or ""),
+                        policy_obs,
+                        allowed_tools=allowed_tools,
+                    )
+                    if preferred_markup_action is not None:
+                        preferred_markup_call = preferred_markup_action.get("tool_call")
+                        if isinstance(preferred_markup_call, dict) and not any(
+                            _tool_call_matches(preferred_markup_call, call) for call in cleaned_calls
+                        ):
+                            cleaned_calls = [preferred_markup_call]
                 out: Dict[str, Any] = {
                     "type": "browser",
                     "reasoning": reasoning_summary,
@@ -869,7 +1686,11 @@ class Policy:
             content = str((((raw or {}).get("choices") or [{}])[0].get("message", {}) or {}).get("content") or "")
             obj = self._parse_json(content)
             normalized = self._normalize_decision(obj, allowed_tools)
-            usage = self._normalize_usage(raw)
+            usage = self._normalize_usage(
+                raw,
+                prompt_text=f"{repair_system}\n{json.dumps(repair_user, ensure_ascii=False)}",
+                response_text=content,
+            )
             model_name = str((raw or {}).get("model") or model or "")
             return normalized, usage, model_name, content
         except Exception:
@@ -917,6 +1738,35 @@ class Policy:
         stall_count = int(counters.get("stall_count") or 0)
         repeat_count = int(counters.get("repeat_action_count") or 0)
         route_like_stuck = mode in {"STUCK", "PLAN"} or loop_level == "high" or stall_count >= 4 or repeat_count >= 4
+        prefer_text_input = _prompt_prefers_text_input(prompt, policy_obs)
+        preferred_title_result = _preferred_title_result_action(
+            prompt,
+            policy_obs,
+            allowed_tools=allowed_tools,
+        )
+        if preferred_title_result is not None:
+            return preferred_title_result
+        preferred_seed_navigation = _preferred_seed_stable_navigation(
+            prompt,
+            policy_obs,
+            allowed_tools=allowed_tools,
+        )
+        if preferred_seed_navigation is not None:
+            return preferred_seed_navigation
+        preferred_direct_action = _preferred_direct_intent_action(
+            prompt,
+            policy_obs,
+            allowed_tools=allowed_tools,
+        )
+        if preferred_direct_action is not None:
+            return {"type": "browser", "tool_call": preferred_direct_action[0]}
+        preferred_markup_action = _preferred_direct_intent_action_from_markup(
+            prompt,
+            policy_obs,
+            allowed_tools=allowed_tools,
+        )
+        if preferred_markup_action is not None:
+            return preferred_markup_action
 
         def candidate_id(item: Dict[str, Any]) -> str:
             return str(item.get("id") or item.get("element_id") or item.get("_element_id") or "").strip()
@@ -953,6 +1803,14 @@ class Policy:
                     "tool_call": {
                         "name": "browser.click",
                         "arguments": target_args(),
+                    },
+                }
+            if role in {"input", "textarea"} and allow("browser.input") and prefer_text_input:
+                return {
+                    "type": "browser",
+                    "tool_call": {
+                        "name": "browser.input",
+                        "arguments": target_args({"text": ""}),
                     },
                 }
             if role in {"input", "textarea"} and allow("browser.click"):

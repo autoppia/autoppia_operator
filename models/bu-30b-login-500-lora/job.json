@@ -1,0 +1,12 @@
+{
+  "status": "completed",
+  "pod_id": "x38f1yxpmngocu",
+  "output_dir": "models/bu-30b-login-500-lora",
+  "started_at": "2026-03-28T13:13:49Z",
+  "base_model": "browser-use/bu-30b-a3b-preview",
+  "sft_dir": "data/autocinema/login/sft",
+  "train_examples": 667,
+  "val_examples": 22,
+  "notes": "launched via direct SSH because RUNPOD_API_KEY missing locally",
+  "finished_at": "2026-03-28T14:19:15Z"
+}

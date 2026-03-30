@@ -596,6 +596,27 @@ class CandidateRanker:
             ops.add("auth_register")
         return ops
 
+    def _task_intent_tags(self, task: str) -> set[str]:
+        text = str(task or "").lower()
+        tags: set[str] = set()
+        if ("watchlist" in text or "wishlist" in text) and re.search(r"\b(remove|delete|drop)\b", text):
+            tags.add("watchlist_remove")
+        elif "watchlist" in text or "wishlist" in text:
+            tags.add("watchlist_add")
+        if re.search(r"\bwatch trailer\b|\btrailer\b", text):
+            tags.add("trailer")
+        if re.search(r"\bshare\b", text):
+            tags.add("share")
+        if re.search(r"\b(comment|review|note|feedback|reply)\b", text):
+            tags.add("comment")
+        if re.search(r"\b(detail|details|view detail)\b", text):
+            tags.add("detail")
+        if re.search(r"\bsearch|find|look up\b", text):
+            tags.add("search")
+        if re.search(r"\bfilter|sort\b", text):
+            tags.add("filter")
+        return tags
+
     def _task_has_explicit_credentials(self, task: str) -> bool:
         prompt = str(task or "")
         constraints = _task_constraints(prompt)
@@ -607,6 +628,26 @@ class CandidateRanker:
         if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", prompt):
             return True
         return False
+
+    def _task_prefers_login_transition(self, task: str) -> bool:
+        text = str(task or "").lower()
+        if re.search(r"\b(register|sign up|signup|create account)\b", text):
+            return False
+        if re.search(r"\b(log ?in|sign in|authenticate)\b", text):
+            return True
+        account_terms = (
+            "watchlist",
+            "wishlist",
+            "profile",
+            "account",
+            "saved",
+            "add film",
+            "delete film",
+            "edit film",
+            "edit user",
+            "modify your profile",
+        )
+        return any(term in text for term in account_terms)
 
     def _candidate_action_tags(self, cand: Candidate) -> set[str]:
         blob = " ".join([cand.text, cand.href, cand.field_hint, cand.field_kind, cand.group_label]).lower()
@@ -623,6 +664,40 @@ class CandidateRanker:
             tags.add("auth_register")
         if re.search(r"\b(profile|account|manage|dashboard)\b", blob):
             tags.add("manage_nav")
+        return tags
+
+    def _candidate_intent_tags(self, cand: Candidate) -> set[str]:
+        blob = " ".join(
+            [
+                cand.text,
+                cand.href,
+                cand.field_hint,
+                cand.field_kind,
+                cand.group_label,
+                cand.context,
+                cand.aria_label,
+                cand.placeholder,
+            ]
+        ).lower()
+        tags: set[str] = set()
+        if re.search(r"\b(remove|delete)\s+(from\s+)?(watchlist|wishlist)\b", blob):
+            tags.add("watchlist_remove")
+        elif re.search(r"\b(add|save)\s+(to\s+)?(watchlist|wishlist)\b", blob):
+            tags.add("watchlist_add")
+        elif "watchlist" in blob or "wishlist" in blob:
+            tags.add("watchlist_add")
+        if re.search(r"\bwatch trailer\b|\btrailer\b", blob):
+            tags.add("trailer")
+        if re.search(r"\bshare\b", blob):
+            tags.add("share")
+        if re.search(r"\b(comment|review|note|feedback|reply)\b", blob):
+            tags.add("comment")
+        if re.search(r"\bview details?\b|\bmovie details?\b", blob) or "/movies/" in str(cand.href or "").lower():
+            tags.add("detail")
+        if re.search(r"\bsearch|find|look up\b", blob):
+            tags.add("search")
+        if re.search(r"\bfilter|sort\b", blob):
+            tags.add("filter")
         return tags
 
     def _is_section_switch_candidate(self, cand: Candidate) -> bool:
@@ -695,6 +770,8 @@ class CandidateRanker:
         prompt_needs = self._prompt_field_needs(task)
         task_ops = self._task_operation_hints(task)
         task_has_credentials = self._task_has_explicit_credentials(task)
+        task_prefers_login = self._task_prefers_login_transition(task)
+        task_intents = self._task_intent_tags(task)
         mutation_ops = task_ops.intersection({"create", "update", "delete"})
         delete_only_task = mutation_ops == {"delete"}
         blocked = set(state.blocklist.element_ids if state.blocklist.until_step > 0 else [])
@@ -713,6 +790,13 @@ class CandidateRanker:
         current_path = str(urlsplit(str(current_url or "")).path or "/").rstrip("/") or "/"
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
         candidate_tags: Dict[str, set[str]] = {cand.id: self._candidate_action_tags(cand) for cand in candidates}
+        candidate_intents: Dict[str, set[str]] = {cand.id: self._candidate_intent_tags(cand) for cand in candidates}
+        direct_intent_ids = {
+            cand.id
+            for cand in candidates
+            if task_intents.intersection(candidate_intents.get(cand.id) or set())
+        }
+        has_direct_intent_controls = bool(direct_intent_ids)
         group_stats: Dict[str, Dict[str, Any]] = {}
         exact_value_match_keys: Dict[str, int] = {}
         for cand in candidates:
@@ -806,6 +890,7 @@ class CandidateRanker:
             group_typed_kinds = set((group_stats.get(group_key) or {}).get("typed_field_kinds") or set())
             group_typed_inputs = int((group_stats.get(group_key) or {}).get("typed_inputs") or 0)
             action_tags = candidate_tags.get(cand.id, set())
+            intent_tags = candidate_intents.get(cand.id, set())
             constraint_matches = self._candidate_constraint_match(cand=cand, task_constraints=task_constraints)
             constraint_keys = set(constraint_matches.keys())
             unmet_constraint_keys = {key for key in constraint_keys if key not in satisfied_constraints}
@@ -1006,6 +1091,25 @@ class CandidateRanker:
                     score -= 4.0
             if has_visible_constraint_match and cand.role in {"link", "button"} and overlap:
                 score += 4.0
+            if task_intents and intent_tags:
+                matched_intents = task_intents.intersection(intent_tags)
+                if matched_intents:
+                    score += 14.0
+                    if cand.role == "button":
+                        score += 3.0
+                    elif cand.role == "link":
+                        score += 1.5
+                    if ("watchlist_add" in matched_intents or "watchlist_remove" in matched_intents) and cand.role in {"button", "link"}:
+                        score += 4.0
+                    if current_path.startswith("/movies/") and matched_intents.intersection({"watchlist_add", "watchlist_remove", "trailer", "share", "comment"}):
+                        score += 3.0
+                elif has_direct_intent_controls and task_intents.intersection({"watchlist_add", "watchlist_remove", "trailer", "share", "comment", "detail"}):
+                    if intent_tags.intersection({"watchlist_add", "watchlist_remove", "trailer", "share", "comment", "detail"}):
+                        score -= 6.5
+                    elif cand.role in {"input", "select"} and not prompt_needs.intersection({cand.field_kind}):
+                        score -= 4.0
+                    if action_tags.intersection({"auth_login", "auth_register"}) and current_path.startswith("/movies/"):
+                        score -= 5.0
             if task_constraints or prompt_needs:
                 if cand.role in {"input", "select", "button"} and not cand.href and (not has_relevant_form_group or group_key in relevant_groups):
                     score += 1.8
@@ -1045,9 +1149,15 @@ class CandidateRanker:
                 score += 3.0 if not (prompt_needs - {"search"}) else -2.0
             if mutation_ops and not has_mutation_controls:
                 if "auth_register" in action_tags:
-                    score += 14.0 if not task_has_credentials else 5.5
+                    if task_prefers_login:
+                        score -= 2.0
+                    else:
+                        score += 14.0 if not task_has_credentials else 5.5
                 elif "auth_login" in action_tags:
-                    score += 2.4 if not task_has_credentials else 10.0
+                    if task_has_credentials or task_prefers_login:
+                        score += 10.0
+                    else:
+                        score += 2.4
                 elif "manage_nav" in action_tags:
                     score += 4.8
                 if cand.field_kind == "search" or (cand.role in {"link", "button", "input"} and "search" in blob):

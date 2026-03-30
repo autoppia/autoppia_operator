@@ -2,6 +2,11 @@
 
 This repo is a minimal FastAPI web-agent service intended to run as a **miner** in the Autoppia web-agents subnet.
 
+Current state of the local training assets:
+- the only trusted fine-tuning dataset kept in-repo is `data/autocinema/login`
+- the only trusted local adapter kept in-repo is `models/bu-30b-login-500-lora`
+- old multi-use-case harvests, reward-model experiments, and demo-seedpack-derived data were removed
+
 ## What the validator runs
 
 The validator starts your container with:
@@ -526,3 +531,58 @@ python scripts/sn36_ops.py deploy-smoke
 This clones the configured repo using subnet clone rules, starts `uvicorn main:app`, and checks `/health`, `/capabilities`, and `/act`.
 
 If `SUBNET_MINER_GITHUB_URL` or `SN36_GITHUB_URL` is set, `python scripts/sn36_ops.py preflight` will run this deploy smoke automatically.
+
+## Reward Data Pipeline
+
+Reward-model artifacts should be derived from the harvested trajectories, not rebuilt ad hoc in `/tmp`.
+
+Canonical layout:
+
+```text
+data/autocinema_trajectory_harvest/
+  episodes.jsonl
+  collection_manifest.json
+  sft/
+  reward/
+    manifest.json
+    dataset/
+      step_reward.jsonl
+      step_reward_dense.jsonl
+      preference_pairs.jsonl
+      dense_label_candidates.jsonl
+      manifest.json
+    judges/
+      benchmark_report.json
+      trained_reward_mlp/
+        model.pt
+        manifest.json
+        train_rows.jsonl
+        val_rows.jsonl
+```
+
+Prepare or refresh the organized reward pipeline with:
+
+```bash
+python scripts/eval/prepare_reward_pipeline.py \
+  --episodes data/autocinema_trajectory_harvest/episodes.jsonl
+```
+
+This command:
+- reuses existing reward artifacts when the harvest source signature has not changed
+- writes all reward data under `data/autocinema_trajectory_harvest/reward/`
+- trains the structured reward baseline on an episode-group holdout split
+- writes a benchmark report for the heuristic and structured judges
+- exports `dense_label_candidates.jsonl` for future teacher relabel / LLM judge passes
+
+To add an LLM judge benchmark on top of the prepared artifacts:
+
+```bash
+OPENAI_API_KEY=... python scripts/eval/benchmark_reward_pipeline.py \
+  --episodes data/autocinema_trajectory_harvest/episodes.jsonl \
+  --out-dir data/autocinema_trajectory_harvest/reward \
+  --llm-model gpt-5.2 \
+  --llm-sample-per-label 6
+```
+
+Current caveat:
+- the harvested reward dataset still has no `local_progress` rows, so it is good for plumbing and judge comparison, but not yet good enough for dense reward shaping.

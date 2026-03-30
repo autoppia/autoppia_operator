@@ -1,0 +1,49 @@
+{
+  "added": [
+    ".arbos/loop/runs/step-0005/events.jsonl",
+    ".arbos/loop/runs/step-0005/last-agent-message.txt",
+    ".arbos/loop/runs/step-0005/prompt.md",
+    ".arbos/loop/runs/step-0005/repo-before.json",
+    ".arbos/loop/runs/step-0005/response.json",
+    ".arbos/loop/runs/step-0005/stderr.txt",
+    "data/autocinema_trajectory_harvest/raw_eval_runs/traces_eval_autocinema_add_to_watchlist_probe_20260326Tnew/trace_index.json",
+    "data/autocinema_trajectory_harvest/raw_eval_runs/traces_eval_autocinema_add_to_watchlist_probe_20260326Tnew2/trace_index.json"
+  ],
+  "removed": [],
+  "changed": [
+    ".arbos/loop/STATUS.json",
+    ".arbos/loop/response.schema.json",
+    ".arbos/loop/supervisor.log",
+    ".pytest_cache/v/cache/lastfailed",
+    ".pytest_cache/v/cache/nodeids",
+    "data/agent_server.log",
+    "src/operator/agents/step_engine/__pycache__/policy.cpython-313.pyc",
+    "src/operator/agents/step_engine/policy.py",
+    "tests/__pycache__/test_policy_exemplars.cpython-313-pytest-8.4.2.pyc",
+    "tests/test_policy_exemplars.py"
+  ],
+  "all": [
+    ".arbos/loop/STATUS.json",
+    ".arbos/loop/response.schema.json",
+    ".arbos/loop/runs/step-0005/events.jsonl",
+    ".arbos/loop/runs/step-0005/last-agent-message.txt",
+    ".arbos/loop/runs/step-0005/prompt.md",
+    ".arbos/loop/runs/step-0005/repo-before.json",
+    ".arbos/loop/runs/step-0005/response.json",
+    ".arbos/loop/runs/step-0005/stderr.txt",
+    ".arbos/loop/supervisor.log",
+    ".pytest_cache/v/cache/lastfailed",
+    ".pytest_cache/v/cache/nodeids",
+    "data/agent_server.log",
+    "data/autocinema_trajectory_harvest/raw_eval_runs/traces_eval_autocinema_add_to_watchlist_probe_20260326Tnew/trace_index.json",
+    "data/autocinema_trajectory_harvest/raw_eval_runs/traces_eval_autocinema_add_to_watchlist_probe_20260326Tnew2/trace_index.json",
+    "src/operator/agents/step_engine/__pycache__/policy.cpython-313.pyc",
+    "src/operator/agents/step_engine/policy.py",
+    "tests/__pycache__/test_policy_exemplars.cpython-313-pytest-8.4.2.pyc",
+    "tests/test_policy_exemplars.py"
+  ],
+  "bytes_added": 2469496,
+  "bytes_removed": 0,
+  "bytes_delta": 2496542,
+  "bytes_modified": 2496542
+}

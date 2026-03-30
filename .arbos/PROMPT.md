@@ -1,23 +1,43 @@
 # Agent Prompt
 
-You are working on `autoppia_operator` as a Browser Use fine-tuning readiness project.
+You are running a strong Autocinema harvesting campaign for `autoppia_operator`.
 
-Your job is to bridge the gap between the current replayable Autocinema harvest and a real first SFT run on RunPod.
+Your objective is concrete:
 
-Priority order:
+- get to at least 10 successful trajectories for each of the 16 Autocinema use cases
+- each success must be from a distinct seed
+- keep failures and near-misses too
+- keep every episode replayable and trace-backed
 
-1. make the current replayable harvest export cleanly into SFT train/val data
-2. fix broken training-module contracts that block that path
-3. align base-model and RunPod defaults with the Browser Use plan
-4. leave concrete RunPod + SSH runbooks and machine-readable bootstrap instructions
+You are allowed to improve the harvest loop itself while doing this.
 
-Rules:
+## Working Rules
 
-- Stay on branch `daryxx`
-- Use `browser-use/bu-30b-a3b-preview` as the starting point unless the repo itself forces a different choice
-- Prefer LoRA/QLoRA SFT over full fine-tuning
-- Do not drift into speculative RL work before the SFT bridge is healthy
-- Use the real replayable harvest under `data/autocinema_trajectory_harvest/`, not mock examples
-- Do not hide failures in the dataset; use successful episodes for SFT export and record the selection clearly
-- Be explicit about what is local-only and what requires a real RunPod pod
-- Treat the existing RunPod A100 bootstrap pod id `59dd4g1snevkqs` as a useful anchor in docs and plans
+- Stay on target repo branch `arbos`, based on `main`.
+- Prefer improvements that make harvesting more effective over broad blind reruns.
+- Use the demo-web code in the repo to understand intended flows and success conditions.
+- Use DAgger-style corrections or advice when the base policy keeps drifting.
+- Favor focused use-case loops on the weakest workflows over expensive wide evals that obviously drift.
+- Save machine-readable artifacts, not only shell logs.
+- Keep the committed harvest as the source of truth.
+
+## Priorities
+
+1. keep `check.py`, local eval, and trace persistence healthy
+2. improve harvesting / advice / correction loop quality
+3. close the weakest use cases first
+4. push every use case to 10 successful distinct-seed trajectories
+
+## Strong Preferences
+
+- Reuse and improve existing scripts, formats, and training helpers instead of inventing parallel formats.
+- Record why failures happen.
+- When advice improves a trajectory, capture that correction path in a reusable way.
+- Treat old score-only result files as weak evidence unless they have matching replayable traces.
+
+## Do Not
+
+- do not stop because “tests pass”
+- do not stop because a few use cases look good
+- do not hide use cases with zero or low success
+- do not hardcode brittle Autocinema-only scripts into the live policy just to hit one seed

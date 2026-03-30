@@ -21,12 +21,26 @@ class ObsBuilder:
     def _task_operation_hints(self, task: str) -> set[str]:
         text = str(task or "").lower()
         ops: set[str] = set()
+        public_detail_terms = (
+            "add to watchlist",
+            "add to wishlist",
+            "remove from watchlist",
+            "remove from wishlist",
+            "watch trailer",
+            "share",
+            "comment",
+            "review",
+            "film detail",
+            "movie detail",
+        )
         if re.search(r"\b(add|create|new|insert)\b", text):
-            ops.add("create")
+            if not any(term in text for term in public_detail_terms):
+                ops.add("create")
         if re.search(r"\b(edit|update|modify|change)\b", text):
             ops.add("update")
         if re.search(r"\b(delete|remove|erase|discard)\b", text):
-            ops.add("delete")
+            if not any(term in text for term in public_detail_terms):
+                ops.add("delete")
         if re.search(r"\b(log ?in|sign in|authenticate)\b", text):
             ops.add("auth_login")
         if re.search(r"\b(register|sign up|signup|create account)\b", text):
@@ -45,6 +59,42 @@ class ObsBuilder:
         if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", prompt):
             return True
         return False
+
+    def _task_prefers_login_transition(self, task: str) -> bool:
+        text = str(task or "").lower()
+        if re.search(r"\b(register|sign up|signup|create account)\b", text):
+            return False
+        if re.search(r"\b(log ?in|sign in|authenticate)\b", text):
+            return True
+        public_browse_terms = (
+            "add to watchlist",
+            "add to wishlist",
+            "remove from watchlist",
+            "remove from wishlist",
+            "watch trailer",
+            "share the current movie",
+            "share movie",
+            "add comment",
+            "film detail",
+            "movie detail",
+            "search for the movie",
+            "filter",
+        )
+        if any(term in text for term in public_browse_terms):
+            return False
+        account_terms = (
+            "watchlist",
+            "wishlist",
+            "profile",
+            "account",
+            "saved",
+            "add film",
+            "delete film",
+            "edit film",
+            "edit user",
+            "modify your profile",
+        )
+        return any(term in text for term in account_terms)
 
     def _candidate_action_tags(self, cand: Candidate) -> set[str]:
         blob = " ".join([cand.text, cand.href, cand.field_hint, cand.field_kind, cand.group_label]).lower()
@@ -94,12 +144,13 @@ class ObsBuilder:
         missing_ops = [op for op in mutation_ops if op not in available_ops]
         read_only_for_task = bool(mutation_ops) and bool(missing_ops)
         task_has_credentials = self._task_has_explicit_credentials(prompt)
+        prefers_login = self._task_prefers_login_transition(prompt)
         preferred_transition = ""
         if read_only_for_task:
-            if not task_has_credentials and register_available:
-                preferred_transition = "register"
-            elif task_has_credentials and login_available:
+            if (task_has_credentials or prefers_login) and login_available:
                 preferred_transition = "login"
+            elif not task_has_credentials and register_available:
+                preferred_transition = "register"
             elif management_entry_available:
                 preferred_transition = "manage"
             elif register_available:
@@ -136,6 +187,7 @@ class ObsBuilder:
             "auth_entry_available": bool(auth_entry_available),
             "management_entry_available": bool(management_entry_available),
             "task_has_explicit_credentials": bool(task_has_credentials),
+            "task_prefers_login_transition": bool(prefers_login),
             "read_only_for_task": bool(read_only_for_task),
             "preferred_transition": preferred_transition,
             "local_mutation_controls_visible": bool(local_mutation_controls_visible),

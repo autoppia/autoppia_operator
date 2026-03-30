@@ -118,3 +118,25 @@ def test_candidate_extractor_prefers_stable_attribute_selectors_before_xpath() -
     assert field.selector["type"] == "attributeValueSelector"
     assert field.selector["attribute"] == "placeholder"
     assert field.selector["value"] == "Search films"
+
+
+def test_direct_loop_login_prefers_seeded_login_navigation() -> None:
+    engine = StepEngine(llm_call=lambda **_: {})
+    out = engine.run(
+        payload={
+            "task_id": "login-hard-seed",
+            "prompt": "First, authenticate with username 'user1' and password 'Passw0rd!' to log in successfully.",
+            "web_project_id": "autocinema",
+            "use_case": {"name": "LOGIN"},
+            "url": "http://84.247.180.192:8000/?seed=252",
+            "snapshot_html": "<html><body><a id='featured-movie-view-details-btn-2' href='/movies/real-movie-064?seed=252'>View Details</a></body></html>",
+            "step_index": 0,
+            "history": [],
+            "include_reasoning": True,
+        }
+    )
+    actions = out.get("actions") or []
+    assert actions
+    first = actions[0]
+    assert first["type"] == "NavigateAction"
+    assert first["url"].endswith("/login?seed=252")

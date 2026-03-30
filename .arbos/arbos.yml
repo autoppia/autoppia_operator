@@ -1,6 +1,6 @@
-name: autoppia_operator_finetune
+name: autoppia_operator
 target: /home/usuario1/daryxx/autoppia/operator/autoppia_operator
-description: "Make autoppia_operator fine-tuning ready on top of the replayable Autocinema harvest: export Browser Use SFT data, pin realistic RunPod A100 defaults, and leave a concrete RunPod + SSH training plan."
+description: "Drive an aggressive Autocinema harvest loop with DAgger/advice until every use case has 10 successful distinct-seed trajectories plus replayable failures."
 provider: codex
 agent_model: gpt-5.4
 supervisor_provider: claude
@@ -11,3 +11,4 @@ manager_provider: codex
 manager_model: gpt-5.4
 branch: arbos
 from_branch: main
+metrics_file: metrics.py

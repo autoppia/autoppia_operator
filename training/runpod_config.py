@@ -20,7 +20,7 @@ class RunPodConfig:
 
     gpu_type: str = "NVIDIA A100 80GB PCIe"
     gpu_count: int = 1
-    container_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
+    container_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel"
     volume_size_gb: int = 80
     cloud_type: str = "COMMUNITY"
     timeout_hours: float = 8.0

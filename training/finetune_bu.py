@@ -15,11 +15,15 @@ Hardware requirement: A100 80GB (4-bit quantisation keeps memory < 40GB).
 from __future__ import annotations
 
 import argparse
+import importlib
+import inspect
 import json
 import logging
 import os
 import subprocess
 import sys
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -27,28 +31,84 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Dependency bootstrap (for RunPod pods that start with bare PyTorch image)
 # ---------------------------------------------------------------------------
+NUMPY_PACKAGE = "numpy<2"
 REQUIRED_PACKAGES = [
-    "transformers>=4.40",
-    "peft>=0.10",
-    "bitsandbytes>=0.43",
-    "datasets",
-    "accelerate>=0.28",
-    "trl>=0.8",
-    "safetensors",
+    "requests>=2.32.3",
+    "transformers>=4.55,<5",
+    "peft>=0.17.0",
+    "bitsandbytes>=0.47.0",
+    "datasets>=4.0.0",
+    "accelerate>=1.10.0",
+    "trl>=0.23.0",
+    "safetensors>=0.5.0",
+]
+TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
+RESTART_SENTINEL = "BU_FINETUNE_DEPS_RESTARTED"
+PINNED_TORCH_PACKAGES = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    "torchaudio==2.8.0",
 ]
 
 
+def _torch_runtime_requires_repair() -> bool:
+    try:
+        import torch
+    except ImportError:
+        return True
+
+    version = str(getattr(torch, "__version__", "") or "")
+    cuda_version = str(getattr(torch.version, "cuda", "") or "")
+    if not version.startswith("2.8."):
+        return True
+    if not cuda_version.startswith("12.8"):
+        return True
+    return not bool(torch.cuda.is_available())
+
+
+def _repair_torch_runtime() -> None:
+    logger.info("Installing %s to avoid the NumPy 2.x ABI break in the RunPod image", NUMPY_PACKAGE)
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--no-cache-dir", NUMPY_PACKAGE],
+    )
+    logger.info("Installing torch 2.8.0/cu128 to match the RunPod 12.8 driver")
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "--upgrade",
+            "--no-cache-dir",
+            "--force-reinstall",
+            "--index-url",
+            TORCH_INDEX_URL,
+            *PINNED_TORCH_PACKAGES,
+        ]
+    )
+    importlib.invalidate_caches()
+
+
+def _restart_current_process() -> None:
+    logger.info("Restarting interpreter so freshly installed torch wheels are re-imported cleanly")
+    env = os.environ.copy()
+    env[RESTART_SENTINEL] = "1"
+    os.execve(sys.executable, [sys.executable, *sys.argv], env)
+
+
 def _ensure_deps() -> None:
-    """Install missing Python packages."""
+    """Install or upgrade the training stack to a compatible set."""
+    if _torch_runtime_requires_repair():
+        if os.environ.get(RESTART_SENTINEL) == "1":
+            raise RuntimeError("Torch runtime still mismatched after dependency repair restart")
+        _repair_torch_runtime()
+        _restart_current_process()
     for pkg in REQUIRED_PACKAGES:
-        base = pkg.split(">=")[0].split("==")[0]
-        try:
-            __import__(base)
-        except ImportError:
-            logger.info("Installing %s …", pkg)
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "-q", pkg],
-            )
+        logger.info("Installing/upgrading %s …", pkg)
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--no-cache-dir", pkg],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -70,11 +130,183 @@ def load_sft_jsonl(path: str) -> List[Dict[str, Any]]:
     return examples
 
 
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_train_metrics(output_dir: str, payload: Dict[str, Any]) -> None:
+    _write_json(Path(output_dir) / "train_metrics.json", payload)
+
+
+class ProgressMetricsCallback:
+    def __init__(
+        self,
+        *,
+        output_dir: str,
+        base_model: str,
+        epochs: int,
+        lora_rank: int,
+        trainable_params: int,
+        total_params: int,
+        train_examples: int,
+        val_examples: int,
+        started_at: str,
+    ) -> None:
+        self.output_dir = output_dir
+        self.base_model = base_model
+        self.epochs = epochs
+        self.lora_rank = lora_rank
+        self.trainable_params = trainable_params
+        self.total_params = total_params
+        self.train_examples = train_examples
+        self.val_examples = val_examples
+        self.started_at = started_at
+
+    def __getattr__(self, name: str):
+        if not name.startswith("on_"):
+            raise AttributeError(name)
+
+        def _noop(*args: Any, **kwargs: Any) -> Any:
+            if len(args) >= 3:
+                return args[2]
+            return None
+
+        return _noop
+
+    def _base_payload(self, state: Any) -> Dict[str, Any]:
+        return {
+            "base_model": self.base_model,
+            "epochs": self.epochs,
+            "lora_rank": self.lora_rank,
+            "trainable_params": self.trainable_params,
+            "total_params": self.total_params,
+            "train_examples": self.train_examples,
+            "val_examples": self.val_examples,
+            "started_at": self.started_at,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "global_step": int(getattr(state, "global_step", 0) or 0),
+            "max_steps": int(getattr(state, "max_steps", 0) or 0),
+            "epoch": getattr(state, "epoch", None),
+        }
+
+    def on_train_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
+        payload = self._base_payload(state)
+        payload["status"] = "training"
+        _write_train_metrics(self.output_dir, payload)
+
+    def on_epoch_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+        payload = self._base_payload(state)
+        payload["status"] = "training"
+        payload["phase"] = "epoch_begin"
+        _write_train_metrics(self.output_dir, payload)
+        return control
+
+    def on_log(self, args: Any, state: Any, control: Any, logs: Optional[Dict[str, Any]] = None, **kwargs: Any) -> None:
+        payload = self._base_payload(state)
+        payload["status"] = "training"
+        if isinstance(logs, dict):
+            if "loss" in logs:
+                payload["train_loss"] = logs["loss"]
+            if "eval_loss" in logs:
+                payload["eval_loss"] = logs["eval_loss"]
+            if "learning_rate" in logs:
+                payload["learning_rate"] = logs["learning_rate"]
+        _write_train_metrics(self.output_dir, payload)
+
+    def on_train_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
+        payload = self._base_payload(state)
+        payload["status"] = "save_pending"
+        _write_train_metrics(self.output_dir, payload)
+
+    def on_epoch_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+        payload = self._base_payload(state)
+        payload["status"] = "training"
+        payload["phase"] = "epoch_end"
+        _write_train_metrics(self.output_dir, payload)
+        return control
+
+
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 
 MODEL_ID = "browser-use/bu-30b-a3b-preview"
+
+
+def _load_trainable_model(base_model: str, *, bnb_config: Any, bf16: bool) -> Any:
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    config = AutoConfig.from_pretrained(base_model, trust_remote_code=True)
+    torch = __import__("torch")
+    max_memory = None
+    if torch.cuda.is_available():
+        total_vram_gib = int(torch.cuda.get_device_properties(0).total_memory // (1024**3))
+        # accelerate's default 90% reservation leaves this model partly offloaded on A100 80GB.
+        # Reserve a small buffer explicitly, but keep the full model on GPU.
+        usable_vram_gib = max(total_vram_gib - 2, 1)
+        max_memory = {0: f"{usable_vram_gib}GiB", "cpu": "256GiB"}
+    common_kwargs = {
+        "quantization_config": bnb_config,
+        "device_map": "auto",
+        "trust_remote_code": True,
+        "torch_dtype": torch.bfloat16 if bf16 else torch.float16,
+        "max_memory": max_memory,
+    }
+
+    if getattr(config, "model_type", "") == "qwen3_vl_moe":
+        from transformers import AutoModelForImageTextToText
+
+        return AutoModelForImageTextToText.from_pretrained(base_model, **common_kwargs)
+
+    return AutoModelForCausalLM.from_pretrained(base_model, **common_kwargs)
+
+
+def _build_sft_training_args(
+    *,
+    training_args_cls: type[Any],
+    output_dir: str,
+    epochs: int,
+    batch_size: int,
+    grad_accum: int,
+    lr: float,
+    bf16: bool,
+    val_ds_present: bool,
+    max_seq_len: int,
+) -> Any:
+    training_kwargs = {
+        "output_dir": output_dir,
+        "num_train_epochs": epochs,
+        "per_device_train_batch_size": batch_size,
+        "gradient_accumulation_steps": grad_accum,
+        "learning_rate": lr,
+        "lr_scheduler_type": "cosine",
+        "warmup_ratio": 0.05,
+        "bf16": bf16,
+        "fp16": not bf16,
+        "logging_steps": 5,
+        "save_strategy": "epoch",
+        "save_total_limit": 2,
+        "report_to": "none",
+        "max_grad_norm": 1.0,
+        "gradient_checkpointing": True,
+        "optim": "paged_adamw_8bit",
+    }
+    training_args_params = inspect.signature(training_args_cls.__init__).parameters
+    eval_value = "epoch" if val_ds_present else "no"
+    if "evaluation_strategy" in training_args_params:
+        training_kwargs["evaluation_strategy"] = eval_value
+    elif "eval_strategy" in training_args_params:
+        training_kwargs["eval_strategy"] = eval_value
+    if "dataset_text_field" in training_args_params:
+        training_kwargs["dataset_text_field"] = "text"
+    if "max_length" in training_args_params:
+        training_kwargs["max_length"] = max_seq_len
+    elif "max_seq_length" in training_args_params:
+        training_kwargs["max_seq_length"] = max_seq_len
+    if "packing" in training_args_params:
+        training_kwargs["packing"] = False
+    return training_args_cls(**training_kwargs)
 
 
 def train(
@@ -100,13 +332,11 @@ def train(
     import torch
     from datasets import Dataset
     from peft import LoraConfig, TaskType, get_peft_model
-    from transformers import (
-        AutoModelForCausalLM,
-        AutoTokenizer,
-        BitsAndBytesConfig,
-        TrainingArguments,
-    )
-    from trl import SFTTrainer
+    from transformers import AutoTokenizer, BitsAndBytesConfig, TrainingArguments
+
+    trl_module = importlib.import_module("trl")
+    SFTTrainer = getattr(trl_module, "SFTTrainer")
+    SFTConfig = getattr(trl_module, "SFTConfig", None)
 
     # --- Quantisation config ---
     bnb_config = BitsAndBytesConfig(
@@ -122,13 +352,7 @@ def train(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        quantization_config=bnb_config,
-        device_map="auto",
-        trust_remote_code=True,
-        torch_dtype=torch.bfloat16 if bf16 else torch.float16,
-    )
+    model = _load_trainable_model(base_model, bnb_config=bnb_config, bf16=bf16)
     model.config.use_cache = False
 
     # --- LoRA config ---
@@ -165,6 +389,7 @@ def train(
     train_ds = Dataset.from_dict({"text": train_texts})
 
     val_ds = None
+    val_examples: List[Dict[str, Any]] = []
     if val_data_path and os.path.exists(val_data_path):
         val_examples = load_sft_jsonl(val_data_path)
         val_texts = [_format_messages(ex) for ex in val_examples]
@@ -172,36 +397,71 @@ def train(
 
     # --- Training args ---
     os.makedirs(output_dir, exist_ok=True)
-    training_args = TrainingArguments(
+    training_args_cls = TrainingArguments
+    if SFTConfig is not None:
+        sft_config_params = inspect.signature(SFTConfig.__init__).parameters
+        if "dataset_text_field" in sft_config_params:
+            training_args_cls = SFTConfig
+    training_args = _build_sft_training_args(
+        training_args_cls=training_args_cls,
         output_dir=output_dir,
-        num_train_epochs=epochs,
-        per_device_train_batch_size=batch_size,
-        gradient_accumulation_steps=grad_accum,
-        learning_rate=lr,
-        lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
+        epochs=epochs,
+        batch_size=batch_size,
+        grad_accum=grad_accum,
+        lr=lr,
         bf16=bf16,
-        fp16=not bf16,
-        logging_steps=5,
-        save_strategy="epoch",
-        evaluation_strategy="epoch" if val_ds else "no",
-        save_total_limit=2,
-        report_to="none",
-        max_grad_norm=1.0,
-        gradient_checkpointing=True,
-        optim="paged_adamw_8bit",
+        val_ds_present=bool(val_ds),
+        max_seq_len=max_seq_len,
     )
 
     # --- Trainer ---
-    trainer = SFTTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_ds,
-        eval_dataset=val_ds,
-        tokenizer=tokenizer,
-        max_seq_length=max_seq_len,
-        dataset_text_field="text",
-        packing=False,
+    trainer_kwargs = {
+        "model": model,
+        "args": training_args,
+        "train_dataset": train_ds,
+        "eval_dataset": val_ds,
+    }
+    trainer_params = inspect.signature(SFTTrainer.__init__).parameters
+    if "tokenizer" in trainer_params:
+        trainer_kwargs["tokenizer"] = tokenizer
+    elif "processing_class" in trainer_params:
+        trainer_kwargs["processing_class"] = tokenizer
+    if "max_seq_length" in trainer_params:
+        trainer_kwargs["max_seq_length"] = max_seq_len
+    if "dataset_text_field" in trainer_params:
+        trainer_kwargs["dataset_text_field"] = "text"
+    if "packing" in trainer_params:
+        trainer_kwargs["packing"] = False
+
+    trainer = SFTTrainer(**trainer_kwargs)
+    progress_callback = ProgressMetricsCallback(
+        output_dir=output_dir,
+        base_model=base_model,
+        epochs=epochs,
+        lora_rank=lora_rank,
+        trainable_params=trainable,
+        total_params=total,
+        train_examples=len(train_examples),
+        val_examples=len(val_examples),
+        started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+    add_callback = getattr(trainer, "add_callback", None)
+    if callable(add_callback):
+        add_callback(progress_callback)
+    _write_train_metrics(
+        output_dir,
+        {
+            "base_model": base_model,
+            "epochs": epochs,
+            "lora_rank": lora_rank,
+            "trainable_params": trainable,
+            "total_params": total,
+            "train_examples": len(train_examples),
+            "val_examples": len(val_examples),
+            "started_at": progress_callback.started_at,
+            "updated_at": progress_callback.started_at,
+            "status": "initializing_trainer",
+        },
     )
 
     # --- Train ---
@@ -220,11 +480,14 @@ def train(
         "trainable_params": trainable,
         "total_params": total,
         "train_examples": len(train_examples),
+        "val_examples": len(val_examples),
         "base_model": base_model,
+        "status": "completed",
+        "started_at": progress_callback.started_at,
+        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     # Save metrics
-    with open(os.path.join(output_dir, "train_metrics.json"), "w") as fh:
-        json.dump(metrics, fh, indent=2)
+    _write_train_metrics(output_dir, metrics)
 
     return metrics
 

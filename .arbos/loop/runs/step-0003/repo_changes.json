@@ -1,0 +1,53 @@
+{
+  "added": [
+    ".arbos/loop/runs/step-0003/events.jsonl",
+    ".arbos/loop/runs/step-0003/last-agent-message.txt",
+    ".arbos/loop/runs/step-0003/prompt.md",
+    ".arbos/loop/runs/step-0003/repo-before.json",
+    ".arbos/loop/runs/step-0003/response.json",
+    ".arbos/loop/runs/step-0003/stderr.txt"
+  ],
+  "removed": [],
+  "changed": [
+    ".arbos/loop/STATUS.json",
+    ".arbos/loop/response.schema.json",
+    ".arbos/loop/supervisor.log",
+    ".pytest_cache/v/cache/lastfailed",
+    ".pytest_cache/v/cache/nodeids",
+    "__pycache__/agent.cpython-313.pyc",
+    "__pycache__/llm_gateway.cpython-313.pyc",
+    "__pycache__/main.cpython-313.pyc",
+    "src/operator/agents/step_engine/__pycache__/policy.cpython-313.pyc",
+    "src/operator/agents/step_engine/policy.py",
+    "tests/__pycache__/test_fsm_operator.cpython-313-pytest-8.4.2.pyc",
+    "tests/__pycache__/test_policy_exemplars.cpython-313-pytest-8.4.2.pyc",
+    "tests/test_fsm_operator.py",
+    "tests/test_policy_exemplars.py"
+  ],
+  "all": [
+    ".arbos/loop/STATUS.json",
+    ".arbos/loop/response.schema.json",
+    ".arbos/loop/runs/step-0003/events.jsonl",
+    ".arbos/loop/runs/step-0003/last-agent-message.txt",
+    ".arbos/loop/runs/step-0003/prompt.md",
+    ".arbos/loop/runs/step-0003/repo-before.json",
+    ".arbos/loop/runs/step-0003/response.json",
+    ".arbos/loop/runs/step-0003/stderr.txt",
+    ".arbos/loop/supervisor.log",
+    ".pytest_cache/v/cache/lastfailed",
+    ".pytest_cache/v/cache/nodeids",
+    "__pycache__/agent.cpython-313.pyc",
+    "__pycache__/llm_gateway.cpython-313.pyc",
+    "__pycache__/main.cpython-313.pyc",
+    "src/operator/agents/step_engine/__pycache__/policy.cpython-313.pyc",
+    "src/operator/agents/step_engine/policy.py",
+    "tests/__pycache__/test_fsm_operator.cpython-313-pytest-8.4.2.pyc",
+    "tests/__pycache__/test_policy_exemplars.cpython-313-pytest-8.4.2.pyc",
+    "tests/test_fsm_operator.py",
+    "tests/test_policy_exemplars.py"
+  ],
+  "bytes_added": 1170916,
+  "bytes_removed": 0,
+  "bytes_delta": 1202016,
+  "bytes_modified": 1202016
+}

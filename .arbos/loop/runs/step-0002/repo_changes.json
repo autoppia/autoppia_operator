@@ -1,0 +1,47 @@
+{
+  "added": [
+    ".arbos/loop/runs/step-0002/events.jsonl",
+    ".arbos/loop/runs/step-0002/last-agent-message.txt",
+    ".arbos/loop/runs/step-0002/prompt.md",
+    ".arbos/loop/runs/step-0002/repo-before.json",
+    ".arbos/loop/runs/step-0002/response.json",
+    ".arbos/loop/runs/step-0002/stderr.txt",
+    "data/autocinema_trajectory_harvest/raw_eval_runs/traces_eval_autocinema_add_to_watchlist_20260326T172230Z/trace_index.json"
+  ],
+  "removed": [],
+  "changed": [
+    ".arbos/TARGET_REPO.txt",
+    ".arbos/loop/STATUS.json",
+    ".arbos/loop/response.schema.json",
+    ".arbos/loop/supervisor.log",
+    ".pytest_cache/v/cache/nodeids",
+    "data/agent_server.log",
+    "src/operator/agents/step_engine/__pycache__/candidates.cpython-313.pyc",
+    "src/operator/agents/step_engine/candidates.py",
+    "tests/__pycache__/test_fsm_operator.cpython-313-pytest-8.4.2.pyc",
+    "tests/test_fsm_operator.py"
+  ],
+  "all": [
+    ".arbos/TARGET_REPO.txt",
+    ".arbos/loop/STATUS.json",
+    ".arbos/loop/response.schema.json",
+    ".arbos/loop/runs/step-0002/events.jsonl",
+    ".arbos/loop/runs/step-0002/last-agent-message.txt",
+    ".arbos/loop/runs/step-0002/prompt.md",
+    ".arbos/loop/runs/step-0002/repo-before.json",
+    ".arbos/loop/runs/step-0002/response.json",
+    ".arbos/loop/runs/step-0002/stderr.txt",
+    ".arbos/loop/supervisor.log",
+    ".pytest_cache/v/cache/nodeids",
+    "data/agent_server.log",
+    "data/autocinema_trajectory_harvest/raw_eval_runs/traces_eval_autocinema_add_to_watchlist_20260326T172230Z/trace_index.json",
+    "src/operator/agents/step_engine/__pycache__/candidates.cpython-313.pyc",
+    "src/operator/agents/step_engine/candidates.py",
+    "tests/__pycache__/test_fsm_operator.cpython-313-pytest-8.4.2.pyc",
+    "tests/test_fsm_operator.py"
+  ],
+  "bytes_added": 1531143,
+  "bytes_removed": 0,
+  "bytes_delta": 1553823,
+  "bytes_modified": 1553823
+}

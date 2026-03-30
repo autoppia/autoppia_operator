@@ -962,6 +962,80 @@ def test_submit_click_is_guarded_with_missing_form_inputs() -> None:
     assert guarded.get("_element_id") == "el_user"
 
 
+def test_auth_form_redirects_lateral_click_to_submit_once_credentials_are_filled() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    state = AgentState()
+    username = Candidate(
+        id="el_user",
+        role="input",
+        type="input",
+        text="Username",
+        href="",
+        context="Login form",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "login-username-input", "case_sensitive": False},
+        dom_path="html/body/form/input[1]",
+        field_kind="username",
+        bbox=None,
+    )
+    password = Candidate(
+        id="el_pass",
+        role="input",
+        type="input",
+        text="Password",
+        href="",
+        context="Login form",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "login-password-input", "case_sensitive": False},
+        dom_path="html/body/form/input[2]",
+        field_kind="password",
+        input_type="password",
+        bbox=None,
+    )
+    submit = Candidate(
+        id="el_submit",
+        role="button",
+        type="button",
+        text="Sign in",
+        href="",
+        context="Login form",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "login-sign-in-button", "case_sensitive": False},
+        dom_path="html/body/form/button[1]",
+        field_kind="auth_entry",
+        bbox=None,
+    )
+    about_link = Candidate(
+        id="el_about",
+        role="link",
+        type="a",
+        text="About",
+        href="/about?seed=1",
+        context="Primary nav",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/about?seed=1", "case_sensitive": False},
+        dom_path="html/body/nav/a[3]",
+        bbox=None,
+    )
+    state.form_progress.typed_candidate_ids = ["el_user", "el_pass"]
+    state.form_progress.typed_values_by_candidate = {"el_user": "user1", "el_pass": "Passw0rd!"}
+    guarded = engine._guard_submit_without_inputs(
+        action={"type": "ClickAction", "selector": about_link.selector, "_element_id": "el_about"},
+        prompt="Login to continue.",
+        history=[],
+        ranked_candidates=[about_link, username, password, submit],
+        state=state,
+    )
+    assert isinstance(guarded, dict)
+    assert guarded.get("type") == "ClickAction"
+    assert guarded.get("_element_id") == "el_submit"
+
+
+def test_extract_credentials_preserves_password_punctuation() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    identifiers, passwords = engine._extract_credentials(
+        "Login with username 'user1' and password 'Passw0rd!' to continue."
+    )
+    assert "user1" in identifiers
+    assert "Passw0rd!" in passwords
+
+
 def test_group_guard_finishes_missing_required_input_before_select() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     state = AgentState()
@@ -2427,6 +2501,219 @@ def test_ranker_prefers_local_mutation_control_over_unrelated_profile_fields() -
     assert ranked[0].id == "el_delete"
 
 
+def test_capability_gap_prefers_login_for_auth_gated_watchlist_flow() -> None:
+    builder = ObsBuilder()
+    state = AgentState()
+    movie_link = Candidate(
+        id="el_movie",
+        role="link",
+        type="link",
+        text="The Incredibles",
+        href="/movies/the-incredibles?seed=11",
+        context="Movie card view detail",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/movies/the-incredibles?seed=11", "case_sensitive": False},
+        dom_path="html/body/main/section/a[1]",
+    )
+    login_link = Candidate(
+        id="el_login",
+        role="link",
+        type="link",
+        text="Login",
+        href="/login?seed=11",
+        context="Header navigation sign in to your account",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/login?seed=11", "case_sensitive": False},
+        dom_path="html/body/header/nav/a[1]",
+    )
+    register_link = Candidate(
+        id="el_register",
+        role="link",
+        type="link",
+        text="Register",
+        href="/register?seed=11",
+        context="Header navigation create account",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/register?seed=11", "case_sensitive": False},
+        dom_path="html/body/header/nav/a[2]",
+    )
+    policy_obs = builder.build_policy_obs(
+        task_id="watchlist-read-only",
+        prompt="Add to wishlist a movie where the name equals 'The Incredibles'",
+        step_index=0,
+        url="https://example.com/",
+        mode="NAV",
+        flags={},
+        state=state,
+        text_ir={"title": "Movies", "visible_text": "Movies", "headings": ["Movies"], "forms": []},
+        candidates=[movie_link, login_link, register_link],
+        history=[],
+    )
+    page_obs = policy_obs.get("page_observations") if isinstance(policy_obs.get("page_observations"), dict) else {}
+    capability_gap = page_obs.get("capability_gap") if isinstance(page_obs.get("capability_gap"), dict) else {}
+    assert capability_gap.get("read_only_for_task") is False
+    assert capability_gap.get("task_prefers_login_transition") is False
+    assert capability_gap.get("preferred_transition") == ""
+    memory = policy_obs.get("memory") if isinstance(policy_obs.get("memory"), dict) else {}
+    assert "sign-in" not in str(memory.get("strategy_summary") or "").lower()
+
+
+def test_ranker_prefers_login_link_over_register_for_watchlist_task() -> None:
+    ranker = CandidateRanker()
+    state = AgentState()
+    movie_link = Candidate(
+        id="el_movie",
+        role="link",
+        type="link",
+        text="The Incredibles",
+        href="/movies/the-incredibles?seed=11",
+        context="Movie card view detail",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/movies/the-incredibles?seed=11", "case_sensitive": False},
+        dom_path="html/body/main/section/a[1]",
+    )
+    login_link = Candidate(
+        id="el_login",
+        role="link",
+        type="link",
+        text="Login",
+        href="/login?seed=11",
+        context="Header navigation sign in to your account",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/login?seed=11", "case_sensitive": False},
+        dom_path="html/body/header/nav/a[1]",
+    )
+    register_link = Candidate(
+        id="el_register",
+        role="link",
+        type="link",
+        text="Register",
+        href="/register?seed=11",
+        context="Header navigation create account",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/register?seed=11", "case_sensitive": False},
+        dom_path="html/body/header/nav/a[2]",
+    )
+    ranked = ranker.rank(
+        task="Add to wishlist a movie where the name equals 'The Incredibles'",
+        mode="NAV",
+        flags={},
+        candidates=[movie_link, register_link, login_link],
+        state=state,
+        current_url="https://example.com/",
+        top_k=3,
+    )
+    assert ranked[0].id == "el_login"
+
+
+def test_ranker_prefers_watchlist_action_over_neighboring_detail_controls() -> None:
+    ranker = CandidateRanker()
+    state = AgentState()
+    comment_name = Candidate(
+        id="el_comment_name",
+        role="input",
+        type="input",
+        text="Your name",
+        href="",
+        context="Add a Note Share your thoughts about this film. Name Comment Share",
+        field_hint="Name",
+        field_kind="name",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "comment-name", "case_sensitive": False},
+        dom_path="html/body/main/section/form/input[1]",
+    )
+    comment_box = Candidate(
+        id="el_comment_box",
+        role="input",
+        type="input",
+        text="Message",
+        href="",
+        context="Add a Note Share your thoughts about this film. Name Comment Share",
+        field_hint="Comment",
+        field_kind="name",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "comment-body", "case_sensitive": False},
+        dom_path="html/body/main/section/form/input[2]",
+    )
+    watchlist_button = Candidate(
+        id="el_watchlist",
+        role="button",
+        type="button",
+        text="Add to Watchlist",
+        href="",
+        context="Watch trailer Add to watchlist Share",
+        field_hint="Add to Watchlist",
+        field_kind="button",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "watchlist-action", "case_sensitive": False},
+        dom_path="html/body/main/section/button[1]",
+    )
+    trailer_button = Candidate(
+        id="el_trailer",
+        role="button",
+        type="button",
+        text="Watch Trailer",
+        href="",
+        context="Watch trailer Add to watchlist Share",
+        field_hint="Watch Trailer",
+        field_kind="button",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "watch-trailer", "case_sensitive": False},
+        dom_path="html/body/main/section/button[2]",
+    )
+    ranked = ranker.rank(
+        task="Add to wishlist a movie with rating greater equal 4.6 that is NOT named 'Saving Private Ryan'",
+        mode="NAV",
+        flags={},
+        candidates=[comment_name, comment_box, trailer_button, watchlist_button],
+        state=state,
+        current_url="https://example.com/movies/real-movie-050?seed=999",
+        top_k=4,
+    )
+    assert ranked[0].id == "el_watchlist"
+
+
+def test_ranker_prefers_remove_watchlist_action_over_share_or_comment_controls() -> None:
+    ranker = CandidateRanker()
+    state = AgentState()
+    remove_button = Candidate(
+        id="el_remove_watchlist",
+        role="button",
+        type="button",
+        text="Remove from Watchlist",
+        href="",
+        context="Share Remove from watchlist Add a Note",
+        field_hint="Remove from Watchlist",
+        field_kind="button",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "remove-watchlist", "case_sensitive": False},
+        dom_path="html/body/main/section/button[1]",
+    )
+    share_button = Candidate(
+        id="el_share",
+        role="button",
+        type="button",
+        text="Share",
+        href="",
+        context="Share Remove from watchlist Add a Note",
+        field_hint="Share",
+        field_kind="button",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "share-movie", "case_sensitive": False},
+        dom_path="html/body/main/section/button[2]",
+    )
+    comment_input = Candidate(
+        id="el_comment_name",
+        role="input",
+        type="input",
+        text="Your name",
+        href="",
+        context="Add a Note Share your thoughts about this film. Name Comment Share",
+        field_hint="Name",
+        field_kind="name",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "comment-name", "case_sensitive": False},
+        dom_path="html/body/main/section/form/input[1]",
+    )
+    ranked = ranker.rank(
+        task="Remove from watchlist a movie where the title equals 'The Matrix'",
+        mode="NAV",
+        flags={},
+        candidates=[share_button, comment_input, remove_button],
+        state=state,
+        current_url="https://example.com/movies/the-matrix?seed=999",
+        top_k=3,
+    )
+    assert ranked[0].id == "el_remove_watchlist"
+
+
 def test_ranker_prefers_non_form_controls_on_delete_only_task_after_auth() -> None:
     ranker = CandidateRanker()
     state = AgentState()
@@ -2837,6 +3124,173 @@ def test_fallback_prefers_dropdown_options_over_generic_select_value() -> None:
     assert out["tool_call"]["arguments"]["index"] == 0
 
 
+def test_fallback_prefers_browser_input_for_search_prompt() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    policy_obs = {
+        "candidates": [
+            {
+                "id": "search-box",
+                "index": 0,
+                "role": "input",
+                "text": "Search films",
+                "context": "Hero search",
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "entry-field", "case_sensitive": False},
+            }
+        ],
+        "candidate_partitions": {"local": [], "escape": [], "global": [], "suppressed_global_count": 0},
+        "memory": {"typed_candidate_ids": [], "visual_element_hints": []},
+        "flags": {},
+        "counters": {"stall_count": 0, "repeat_action_count": 0},
+    }
+    out = engine.policy._fallback(
+        prompt="Search for the movie 'WALL-E' in the database.",
+        mode="DIRECT",
+        policy_obs=policy_obs,
+        allowed_tools={"browser.input", "browser.click"},
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.input"
+    assert out["tool_call"]["arguments"]["index"] == 0
+    assert out["tool_call"]["arguments"]["text"] == ""
+
+
+def test_fallback_prefers_visible_watchlist_intent_on_movie_detail_page() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    policy_obs = {
+        "prompt": "Add to watchlist the current movie.",
+        "url": "https://example.com/movies/the-matrix?seed=999",
+        "candidates": [
+            {
+                "id": "share-btn",
+                "index": 0,
+                "role": "button",
+                "text": "Share",
+                "context": "Watch trailer Add to watchlist Share",
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "share-btn", "case_sensitive": False},
+            },
+            {
+                "id": "watchlist-btn",
+                "index": 1,
+                "role": "button",
+                "text": "Add to Watchlist",
+                "context": "Watch trailer Add to watchlist Share",
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "watchlist-btn", "case_sensitive": False},
+            },
+        ],
+        "candidate_partitions": {"local": [], "escape": [], "global": [], "suppressed_global_count": 0},
+        "memory": {"typed_candidate_ids": [], "visual_element_hints": []},
+        "flags": {},
+        "counters": {"stall_count": 0, "repeat_action_count": 0},
+    }
+    out = engine.policy._fallback(
+        prompt="Add to watchlist the current movie.",
+        mode="DIRECT",
+        policy_obs=policy_obs,
+        allowed_tools={"browser.click"},
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["index"] == 1
+
+
+def test_fallback_prefers_markup_watchlist_control_when_candidates_are_sparse() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    policy_obs = {
+        "prompt": "Add to watchlist the current movie.",
+        "url": "https://example.com/movies/the-matrix?seed=999",
+        "snapshot_html": """
+            <div>
+              <button id="play-trailer">Watch trailer</button>
+              <button id="add-list-btn">Add to watchlist</button>
+              <button id="share-widget">Share</button>
+            </div>
+        """,
+        "candidates": [],
+        "candidate_partitions": {"local": [], "escape": [], "global": [], "suppressed_global_count": 0},
+        "memory": {"typed_candidate_ids": [], "visual_element_hints": []},
+        "flags": {},
+        "counters": {"stall_count": 0, "repeat_action_count": 0},
+    }
+    out = engine.policy._fallback(
+        prompt="Add to watchlist the current movie.",
+        mode="DIRECT",
+        policy_obs=policy_obs,
+        allowed_tools={"browser.click"},
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["selector"]["attribute"] == "id"
+    assert out["tool_call"]["arguments"]["selector"]["value"] == "add-list-btn"
+
+
+def test_fallback_prefers_matching_title_result_before_header_drift() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    policy_obs = {
+        "prompt": "Add to watchlist a movie where the name equals 'The Incredibles'",
+        "url": "https://example.com/?seed=31000&search=The+Incredibles",
+        "candidates": [
+            {
+                "id": "contact-link",
+                "index": 0,
+                "role": "link",
+                "text": "Contact",
+                "href": "#contact",
+                "context": "Header Contact",
+                "selector": {"type": "attributeValueSelector", "attribute": "href", "value": "#contact", "case_sensitive": False},
+            },
+            {
+                "id": "movie-link",
+                "index": 1,
+                "role": "link",
+                "text": "The Incredibles",
+                "href": "/movies/the-incredibles?seed=31000",
+                "context": "Movie card View detail",
+                "selector": {"type": "attributeValueSelector", "attribute": "href", "value": "/movies/the-incredibles?seed=31000", "case_sensitive": False},
+            },
+        ],
+        "candidate_partitions": {"local": [], "escape": [], "global": [], "suppressed_global_count": 0},
+        "memory": {"typed_candidate_ids": [], "visual_element_hints": []},
+        "flags": {},
+        "counters": {"stall_count": 0, "repeat_action_count": 0},
+    }
+    out = engine.policy._fallback(
+        prompt="Add to watchlist a movie where the name equals 'The Incredibles'",
+        mode="DIRECT",
+        policy_obs=policy_obs,
+        allowed_tools={"browser.click"},
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["index"] == 1
+
+
+def test_normalize_decision_reanchors_drifting_click_to_markup_watchlist_control() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.policy._normalize_decision(
+        {
+            "type": "browser",
+            "tool_call": {"name": "browser.click", "arguments": {"selector": {"type": "attributeValueSelector", "attribute": "href", "value": "/?seed=999"}}},
+        },
+        {"browser.click"},
+        policy_obs={
+            "prompt": "Add to watchlist the current movie.",
+            "url": "https://example.com/movies/the-matrix?seed=999",
+            "snapshot_html": """
+                <div>
+                  <button id="play-trailer">Watch trailer</button>
+                  <button id="add-list-btn">Add to watchlist</button>
+                  <button id="share-widget">Share</button>
+                </div>
+            """,
+            "candidates": [],
+        },
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["selector"]["attribute"] == "id"
+    assert out["tool_call"]["arguments"]["selector"]["value"] == "add-list-btn"
+
+
 def test_normalize_decision_rejects_generic_browser_input_text() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     with pytest.raises(ValueError):
@@ -2847,6 +3301,109 @@ def test_normalize_decision_rejects_generic_browser_input_text() -> None:
             },
             {"browser.input"},
         )
+
+
+def test_normalize_decision_reanchors_drifting_click_to_visible_direct_intent() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.policy._normalize_decision(
+        {
+            "type": "browser",
+            "tool_call": {"name": "browser.click", "arguments": {"index": 0}},
+        },
+        {"browser.click"},
+        policy_obs={
+            "prompt": "Add to watchlist the current movie.",
+            "url": "https://example.com/movies/the-matrix?seed=999",
+            "candidates": [
+                {
+                    "id": "share-btn",
+                    "index": 0,
+                    "role": "button",
+                    "text": "Share",
+                    "context": "Watch trailer Add to watchlist Share",
+                    "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "share-btn", "case_sensitive": False},
+                },
+                {
+                    "id": "watchlist-btn",
+                    "index": 1,
+                    "role": "button",
+                    "text": "Add to Watchlist",
+                    "context": "Watch trailer Add to watchlist Share",
+                    "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "watchlist-btn", "case_sensitive": False},
+                },
+            ],
+        },
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["index"] == 1
+
+
+def test_normalize_decision_reanchors_drifting_click_to_matching_title_result() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.policy._normalize_decision(
+        {
+            "type": "browser",
+            "tool_call": {"name": "browser.click", "arguments": {"index": 0}},
+        },
+        {"browser.click"},
+        policy_obs={
+            "prompt": "Add to watchlist a movie where the name equals 'The Incredibles'",
+            "url": "https://example.com/?seed=31000&search=The+Incredibles",
+            "candidates": [
+                {
+                    "id": "contact-link",
+                    "index": 0,
+                    "role": "link",
+                    "text": "Contact",
+                    "href": "#contact",
+                    "context": "Header Contact",
+                    "selector": {"type": "attributeValueSelector", "attribute": "href", "value": "#contact", "case_sensitive": False},
+                },
+                {
+                    "id": "movie-link",
+                    "index": 1,
+                    "role": "link",
+                    "text": "The Incredibles",
+                    "href": "/movies/the-incredibles?seed=31000",
+                    "context": "Movie card View detail",
+                    "selector": {"type": "attributeValueSelector", "attribute": "href", "value": "/movies/the-incredibles?seed=31000", "case_sensitive": False},
+                },
+            ],
+        },
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["index"] == 1
+
+
+def test_normalize_decision_reanchors_drifting_click_to_seeded_search_navigation() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.policy._normalize_decision(
+        {
+            "type": "browser",
+            "tool_call": {"name": "browser.click", "arguments": {"index": 0}},
+        },
+        {"browser.click", "browser.navigate"},
+        policy_obs={
+            "prompt": "Add to watchlist a movie where the name equals 'The Incredibles'",
+            "url": "https://example.com/contact?seed=31000",
+            "candidates": [
+                {
+                    "id": "contact-submit",
+                    "index": 0,
+                    "role": "button",
+                    "text": "Send",
+                    "context": "Contact form send message",
+                    "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "contact-submit", "case_sensitive": False},
+                }
+            ],
+            "page_observations": {"capability_gap": {}},
+        },
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.navigate"
+    assert out["tool_call"]["arguments"]["url"].endswith("/?seed=31000&search=The+Incredibles")
 
 
 def test_normalize_decision_downgrades_generic_select_to_dropdown_options() -> None:
