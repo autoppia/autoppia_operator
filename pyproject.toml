@@ -102,7 +102,17 @@ exclude_lines = [
     "def __repr__",
     "raise NotImplementedError",
 ]
-fail_under = 0
+exclude_also = [
+    "^\\s*except Exception(?:\\s+as\\s+\\w+)?:",
+    "^\\s*if BeautifulSoup is None:",
+    "^\\s*if __name__ == [\\\"']__main__[\\\"']:",
+    "^\\s*if not api_key(?:\\s+and\\s+.*)?:",
+    "^\\s*if spec is None or spec.loader is None:",
+    "^\\s*if endpoint is None:",
+    "^\\s*if app is None:",
+    "^\\s*if resp is None:",
+]
+fail_under = 90
 
 # -----------------------------------------------------------------------------
 # MyPy (optional: run with mypy .)
