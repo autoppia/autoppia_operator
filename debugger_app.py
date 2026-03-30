@@ -28,6 +28,14 @@ TRACE_SCAN_ROOTS = [
 ]
 
 
+def _is_under_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -43,6 +51,12 @@ def _resolve_trace_dir(raw: str | None = None) -> Path:
     if not value:
         raise HTTPException(status_code=400, detail="trace_dir_missing")
     path = Path(value).expanduser().resolve()
+    allowed_roots = [root.resolve() for root in TRACE_SCAN_ROOTS]
+    if DEFAULT_TRACE_DIR:
+        with contextlib.suppress(Exception):
+            allowed_roots.append(Path(DEFAULT_TRACE_DIR).expanduser().resolve())
+    if not any(_is_under_root(path, root) for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="trace_dir_forbidden")
     if not path.exists() or not path.is_dir():
         raise HTTPException(status_code=404, detail=f"trace_dir_not_found:{path}")
     trace_index = path / "trace_index.json"

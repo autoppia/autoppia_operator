@@ -1058,12 +1058,12 @@ def _vision_signature(*, screenshot: Any, question: str, url: str) -> str:
         {
             "url": str(url or "")[:300],
             "question": str(question or "")[:600],
-            "image_hash": hashlib.sha1(data_url.encode("utf-8", errors="ignore")).hexdigest()[:16],
+            "image_hash": hashlib.sha256(data_url.encode("utf-8", errors="ignore")).hexdigest()[:16],
         },
         ensure_ascii=True,
         sort_keys=True,
     )
-    return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 
 def _task_constraints(task: str) -> Dict[str, str]:

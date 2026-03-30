@@ -96,7 +96,7 @@ class FSMOperator:
 
     def _obs_extract_signature(self, *, dom_hash: str, url: str) -> str:
         raw = json.dumps({"dom_hash": str(dom_hash or "")[:64], "url": str(url or "")[:240]}, ensure_ascii=True, sort_keys=True)
-        return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
     def _should_obs_extract(
         self,
@@ -2093,7 +2093,7 @@ class FSMOperator:
         return _dedupe_keep_order(identifiers, 6), _dedupe_keep_order(passwords, 6)
 
     def _prompt_seed(self, prompt: str) -> str:
-        return hashlib.sha1(str(prompt or "").encode("utf-8", errors="ignore")).hexdigest()[:8] or "autoppia"
+        return hashlib.sha256(str(prompt or "").encode("utf-8", errors="ignore")).hexdigest()[:8] or "autoppia"
 
     def _email_domain_constraint(self, prompt: str) -> str:
         text = str(prompt or "")

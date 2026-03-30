@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict
+from urllib.parse import urlparse
 import pytest
 
 from src.operator.agents.fsm import (
@@ -15,6 +16,19 @@ from src.operator.agents.fsm import (
     FlagDetector,
     ObsBuilder,
 )
+
+
+def _normalize_url(value: str) -> str:
+    parsed = urlparse(str(value or ""))
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+def _has_exact_url(values: list[Any], expected: str) -> bool:
+    expected_norm = _normalize_url(expected)
+    for item in values:
+        if _normalize_url(str(item)) == expected_norm:
+            return True
+    return False
 
 
 def _dummy_llm_invalid(**_: Any) -> Dict[str, Any]:
@@ -145,7 +159,8 @@ def test_state_out_roundtrip_without_process_local_state() -> None:
     second = engine2.run(payload=payload)
     st2 = second.get("state_out")
     assert isinstance(st2, dict)
-    assert "https://example.com" in (st2.get("visited", {}).get("urls") or [])
+    visited_urls = st2.get("visited", {}).get("urls") or []
+    assert _has_exact_url(visited_urls, "https://example.com")
 
 
 def test_fsm_emits_at_most_one_browser_action_per_step() -> None:

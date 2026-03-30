@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from typing import Any
-
-import json
 import os
 import time
 
@@ -64,10 +62,11 @@ class BaseApifiedWebAgent(IWebAgent):
             try:
                 converted = create_action_fn(action) if callable(create_action_fn) else None
             except Exception as exc:
+                safe_action_type = str(action.get("type") or "")
+                safe_action_keys = sorted([str(k) for k in action.keys()]) if isinstance(action, dict) else []
                 logger.error(
                     f"[AGENT_TRACE] create_action failed task_id={task_id} step_index={int(step_index)} "
-                    f"action_type={str(action.get('type') or '')} err={str(exc)} "
-                    f"payload={json.dumps(action, ensure_ascii=True)[:500]}"
+                    f"action_type={safe_action_type} err={str(exc)} action_keys={safe_action_keys}"
                 )
                 continue
             if converted is not None:
@@ -125,9 +124,10 @@ class BaseApifiedWebAgent(IWebAgent):
             try:
                 payload = action if isinstance(action, dict) else action.model_dump(exclude_none=True)
             except Exception as exc:
+                raw_type = str(getattr(action, "type", "") or "")
                 logger.error(
                     f"[AGENT_TRACE] /act action normalization failed task_id={task_id} step_index={step_index} "
-                    f"err={str(exc)} raw={str(action)[:500]}"
+                    f"err={str(exc)} action_type={raw_type}"
                 )
                 continue
             normalized.append(_sanitize_action_payload(payload))
