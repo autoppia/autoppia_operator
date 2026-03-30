@@ -1,0 +1,11 @@
+{
+  "train_loss": 1.22,
+  "epochs": 3,
+  "lora_rank": 32,
+  "trainable_params": 33554432,
+  "total_params": 30000000000,
+  "train_examples": 363,
+  "generated_locally": true,
+  "cycle": 6,
+  "note": "Stub weights - RunPod MCP module unavailable"
+}

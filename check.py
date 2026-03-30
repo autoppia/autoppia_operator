@@ -26,10 +26,11 @@ import inspect
 import json
 import py_compile
 import re
-import subprocess
 import sys
+import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -46,10 +47,10 @@ EXPECTED_SANDBOX_PACKAGES = {
     "tenacity",
     "python-dateutil",
     "rich",
-    "jsonschema",
-    "python-dotenv",
+    "jsonschema",    "python-dotenv",
     "loguru",
     "aiohttp",
+
 }
 
 
@@ -100,7 +101,10 @@ def _scan_for_secrets() -> None:
             continue
         txt = _read_text(p)
         if key_re.search(txt):
-            _fail(f"Possible secret key found in {p.relative_to(REPO_ROOT)}. Remove it before submission.")
+            _fail(
+                f"Possible secret key found in {p.relative_to(REPO_ROOT)}. "
+                "Remove it before submission."
+            )
 
 
 def _scan_for_pyc() -> None:
@@ -110,25 +114,25 @@ def _scan_for_pyc() -> None:
 
 
 def _check_env_file() -> None:
-    env_path = REPO_ROOT / ".env"
+    env_path = REPO_ROOT / '.env'
     if not env_path.exists():
         return
 
     # If .env is tracked by git, this is almost certainly a submission footgun.
     try:
         r = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "ls-files", "--error-unmatch", ".env"],
+            ['git', '-C', str(REPO_ROOT), 'ls-files', '--error-unmatch', '.env'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
         )
         if r.returncode == 0:
-            _fail(".env is tracked by git. Remove it (and any secrets) before submission.")
+            _fail('.env is tracked by git. Remove it (and any secrets) before submission.')
     except Exception:
         # If git isn't available, fall back to a warning.
         pass
 
-    _warn(".env exists in repo folder. Ensure it is gitignored and contains no secrets before submission.")
+    _warn('.env exists in repo folder. Ensure it is gitignored and contains no secrets before submission.')
 
 
 def _load_module(path: Path, name: str):
@@ -181,21 +185,48 @@ def _call_act(app) -> dict[str, Any] | None:
     return None
 
 
-def _validate_actions_shape(resp: dict[str, Any]) -> str | None:
-    if "actions" not in resp:
-        return "Missing top-level 'actions' key"
+def _call_capabilities(app) -> dict[str, Any] | None:
+    for route in getattr(app, "routes", []):
+        if getattr(route, "path", None) == "/capabilities":
+            endpoint = getattr(route, "endpoint", None)
+            if endpoint is None:
+                return None
+            if inspect.iscoroutinefunction(endpoint):
+                import asyncio
 
-    actions = resp.get("actions")
-    if not isinstance(actions, list):
-        return f"'actions' must be a list, got {type(actions).__name__}"
+                return asyncio.run(endpoint())  # type: ignore[misc]
+            return endpoint()  # type: ignore[misc]
+    return None
 
-    for i, a in enumerate(actions):
-        if not isinstance(a, dict):
-            return f"actions[{i}] must be an object, got {type(a).__name__}"
 
-        t = a.get("type")
-        if not isinstance(t, str) or not t:
-            return f"actions[{i}].type must be a non-empty string"
+def _validate_actions_shape(resp: dict[str, Any]) -> Optional[str]:
+    if "tool_calls" not in resp:
+        return "Missing top-level 'tool_calls' key"
+
+    tool_calls = resp.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return f"'tool_calls' must be a list, got {type(tool_calls).__name__}"
+
+    for i, call in enumerate(tool_calls):
+        if not isinstance(call, dict):
+            return f"tool_calls[{i}] must be an object, got {type(call).__name__}"
+        name = call.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return f"tool_calls[{i}].name must be a non-empty string"
+        arguments = call.get("arguments")
+        if arguments is not None and not isinstance(arguments, dict):
+            return f"tool_calls[{i}].arguments must be an object when present"
+
+    if "protocol_version" in resp:
+        pv = resp.get("protocol_version")
+        if not isinstance(pv, str) or not pv.strip():
+            return "protocol_version must be a non-empty string when present"
+
+    if "state_out" not in resp or not isinstance(resp.get("state_out"), dict):
+        return "state_out must be a JSON object"
+
+    if "done" in resp and not isinstance(resp.get("done"), bool):
+        return "done must be boolean when present"
 
     return None
 
@@ -251,7 +282,10 @@ def main() -> None:
 
         missing = sorted(p for p in EXPECTED_SANDBOX_PACKAGES if p not in pkgs)
         if missing:
-            _fail(f"requirements.txt is missing sandbox packages you said you ship in the subnet image: {missing}. Align it with autoppia_web_agents_subnet/opensource/sandbox/requirements.txt")
+            _fail(
+                "requirements.txt is missing sandbox packages you said you ship in the subnet image: "
+                f"{missing}. Align it with autoppia_web_agents_subnet/opensource/sandbox/requirements.txt"
+            )
 
         extra = sorted(p for p in pkgs if p not in EXPECTED_SANDBOX_PACKAGES)
         if extra:
@@ -312,6 +346,10 @@ def main() -> None:
         _ok("POST /step route found")
     else:
         _warn("POST /step route not found (optional)")
+    if _find_route(app, "/capabilities", "GET"):
+        _ok("GET /capabilities route found")
+    else:
+        _warn("GET /capabilities route not found (recommended)")
 
     # Basic response shape check
     resp = _call_act(app)
@@ -326,6 +364,17 @@ def main() -> None:
         _fail(f"/act response shape invalid: {err}. Response: {json.dumps(resp)[:200]}")
 
     _ok("/act response shape looks subnet-compatible")
+
+    caps = _call_capabilities(app)
+    if caps is None:
+        _warn("Unable to invoke /capabilities")
+    elif not isinstance(caps, dict):
+        _warn(f"/capabilities returned non-object: {type(caps).__name__}")
+    else:
+        if isinstance(caps.get("protocol_version"), str) and caps.get("protocol_version"):
+            _ok("/capabilities includes protocol_version")
+        else:
+            _warn("/capabilities missing protocol_version")
     print("\nAll checks passed.")
 
 
