@@ -66,8 +66,7 @@ class BaseApifiedWebAgent(IWebAgent):
             except Exception as exc:
                 logger.error(
                     f"[AGENT_TRACE] create_action failed task_id={task_id} step_index={int(step_index)} "
-                    f"action_type={str(action.get('type') or '')} err={str(exc)} "
-                    f"payload={json.dumps(action, ensure_ascii=True)[:500]}"
+                    f"action_type={str(action.get('type') or '')} err_type={type(exc).__name__}"
                 )
                 continue
             if converted is not None:
@@ -127,7 +126,7 @@ class BaseApifiedWebAgent(IWebAgent):
             except Exception as exc:
                 logger.error(
                     f"[AGENT_TRACE] /act action normalization failed task_id={task_id} step_index={step_index} "
-                    f"err={str(exc)} raw={str(action)[:500]}"
+                    f"err_type={type(exc).__name__} action_type={type(action).__name__}"
                 )
                 continue
             normalized.append(_sanitize_action_payload(payload))

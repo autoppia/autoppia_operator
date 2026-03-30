@@ -38,16 +38,28 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def _is_allowed_trace_dir(path: Path) -> bool:
+    allowed_roots = [root.resolve() for root in TRACE_SCAN_ROOTS]
+    if DEFAULT_TRACE_DIR:
+        allowed_roots.append(Path(DEFAULT_TRACE_DIR).expanduser().resolve())
+    for root in allowed_roots:
+        if path == root or root in path.parents:
+            return True
+    return False
+
+
 def _resolve_trace_dir(raw: str | None = None) -> Path:
     value = str(raw or DEFAULT_TRACE_DIR or "").strip()
     if not value:
         raise HTTPException(status_code=400, detail="trace_dir_missing")
     path = Path(value).expanduser().resolve()
+    if not _is_allowed_trace_dir(path):
+        raise HTTPException(status_code=403, detail="trace_dir_not_allowed")
     if not path.exists() or not path.is_dir():
-        raise HTTPException(status_code=404, detail=f"trace_dir_not_found:{path}")
+        raise HTTPException(status_code=404, detail="trace_dir_not_found")
     trace_index = path / "trace_index.json"
     if not trace_index.exists():
-        raise HTTPException(status_code=404, detail=f"trace_index_missing:{trace_index}")
+        raise HTTPException(status_code=404, detail="trace_index_missing")
     return path
 
 

@@ -148,7 +148,7 @@ def test_state_out_roundtrip_without_process_local_state() -> None:
     second = engine2.run(payload=payload)
     st2 = second.get("state_out")
     assert isinstance(st2, dict)
-    assert "https://example.com" in (st2.get("visited", {}).get("urls") or [])
+    assert (st2.get("visited", {}).get("urls") or []) == ["https://example.com"]
 
 
 def test_fsm_emits_at_most_one_browser_action_per_step() -> None:

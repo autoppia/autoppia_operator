@@ -831,20 +831,18 @@ async def run_evaluation(
     )
     send_allowed_tools = _env_bool("EVAL_SEND_ALLOWED_TOOLS", False)
     allowed_tools_payload = BaseAction.all_function_definitions() if send_allowed_tools else None
-    run_scope = hashlib.sha1(f"{os.getpid()}-{time.time()}".encode()).hexdigest()[:10]
+    run_scope = hashlib.sha256(f"{os.getpid()}-{time.time()}".encode()).hexdigest()[:10]
 
     cache_path = Path(task_cache).resolve() if task_cache else TASK_CACHE
     if provider_s == 'anthropic':
         api_key = os.getenv('ANTHROPIC_API_KEY')
-        api_key_fpr = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:12] if api_key else "missing"
-        logger.info(f"Eval env: ANTHROPIC_API_KEY={'set' if api_key else 'missing'} fpr={api_key_fpr}")
+        logger.info(f"Eval env: ANTHROPIC_API_KEY={'set' if api_key else 'missing'}")
         if not api_key:
             logger.error("ANTHROPIC_API_KEY not set. Check .env file.")
             sys.exit(1)
     else:
         api_key = os.getenv("OPENAI_API_KEY")
-        api_key_fpr = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:12] if api_key else "missing"
-        logger.info(f"Eval env: OPENAI_API_KEY={'set' if api_key else 'missing'} fpr={api_key_fpr}")
+        logger.info(f"Eval env: OPENAI_API_KEY={'set' if api_key else 'missing'}")
         # For sandbox-gateway routing, OPENAI_API_KEY may be intentionally absent.
         base_url = (os.getenv('OPENAI_BASE_URL') or 'https://api.openai.com/v1').rstrip('/')
         if not api_key and not base_url.startswith('http://sandbox-gateway') and not base_url.startswith('http://localhost') and not base_url.startswith('http://127.0.0.1'):
@@ -1016,7 +1014,6 @@ async def run_evaluation(
         server_env["OPENAI_TEMPERATURE"] = str(temperature)
         server_env["AGENT_RETURN_METRICS"] = "1"
         k = server_env.get("OPENAI_API_KEY") or ""
-        k_fpr = hashlib.sha256(k.encode("utf-8")).hexdigest()[:12] if k else "missing"
         server_env["FSM_USE_SITE_KNOWLEDGE"] = "1" if bool(use_site_knowledge) else "0"
         server_env["FSM_USE_LOCAL_HTML_CONTEXT"] = "1" if bool(use_local_html_context) else "0"
         logger.info(
@@ -1027,7 +1024,7 @@ async def run_evaluation(
             f"AGENT_SERVER_WORKERS={agent_workers} "
             f"START_AGENT_SERVER={os.getenv('START_AGENT_SERVER')} "
             f"AGENT_BASE_URL={agent_base_url or 'local'} "
-            f"OPENAI_API_KEY={'set' if k else 'missing'} fpr={k_fpr}"
+            f"OPENAI_API_KEY={'set' if k else 'missing'}"
         )
         server_proc = subprocess.Popen(
             [
