@@ -1050,6 +1050,16 @@ def _normalize_screenshot_data_url(value: Any) -> str:
     return f"data:image/png;base64,{raw}"
 
 
+def _strong_hash(value: str, *, salt: str, length: int = 16) -> str:
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        str(value or "").encode("utf-8", errors="ignore"),
+        str(salt or "").encode("utf-8", errors="ignore"),
+        50000,
+    )
+    return digest.hex()[:length]
+
+
 def _vision_signature(*, screenshot: Any, question: str, url: str) -> str:
     data_url = _normalize_screenshot_data_url(screenshot)
     if not data_url:
@@ -1058,12 +1068,12 @@ def _vision_signature(*, screenshot: Any, question: str, url: str) -> str:
         {
             "url": str(url or "")[:300],
             "question": str(question or "")[:600],
-            "image_hash": hashlib.sha256(data_url.encode("utf-8", errors="ignore")).hexdigest()[:16],
+            "image_hash": _strong_hash(data_url, salt="vision-image", length=16),
         },
         ensure_ascii=True,
         sort_keys=True,
     )
-    return hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return _strong_hash(payload, salt="vision-payload", length=16)
 
 
 def _task_constraints(task: str) -> Dict[str, str]:
