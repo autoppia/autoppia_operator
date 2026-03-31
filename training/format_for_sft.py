@@ -6,6 +6,7 @@ The exporter now supports multiple policy-training surfaces:
 - v3: runtime-aligned `policy_input_text` plus the same wrapper structure the
   step-engine expects at inference time.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -13,10 +14,10 @@ import json
 import random
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from datetime import datetime, timezone
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -24,14 +25,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.operator.agents.step_engine.candidates import Candidate, CandidateExtractor
 from src.operator.agents.step_engine.observation import ObsBuilder
-
-from .obs_serializer import serialize_observation
 from src.operator.agents.step_engine.state import AgentState
 
-SYSTEM_PROMPT = (
-    "You are a browser-use style web agent operating on Autocinema tasks. "
-    "Return the next browser tool call as JSON with the chosen tool arguments."
-)
+from .obs_serializer import serialize_observation
+
+SYSTEM_PROMPT = "You are a browser-use style web agent operating on Autocinema tasks. Return the next browser tool call as JSON with the chosen tool arguments."
 RUNTIME_ALIGNED_SYSTEM_PROMPT = (
     "You are a browser-use-style web automation policy.\n"
     "Given the task and the current browser state, choose the next browser step sequence.\n"
@@ -194,7 +192,7 @@ def _build_observation(
     trace_steps = trace.get("steps") if isinstance(trace.get("steps"), list) else []
     step_index = int(step.get("step_index") or 0)
     history_recent = _recent_history_from_trace_steps(trace_steps, current_step_index=step_index)
-    use_case = str(episode_use_case := trace.get("episode", {}).get("use_case") or trace.get("task_web_project_id") or "")
+    use_case = str(_episode_use_case := trace.get("episode", {}).get("use_case") or trace.get("task_web_project_id") or "")
 
     obs = {
         "prompt": request.get("prompt") or trace.get("task_prompt") or "",
@@ -222,7 +220,7 @@ def _build_observation(
                 "tool": str(action.get("tool") or ""),
                 "arguments": action.get("arguments") if isinstance(action.get("arguments"), dict) else {},
             },
-        }
+        },
     }
     return serialize_observation(obs)
 
@@ -312,9 +310,7 @@ def _normalize_trace_tool_call(
 
     if 0 <= raw_index < len(candidates):
         candidate = candidates[raw_index]
-        if (name == "browser.click" and candidate.role in {"button", "link"}) or (
-            name == "browser.input" and candidate.role == "input"
-        ):
+        if (name == "browser.click" and candidate.role in {"button", "link"}) or (name == "browser.input" and candidate.role == "input"):
             return {"name": name, "arguments": arguments}
 
     if 0 <= raw_index < len(eligible):
@@ -467,10 +463,7 @@ def convert_trace_to_sft_examples(
         if not isinstance(normalized_tool_call, dict):
             continue
         assistant_payload: dict[str, Any]
-        if runtime_aligned:
-            assistant_payload = {"type": "browser", "tool_call": normalized_tool_call}
-        else:
-            assistant_payload = normalized_tool_call
+        assistant_payload = {"type": "browser", "tool_call": normalized_tool_call} if runtime_aligned else normalized_tool_call
         record = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -561,11 +554,7 @@ def export_harvest_to_sft(
         val_seed_set = {int(value) for value in (val_seeds or [])}
         train_rows = [row for row in successful_rows if int(row.get("seed") or -1) in train_seed_set]
         val_rows = [row for row in successful_rows if int(row.get("seed") or -1) in val_seed_set]
-        overlap = {
-            str(row.get("episode_task_id") or "")
-            for row in train_rows
-            if str(row.get("episode_task_id") or "") in {str(item.get("episode_task_id") or "") for item in val_rows}
-        }
+        overlap = {str(row.get("episode_task_id") or "") for row in train_rows if str(row.get("episode_task_id") or "") in {str(item.get("episode_task_id") or "") for item in val_rows}}
         if overlap:
             raise ValueError(f"Train/val split overlap detected for episodes: {sorted(overlap)}")
     else:
@@ -576,7 +565,7 @@ def export_harvest_to_sft(
         if len(shuffled_successes) <= 1:
             val_episode_count = 0
         else:
-            raw_count = int(round(len(shuffled_successes) * max(0.0, min(val_ratio, 0.5))))
+            raw_count = round(len(shuffled_successes) * max(0.0, min(val_ratio, 0.5)))
             val_episode_count = min(max(raw_count, 1), len(shuffled_successes) - 1)
 
         val_rows = shuffled_successes[:val_episode_count]
@@ -618,11 +607,7 @@ def export_harvest_to_sft(
 
     train_records = [example.record for example in train_examples]
     val_records = [example.record for example in val_examples]
-    usable_episode_ids = {
-        str(example.episode_task_id)
-        for example in train_examples + val_examples
-        if str(example.episode_task_id)
-    }
+    usable_episode_ids = {str(example.episode_task_id) for example in train_examples + val_examples if str(example.episode_task_id)}
 
     if not train_records:
         raise ValueError("No train SFT examples were produced from successful episodes")
@@ -661,14 +646,8 @@ def export_harvest_to_sft(
         "val_ratio": float(val_ratio),
         "train_seeds": sorted({int(row.get("seed") or 0) for row in train_rows}),
         "val_seeds": sorted({int(row.get("seed") or 0) for row in val_rows}),
-        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "trace_files": sorted(
-            {
-                str(example.trace_file)
-                for example in train_examples + val_examples
-                if example.trace_file
-            }
-        ),
+        "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "trace_files": sorted({str(example.trace_file) for example in train_examples + val_examples if example.trace_file}),
     }
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest

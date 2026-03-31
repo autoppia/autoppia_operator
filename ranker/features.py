@@ -4,9 +4,10 @@ Extracts generic DOM/action features from (task, state, candidate) tuples.
 No website-specific features — everything is structural/semantic.
 No keyword dictionaries — all features are numeric/positional.
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 # Feature vector dimension for the ranker MLP (power-of-2 for GPU alignment)
 RANKER_FEATURE_DIM = 64
@@ -14,9 +15,9 @@ RANKER_FEATURE_DIM = 64
 
 def extract_candidate_features(
     task: str,
-    state: Dict[str, Any],
-    candidate: Dict[str, Any],
-) -> List[float]:
+    state: dict[str, Any],
+    candidate: dict[str, Any],
+) -> list[float]:
     """Extract a fixed-size feature vector for a (task, state, candidate) tuple.
 
     All features are structural/numeric — no keyword lists or task classification.
@@ -29,7 +30,7 @@ def extract_candidate_features(
     Returns:
         Feature vector of length RANKER_FEATURE_DIM.
     """
-    features: List[float] = []
+    features: list[float] = []
 
     # --- Task features (8 dims) ---
     task_lower = task.lower()
@@ -135,41 +136,72 @@ def extract_candidate_features(
 
 def extract_batch_features(
     task: str,
-    state: Dict[str, Any],
-    candidates: List[Dict[str, Any]],
-) -> List[List[float]]:
+    state: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> list[list[float]]:
     """Extract features for all candidates in a batch."""
     return [extract_candidate_features(task, state, c) for c in candidates]
 
 
-def feature_names() -> List[str]:
+def feature_names() -> list[str]:
     """Return human-readable names for each feature dimension."""
     names = [
         # Task features (8)
-        "task_len_norm", "task_word_count_norm", "task_avg_word_len",
-        "task_vocab_richness", "task_has_digits", "task_quoted_count",
-        "task_has_question", "task_sentence_count",
+        "task_len_norm",
+        "task_word_count_norm",
+        "task_avg_word_len",
+        "task_vocab_richness",
+        "task_has_digits",
+        "task_quoted_count",
+        "task_has_question",
+        "task_sentence_count",
         # Page features (8)
-        "page_node_count", "page_edge_count", "page_has_form",
-        "page_interactive_count", "page_result_list_len",
-        "region_name_len", "interactive_ratio", "url_depth",
+        "page_node_count",
+        "page_edge_count",
+        "page_has_form",
+        "page_interactive_count",
+        "page_result_list_len",
+        "region_name_len",
+        "interactive_ratio",
+        "url_depth",
         # Candidate element type (6)
-        "elem_button", "elem_input", "elem_a", "elem_select",
-        "elem_textarea", "elem_label",
+        "elem_button",
+        "elem_input",
+        "elem_a",
+        "elem_select",
+        "elem_textarea",
+        "elem_label",
         # Candidate role (4)
-        "role_button", "role_link", "role_textbox", "role_combobox",
+        "role_button",
+        "role_link",
+        "role_textbox",
+        "role_combobox",
         # Candidate text (6)
-        "text_len", "visible", "has_placeholder", "form_membership",
-        "has_aria_label", "has_text",
+        "text_len",
+        "visible",
+        "has_placeholder",
+        "form_membership",
+        "has_aria_label",
+        "has_text",
         # Token overlap (4)
-        "token_overlap_task", "token_overlap_cand",
-        "overlap_density", "cand_token_count",
+        "token_overlap_task",
+        "token_overlap_cand",
+        "overlap_density",
+        "cand_token_count",
         # Position (4)
-        "pos_x", "pos_y", "pos_width", "pos_height",
+        "pos_x",
+        "pos_y",
+        "pos_width",
+        "pos_height",
         # Context (8)
-        "step_index", "prev_action_len", "same_action_as_prev",
-        "step_progression", "loop_count", "form_fill_progress",
-        "unique_urls", "rank_position",
+        "step_index",
+        "prev_action_len",
+        "same_action_as_prev",
+        "step_progression",
+        "loop_count",
+        "form_fill_progress",
+        "unique_urls",
+        "rank_position",
     ]
     return names[:RANKER_FEATURE_DIM]
 

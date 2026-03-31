@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import subprocess
 import sys
 import tempfile
@@ -7,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from training.post_finetune_eval import _build_summary, _validate_real_success
-
 
 REPO = Path(__file__).resolve().parents[1]
 

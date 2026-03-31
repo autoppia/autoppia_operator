@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import json
-import pytest
 from pathlib import Path
 
-from training.runpod_job import _classify_snapshot_pod_status, _credential_blockers, _credential_warnings
-from training.runpod_job import create_pod
-from training.runpod_job import _extract_ssh_metadata, _fetch_inventory_snapshot
-from training.runpod_job import _require_runpodctl, _seconds_since, _select_best_existing_pod, run_job
+import pytest
+
+from training.runpod_job import (
+    _classify_snapshot_pod_status,
+    _credential_blockers,
+    _credential_warnings,
+    _extract_ssh_metadata,
+    _fetch_inventory_snapshot,
+    _require_runpodctl,
+    _seconds_since,
+    _select_best_existing_pod,
+    create_pod,
+    run_job,
+)
 
 
 def test_runpod_job_bootstrap_requires_only_runpod_key(monkeypatch) -> None:
@@ -30,9 +39,7 @@ def test_runpod_job_training_can_require_hf_token(monkeypatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("HUGGINGFACE_HUB_TOKEN", raising=False)
 
-    assert _credential_blockers(require_runpod=False, require_hf_token=True) == [
-        "HF_TOKEN or HUGGINGFACE_HUB_TOKEN missing in local shell"
-    ]
+    assert _credential_blockers(require_runpod=False, require_hf_token=True) == ["HF_TOKEN or HUGGINGFACE_HUB_TOKEN missing in local shell"]
 
 
 def test_runpod_job_records_hf_warning_for_public_model_path(monkeypatch) -> None:
@@ -151,9 +158,7 @@ def test_create_pod_falls_back_to_api_when_runpodctl_flags_are_unsupported(monke
     assert pod_id == "api-pod"
 
 
-def test_run_job_bootstrap_only_refreshes_live_snapshot_before_claiming_ready(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_run_job_bootstrap_only_refreshes_live_snapshot_before_claiming_ready(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("RUNPOD_API_KEY", "test-key")
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("HUGGINGFACE_HUB_TOKEN", raising=False)
@@ -202,9 +207,7 @@ def test_run_job_bootstrap_only_refreshes_live_snapshot_before_claiming_ready(
     assert status["ssh"] is None
 
 
-def test_run_job_can_record_snapshot_backed_bootstrap_without_local_runpod_key(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_run_job_can_record_snapshot_backed_bootstrap_without_local_runpod_key(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("HUGGINGFACE_HUB_TOKEN", raising=False)
@@ -254,9 +257,7 @@ def test_run_job_can_record_snapshot_backed_bootstrap_without_local_runpod_key(
     assert status["credential_blockers"] == []
 
 
-def test_run_job_preserves_running_bootstrap_artifact_when_training_fails(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_run_job_preserves_running_bootstrap_artifact_when_training_fails(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("RUNPOD_API_KEY", "test-key")
     monkeypatch.setenv("HF_TOKEN", "hf_test")
     monkeypatch.setattr("training.runpod_job.get_balance", lambda: 42.0)
@@ -265,25 +266,28 @@ def test_run_job_preserves_running_bootstrap_artifact_when_training_fails(
     monkeypatch.setattr("training.runpod_job.upload_to_pod", lambda *args, **kwargs: None)
     monkeypatch.setattr("training.runpod_job.run_on_pod", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("train exploded")))
     monkeypatch.setattr("training.runpod_job._probe_ssh_endpoint", lambda *args, **kwargs: {"reachable": True})
-    monkeypatch.setattr("training.runpod_job.refresh_inventory_snapshot", lambda path: {
-        "observed_at": "2026-03-26T16:40:00Z",
-        "provider": "runpod",
-        "observed_via": "test",
-        "account_balance_usd": 42.0,
-        "pods": [
-            {
-                "id": "pod-1",
-                "name": "bu-30b-a3b-bootstrap-arbos",
-                "desiredStatus": "RUNNING",
-                "runtime": {
-                    "ports": [
-                        {"ip": "1.2.3.4", "privatePort": 22, "publicPort": 2200, "type": "tcp"},
-                    ]
-                },
-                "machine": {"gpuDisplayName": "A100 PCIe"},
-            }
-        ],
-    })
+    monkeypatch.setattr(
+        "training.runpod_job.refresh_inventory_snapshot",
+        lambda path: {
+            "observed_at": "2026-03-26T16:40:00Z",
+            "provider": "runpod",
+            "observed_via": "test",
+            "account_balance_usd": 42.0,
+            "pods": [
+                {
+                    "id": "pod-1",
+                    "name": "bu-30b-a3b-bootstrap-arbos",
+                    "desiredStatus": "RUNNING",
+                    "runtime": {
+                        "ports": [
+                            {"ip": "1.2.3.4", "privatePort": 22, "publicPort": 2200, "type": "tcp"},
+                        ]
+                    },
+                    "machine": {"gpuDisplayName": "A100 PCIe"},
+                }
+            ],
+        },
+    )
 
     bootstrap_path = tmp_path / "bootstrap.json"
     with pytest.raises(RuntimeError, match="train exploded"):
@@ -300,9 +304,7 @@ def test_run_job_preserves_running_bootstrap_artifact_when_training_fails(
     assert status["status_reason"] == "train exploded"
 
 
-def test_run_job_preserves_existing_started_at_when_reconciling_same_pod(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_run_job_preserves_existing_started_at_when_reconciling_same_pod(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
 
     snapshot = {
@@ -346,9 +348,7 @@ def test_run_job_preserves_existing_started_at_when_reconciling_same_pod(
     assert status["started_at"] == "2026-03-26T15:01:00Z"
 
 
-def test_run_job_preserves_prior_anchor_when_refreshing_active_pod(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_run_job_preserves_prior_anchor_when_refreshing_active_pod(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
 
     snapshot = {
@@ -566,17 +566,19 @@ def test_run_job_can_replace_ssh_unreachable_pod(monkeypatch, tmp_path: Path) ->
 
     monkeypatch.setattr(
         "training.runpod_job._probe_ssh_endpoint",
-        lambda ssh, timeout_seconds=5.0: None
-        if ssh is None
-        else {
-            "attempted_at": "2026-03-26T16:30:00Z",
-            "host": ssh["host"],
-            "port": ssh["port"],
-            "timeout_seconds": timeout_seconds,
-            "reachable": False,
-            "result": "connect_failed",
-            "error": "Connection refused",
-        },
+        lambda ssh, timeout_seconds=5.0: (
+            None
+            if ssh is None
+            else {
+                "attempted_at": "2026-03-26T16:30:00Z",
+                "host": ssh["host"],
+                "port": ssh["port"],
+                "timeout_seconds": timeout_seconds,
+                "reachable": False,
+                "result": "connect_failed",
+                "error": "Connection refused",
+            }
+        ),
     )
     monkeypatch.setattr("training.runpod_job.terminate_pod", fake_terminate)
     monkeypatch.setattr("training.runpod_job.create_pod", fake_create_pod)

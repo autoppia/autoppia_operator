@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WEB_ID_VARIANTS = REPO_ROOT.parent / "autoppia_webs_demo" / "web_1_autocinema" / "src" / "dynamic" / "v3" / "data" / "id-variants.json"
 
@@ -283,9 +282,7 @@ def _success_signal_hit(*, html: str, url: str, brief: dict[str, Any]) -> bool:
         return True
     if any(f'id="{value}"' in html_lower for value in ids):
         return True
-    if any(fragment in url_lower for fragment in fragments):
-        return True
-    return False
+    return bool(any(fragment in url_lower for fragment in fragments))
 
 
 def _guided_actions_from_brief(*, task_url: str, brief: dict[str, Any]) -> list[dict[str, Any]]:

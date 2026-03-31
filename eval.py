@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+import httpx
 
 # ── Ensure the operator repo is on sys.path ─────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -714,7 +715,7 @@ async def run_evaluation(
             logger.error("OPENAI_API_KEY not set. Check .env file.")
             sys.exit(1)
     logger.info("=" * 60)
-    logger.info("  Autoppia Operator – LLM Agent Evaluation")
+    logger.info("  Autoppia Operator - LLM Agent Evaluation")
     logger.info(f"  Provider:   {provider_s}")
     logger.info(f"  Model:      {model}")
     logger.info(f"  Tasks:      {num_tasks}")

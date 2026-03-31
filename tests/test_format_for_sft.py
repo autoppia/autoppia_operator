@@ -51,11 +51,7 @@ def test_export_harvest_to_sft_keeps_richer_runtime_like_observation(tmp_path: P
     user_text = first["messages"][1]["content"]
     assistant_text = first["messages"][2]["content"]
 
-    assert (
-        ("Forms:" in user_text)
-        or ("Headings:" in user_text)
-        or ('"mode": "guided_harvester"' in user_text)
-    )
+    assert ("Forms:" in user_text) or ("Headings:" in user_text) or ('"mode": "guided_harvester"' in user_text)
     assert ("Candidates:" in user_text) or ('"planned_action"' in user_text)
     assert ("selector=" in user_text) or ('"attempts"' in user_text)
     assert ("browser." in assistant_text) or ('"type":' in assistant_text)
@@ -178,11 +174,7 @@ def test_export_harvest_to_sft_trace_only_skips_guided_fallback(tmp_path: Path) 
         trace_only=True,
     )
 
-    train_rows = [
-        json.loads(line)
-        for line in (tmp_path / "sft" / "train.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    train_rows = [json.loads(line) for line in (tmp_path / "sft" / "train.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(train_rows) == 1
     assert train_rows[0]["metadata"]["use_case"] == "LOGIN"
     assert manifest["source_mode"] == "trace_only"
@@ -194,13 +186,7 @@ def test_export_harvest_to_sft_skips_self_navigate_and_remaps_click_index(tmp_pa
     trace_dir = tmp_path / "episodes"
     trace_dir.mkdir(parents=True)
     trace_file = trace_dir / "trace.json"
-    snapshot_html = (
-        "<html><body>"
-        "<input name='email' placeholder='Email' />"
-        "<input name='password' placeholder='Password' />"
-        "<button>Log in</button>"
-        "</body></html>"
-    )
+    snapshot_html = "<html><body><input name='email' placeholder='Email' /><input name='password' placeholder='Password' /><button>Log in</button></body></html>"
     trace_file.write_text(
         json.dumps(
             {
@@ -275,11 +261,7 @@ def test_export_harvest_to_sft_skips_self_navigate_and_remaps_click_index(tmp_pa
         trace_only=True,
     )
 
-    train_rows = [
-        json.loads(line)
-        for line in (tmp_path / "sft" / "train.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    train_rows = [json.loads(line) for line in (tmp_path / "sft" / "train.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(train_rows) == 1
     assistant = train_rows[0]["messages"][2]["content"]
     assert '"name": "browser.click"' in assistant
@@ -291,14 +273,7 @@ def test_export_harvest_to_sft_runtime_aligned_uses_policy_prompt_and_browser_wr
     trace_dir = tmp_path / "episodes"
     trace_dir.mkdir(parents=True)
     trace_file = trace_dir / "trace.json"
-    snapshot_html = (
-        "<html><body>"
-        "<h1>Login</h1>"
-        "<input name='email' placeholder='Email' />"
-        "<input name='password' placeholder='Password' />"
-        "<button>Log in</button>"
-        "</body></html>"
-    )
+    snapshot_html = "<html><body><h1>Login</h1><input name='email' placeholder='Email' /><input name='password' placeholder='Password' /><button>Log in</button></body></html>"
     trace_file.write_text(
         json.dumps(
             {
@@ -359,11 +334,7 @@ def test_export_harvest_to_sft_runtime_aligned_uses_policy_prompt_and_browser_wr
         runtime_aligned=True,
     )
 
-    train_rows = [
-        json.loads(line)
-        for line in (tmp_path / "sft" / "train.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    train_rows = [json.loads(line) for line in (tmp_path / "sft" / "train.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     user_text = train_rows[0]["messages"][1]["content"]
     assistant = json.loads(train_rows[0]["messages"][2]["content"])
 

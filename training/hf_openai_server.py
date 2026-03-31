@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Serve the fine-tuned Browser Use adapter through an OpenAI-compatible API."""
+
 from __future__ import annotations
 
 import argparse
@@ -13,8 +14,7 @@ from typing import Any
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText
-from transformers import AutoProcessor, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText, AutoProcessor, AutoTokenizer
 
 from training.serve_model import DEFAULT_ADAPTER_PATH, DEFAULT_BASE_MODEL, validate_adapter_artifacts
 
@@ -86,16 +86,15 @@ class HFOpenAIServer:
             add_generation_prompt=True,
         )
         inputs = self._processor(text=[chat_text], return_tensors="pt").to(self._model.device)
-        with self._lock:
-            with torch.inference_mode():
-                outputs = self._model.generate(
-                    **inputs,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    temperature=None,
-                    top_p=None,
-                )
-        generated = outputs[:, inputs["input_ids"].shape[1]:]
+        with self._lock, torch.inference_mode():
+            outputs = self._model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+            )
+        generated = outputs[:, inputs["input_ids"].shape[1] :]
         return self._processor.batch_decode(generated, skip_special_tokens=True)[0]
 
     def _register_routes(self) -> None:

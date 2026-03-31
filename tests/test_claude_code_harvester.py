@@ -144,7 +144,7 @@ def test_file_snippets_focus_on_use_case_keywords(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    snippets = module._file_snippets([component, variants], use_case="CONTACT")  # noqa: SLF001
+    snippets = module._file_snippets([component, variants], use_case="CONTACT")
     by_path = {Path(item["path"]).name: item["content"] for item in snippets}
     assert "email" in by_path["ContactSection.tsx"].lower()
     assert "message" in by_path["ContactSection.tsx"].lower()

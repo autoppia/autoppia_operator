@@ -75,7 +75,7 @@ def _unified_diff(before: str, after: str, *, from_label: str, to_label: str, li
         )
     )
     if len(lines) > limit:
-        lines = lines[:limit] + [f"... diff truncated ({len(lines) - limit} more lines)"]
+        lines = [*lines[:limit], f"... diff truncated ({len(lines) - limit} more lines)"]
     return "\n".join(lines)
 
 

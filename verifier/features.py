@@ -3,9 +3,10 @@
 Extracts generic page/action/history features for classifying step outcomes.
 No website-specific features. No keyword dictionaries or hardcoded string matching.
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 # Feature vector dimension for the verifier classifier
 VERIFIER_FEATURE_DIM = 32
@@ -13,9 +14,9 @@ VERIFIER_FEATURE_DIM = 32
 
 def extract_verifier_features(
     task: str,
-    step: Dict[str, Any],
-    history: List[Dict[str, Any]] | None = None,
-) -> List[float]:
+    step: dict[str, Any],
+    history: list[dict[str, Any]] | None = None,
+) -> list[float]:
     """Extract a fixed-size feature vector for verifier classification.
 
     All features are structural/numeric — no keyword matching or task classification.
@@ -28,7 +29,7 @@ def extract_verifier_features(
     Returns:
         Feature vector of length VERIFIER_FEATURE_DIM.
     """
-    features: List[float] = []
+    features: list[float] = []
     history = history or []
     task_tokens = set(task.lower().split())
 
@@ -158,16 +159,39 @@ class VerifierFeatures:
     extract = staticmethod(extract_verifier_features)
 
 
-def verifier_feature_names() -> List[str]:
+def verifier_feature_names() -> list[str]:
     """Return human-readable names for each feature dimension."""
     return [
-        "url_changed", "url_len", "url_depth", "url_task_overlap",
-        "title_len", "title_task_overlap", "title_changed",
-        "dom_changed", "dom_node_count", "dom_node_delta", "candidate_count",
-        "action_name_len", "same_action_as_prev", "action_changed",
-        "action_diversity", "score_delta",
-        "val_success_count", "val_fail_count", "val_event_count", "val_success_ratio",
-        "step_count", "unique_urls", "action_type_diversity", "loop_count",
-        "progress_ratio", "cumulative_reward", "error_count", "consec_no_progress",
-        "page_task_overlap", "page_text_delta", "score_delta_magnitude", "made_progress",
+        "url_changed",
+        "url_len",
+        "url_depth",
+        "url_task_overlap",
+        "title_len",
+        "title_task_overlap",
+        "title_changed",
+        "dom_changed",
+        "dom_node_count",
+        "dom_node_delta",
+        "candidate_count",
+        "action_name_len",
+        "same_action_as_prev",
+        "action_changed",
+        "action_diversity",
+        "score_delta",
+        "val_success_count",
+        "val_fail_count",
+        "val_event_count",
+        "val_success_ratio",
+        "step_count",
+        "unique_urls",
+        "action_type_diversity",
+        "loop_count",
+        "progress_ratio",
+        "cumulative_reward",
+        "error_count",
+        "consec_no_progress",
+        "page_task_overlap",
+        "page_text_delta",
+        "score_delta_magnitude",
+        "made_progress",
     ][:VERIFIER_FEATURE_DIM]

@@ -51,6 +51,11 @@ ignore = ["E402", "E501"]
 "**/demo_webs/projects/*/events.py" = ["F821"]
 "**/demo_webs/projects/base_events.py" = ["F821"]
 "**/generated_projects/*/events.py" = ["F821"]
+# step_engine uses intentional star re-exports; F403/F405 would require thousands of explicit imports.
+# Include `*.py` at package root; `**/*.py` alone may not match those files in all glob implementations.
+"src/operator/agents/step_engine/*.py" = ["F403", "F405"]
+"src/operator/agents/step_engine/**/*.py" = ["F403", "F405"]
+"src/operator/agents/fsm/__init__.py" = ["F403", "F405"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["agent", "main"]

@@ -30,20 +30,20 @@ _SIMPLE_EXPORTS: dict[str, tuple[str, str]] = {
 }
 
 __all__ = [
-    "StepEngine",
-    "FSMOperator",
-    "CanonicalBrowserState",
     "MAX_INTERNAL_META_STEPS",
+    "_FSM_OPERATOR",
+    "_STEP_ENGINE",
     "AgentFormProgress",
     "AgentState",
+    "ApifiedWebAgent",
     "Candidate",
     "CandidateExtractor",
     "CandidateRanker",
+    "CanonicalBrowserState",
+    "FSMOperator",
     "FlagDetector",
     "ObsBuilder",
-    "ApifiedWebAgent",
-    "_STEP_ENGINE",
-    "_FSM_OPERATOR",
+    "StepEngine",
     "_build_site_knowledge",
     "_crawl_site_routes",
     "_load_static_site_maps",
@@ -56,8 +56,8 @@ __all__ = [
 
 def _build_step_engine() -> Any:
     from infra.llm_gateway import openai_chat_completions, openai_vision_chat_completions
-    from src.operator.api.act_protocol import use_vision
     from src.operator.agents.step_engine.engine import StepEngine
+    from src.operator.api.act_protocol import use_vision
 
     return StepEngine(
         llm_call=openai_chat_completions,

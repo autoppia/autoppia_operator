@@ -41,9 +41,11 @@ def test_run_dagger_round_uses_generic_use_case_and_writes_outputs(tmp_path: Pat
 
     class FakeResult:
         is_gold = True
-        out_path = tmp_path / "run.json"
-        trace_dir = tmp_path / "trace-dir"
-        row = {"trace_file": str(tmp_path / "trace.json"), "episode_task_id": "ep-7"}
+
+        def __init__(self) -> None:
+            self.out_path = tmp_path / "run.json"
+            self.trace_dir = tmp_path / "trace-dir"
+            self.row = {"trace_file": str(tmp_path / "trace.json"), "episode_task_id": "ep-7"}
 
     monkeypatch.setattr(dagger_module, "build_task_cache_override", fake_build_task_cache_override)
     monkeypatch.setattr(dagger_module, "run_eval_attempt", lambda **kwargs: FakeResult())
@@ -59,4 +61,4 @@ def test_run_dagger_round_uses_generic_use_case_and_writes_outputs(tmp_path: Pat
     assert result["use_case"] == "CONTACT"
     assert result["teacher_successes"] == 1
     assert built["use_case"] == "CONTACT"
-    assert "contact" in str((tmp_path / "contact" / "dagger" / "holdout" / "summary.json")).lower()
+    assert "contact" in str(tmp_path / "contact" / "dagger" / "holdout" / "summary.json").lower()

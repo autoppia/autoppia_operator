@@ -1075,9 +1075,8 @@ class CandidateRanker:
                         score -= 1.2
                     if cand.role == "link" and cand.field_kind == "link" and overlap == 0:
                         score -= 2.6
-                    if cand.role == "link" and int((group_stats.get(group_key) or {}).get("input_like") or 0) == 0:
-                        if int((group_stats.get(group_key) or {}).get("context_len") or 0) >= 220:
-                            score -= 2.2
+                    if cand.role == "link" and int((group_stats.get(group_key) or {}).get("input_like") or 0) == 0 and int((group_stats.get(group_key) or {}).get("context_len") or 0) >= 220:
+                        score -= 2.2
             if mode == "POPUP" and any(k in blob for k in ("accept", "reject", "agree", "close", "dismiss", "continue")):
                 score += 6.0
             if mode == "EXTRACT" and cand.role == "link":

@@ -40,10 +40,7 @@ def compute_metrics(*, project_dir: Path, repo_dir: Path, run_dir: Path) -> dict
 
     total_use_cases = len(required_use_cases)
     score = (target_hits * 1000) + successes_total - (zero_success * 100)
-    summary = (
-        f"{successes_total} successes · {target_hits}/{total_use_cases} use cases at target"
-        f" · {zero_success} at zero · {failures_total} failures kept"
-    )
+    summary = f"{successes_total} successes · {target_hits}/{total_use_cases} use cases at target · {zero_success} at zero · {failures_total} failures kept"
     details = []
     if weakest:
         details.append("Weakest: " + ", ".join(weakest))

@@ -929,7 +929,7 @@ def _best_page_evidence(prompt: str, text_ir: dict[str, Any]) -> str:
     ranked.sort(key=lambda item: (item[0], len(item[1])), reverse=True)
     if not ranked:
         return ""
-    best_score, tagged_fact = ranked[0]
+    _best_score, tagged_fact = ranked[0]
     overlap_blob, _, best_fact = tagged_fact.partition("::")
     try:
         raw_overlap_str, anchor_overlap_str = overlap_blob.split(":", 1)

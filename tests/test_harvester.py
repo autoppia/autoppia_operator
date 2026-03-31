@@ -265,7 +265,7 @@ def test_apply_row_provenance_sets_non_empty_hashes(tmp_path: Path) -> None:
         "trace_file": "trace.json",
         "attempt_name": "baseline",
     }
-    out = harvester_module._apply_row_provenance(  # noqa: SLF001 - targeted unit test for canonical row mutation
+    out = harvester_module._apply_row_provenance(
         row,
         task_cache_path=None,
         prompt_override="go to login",

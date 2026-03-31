@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import re
 
 from .utils import *
+from .utils import _norm_ws
 
 
 class Subgoal(BaseModel):
@@ -361,8 +363,8 @@ class FlagDetector:
             "error 500",
             "internal server error",
             "access denied",
-            "site can’t be reached",
             "site can't be reached",
+            "site can\u2019t be reached",
             "temporarily unavailable",
             "service unavailable",
             "bad gateway",

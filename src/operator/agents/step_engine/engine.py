@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 from .candidates import Candidate, CandidateExtractor, CandidateRanker
 from .meta_tools import MetaToolExecutor, Router, Skills
 from .observation import ObsBuilder
-from .policy import Policy
+from .policy import Policy, _preferred_seed_stable_navigation
 from .state import AgentState, FlagDetector, ProgressEffect
 from .utils import (
     _REPO_ROOT,
@@ -126,8 +126,8 @@ class StepEngine:
         url: str,
         step_index: int,
         state: AgentState,
-        text_ir: Dict[str, Any],
-        flags: Dict[str, Any],
+        text_ir: dict[str, Any],
+        flags: dict[str, Any],
     ) -> tuple[bool, str, str]:
         if bool(flags.get("captcha_suspected")):
             return False, "", "Current page is blocked by a challenge."
@@ -159,8 +159,8 @@ class StepEngine:
         self,
         *,
         state: AgentState,
-        flags: Dict[str, Any],
-        text_ir: Dict[str, Any],
+        flags: dict[str, Any],
+        text_ir: dict[str, Any],
         url: str,
     ) -> bool:
         mode = self._obs_extract_mode()
@@ -186,10 +186,10 @@ class StepEngine:
         *,
         prompt: str,
         url: str,
-        text_ir: Dict[str, Any],
-        candidates: List[Candidate],
-    ) -> List[Dict[str, Any]]:
-        candidate_lines: List[str] = []
+        text_ir: dict[str, Any],
+        candidates: list[Candidate],
+    ) -> list[dict[str, Any]]:
+        candidate_lines: list[str] = []
         for cand in candidates[:40]:
             label = _candidate_text(cand.text, cand.field_hint, cand.href, cand.group_label, cand.region_label)
             candidate_lines.append(f"[{cand.id}] role={cand.role} kind={cand.field_kind or cand.region_kind or cand.type} label={label[:140]} context={cand.context[:180]}")
@@ -217,7 +217,7 @@ class StepEngine:
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
         ]
 
-    def _safe_json_load(self, raw: Any) -> Dict[str, Any]:
+    def _safe_json_load(self, raw: Any) -> dict[str, Any]:
         text = str(raw or "").strip()
         if not text:
             return {}
@@ -232,7 +232,7 @@ class StepEngine:
                     return {}
         return {}
 
-    def _normalize_obs_extract_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_obs_extract_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             return {}
         normalized = {
@@ -275,11 +275,11 @@ class StepEngine:
         task_id: str,
         prompt: str,
         url: str,
-        flags: Dict[str, Any],
+        flags: dict[str, Any],
         state: AgentState,
-        text_ir: Dict[str, Any],
-        candidates: List[Candidate],
-    ) -> Dict[str, Any]:
+        text_ir: dict[str, Any],
+        candidates: list[Candidate],
+    ) -> dict[str, Any]:
         if not self._should_obs_extract(state=state, flags=flags, text_ir=text_ir, url=url):
             return state.memory.obs_extract_payload if isinstance(state.memory.obs_extract_payload, dict) else {}
         model_name = _env_str("OPENAI_OBS_MODEL", "gpt-4o-mini") or "gpt-4o-mini"
@@ -311,7 +311,7 @@ class StepEngine:
         clean_payload["__usage"] = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
         return clean_payload
 
-    def _debug_log(self, task_id: str, payload: Dict[str, Any]) -> None:
+    def _debug_log(self, task_id: str, payload: dict[str, Any]) -> None:
         if not self.debug_dir and not self.trace_json:
             return
         try:
@@ -322,7 +322,7 @@ class StepEngine:
         except Exception:
             return
 
-    def _state_delta(self, before: AgentState, after: AgentState) -> Dict[str, Any]:
+    def _state_delta(self, before: AgentState, after: AgentState) -> dict[str, Any]:
         return {
             "mode": {"from": before.mode, "to": after.mode},
             "stall_count": {
@@ -348,7 +348,7 @@ class StepEngine:
             },
         }
 
-    def _active_region_debug(self, *, state: AgentState) -> Dict[str, Any]:
+    def _active_region_debug(self, *, state: AgentState) -> dict[str, Any]:
         return {
             "region_id": str(state.focus_region.region_id or "")[:120],
             "region_kind": str(state.focus_region.region_kind or "")[:40],
@@ -359,8 +359,8 @@ class StepEngine:
     def _last_effect_label(
         self,
         *,
-        history: List[Dict[str, Any]],
-        flags: Dict[str, Any],
+        history: list[dict[str, Any]],
+        flags: dict[str, Any],
         done: bool = False,
     ) -> str:
         if done:
@@ -379,7 +379,7 @@ class StepEngine:
     def _predict_expected_effect(
         self,
         *,
-        action: Dict[str, Any],
+        action: dict[str, Any],
         candidate: Candidate | None,
     ) -> str:
         action_type = str(action.get("type") or "").strip()
@@ -412,8 +412,8 @@ class StepEngine:
         self,
         *,
         expected_effect: str,
-        flags: Dict[str, Any],
-        history: List[Dict[str, Any]],
+        flags: dict[str, Any],
+        history: list[dict[str, Any]],
     ) -> bool:
         if not expected_effect:
             return False
@@ -430,7 +430,7 @@ class StepEngine:
             return bool(flags.get("dom_changed")) or not bool(flags.get("no_visual_progress"))
         return False
 
-    def _no_progress_score(self, *, state: AgentState, flags: Dict[str, Any], history: List[Dict[str, Any]]) -> int:
+    def _no_progress_score(self, *, state: AgentState, flags: dict[str, Any], history: list[dict[str, Any]]) -> int:
         score = 0
         score += max(0, int(state.counters.stall_count or 0))
         score += max(0, int(state.counters.repeat_action_count or 0))
@@ -457,9 +457,9 @@ class StepEngine:
         self,
         *,
         step_index: int,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         state: AgentState,
-        flags: Dict[str, Any],
+        flags: dict[str, Any],
     ) -> None:
         if not history:
             state.progress.last_effect = ""
@@ -541,8 +541,8 @@ class StepEngine:
     def _store_expected_effect(
         self,
         *,
-        action: Dict[str, Any],
-        ranked_candidates: List[Candidate],
+        action: dict[str, Any],
+        ranked_candidates: list[Candidate],
         state: AgentState,
     ) -> None:
         candidate = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
@@ -552,7 +552,7 @@ class StepEngine:
         state.progress.pending_expected_target_id = str(action.get("_element_id") or action.get("element_id") or "")[:120]
         state.progress.pending_expected_region_id = str((candidate.region_id if candidate is not None else "") or state.focus_region.region_id or "")[:120]
 
-    def _apply_stagnation_policy(self, *, state: AgentState, flags: Dict[str, Any]) -> None:
+    def _apply_stagnation_policy(self, *, state: AgentState, flags: dict[str, Any]) -> None:
         no_progress_score = int(state.progress.no_progress_score or 0)
         region_id = str(state.focus_region.region_id or "").strip()
         if region_id and (no_progress_score >= 6 or int(state.progress.consecutive_no_effect_steps or 0) >= 2 or region_id in set(state.progress.blocked_regions)):
@@ -576,7 +576,7 @@ class StepEngine:
         self,
         *,
         state: AgentState,
-        policy_obs: Dict[str, Any],
+        policy_obs: dict[str, Any],
         route_reason: str,
     ) -> str:
         page_obs = policy_obs.get("page_observations") if isinstance(policy_obs.get("page_observations"), dict) else {}
@@ -596,7 +596,7 @@ class StepEngine:
             mode = "auto"
         return mode
 
-    def _default_vision_question(self, *, prompt: str, state: AgentState, text_ir: Dict[str, Any]) -> str:
+    def _default_vision_question(self, *, prompt: str, state: AgentState, text_ir: dict[str, Any]) -> str:
         control_groups = text_ir.get("control_groups") if isinstance(text_ir.get("control_groups"), list) else []
         cards = text_ir.get("cards") if isinstance(text_ir.get("cards"), list) else []
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
@@ -626,8 +626,8 @@ class StepEngine:
         *,
         screenshot: Any,
         state: AgentState,
-        flags: Dict[str, Any],
-        text_ir: Dict[str, Any],
+        flags: dict[str, Any],
+        text_ir: dict[str, Any],
         question: str,
         url: str,
     ) -> bool:
@@ -663,9 +663,9 @@ class StepEngine:
         step_index: int,
         state: AgentState,
         prompt: str,
-        text_ir: Dict[str, Any],
+        text_ir: dict[str, Any],
         content: str,
-        flags: Dict[str, Any],
+        flags: dict[str, Any],
     ) -> tuple[bool, str]:
         text = _candidate_text(content)
         if not text:
@@ -708,16 +708,16 @@ class StepEngine:
         url: str,
         step_index: int,
         state: AgentState,
-        text_ir: Dict[str, Any],
-        candidates: List[Candidate],
-        ranked: List[Candidate],
-        policy_obs: Dict[str, Any],
+        text_ir: dict[str, Any],
+        candidates: list[Candidate],
+        ranked: list[Candidate],
+        policy_obs: dict[str, Any],
         browser_allowed: set[str],
         model_name: str,
-        usage_payload: Dict[str, Any],
+        usage_payload: dict[str, Any],
         policy_model_used: str,
-    ) -> tuple[List[Dict[str, Any]], bool, str, str, str]:
-        chosen_actions: List[Dict[str, Any]] = []
+    ) -> tuple[list[dict[str, Any]], bool, str, str, str]:
+        chosen_actions: list[dict[str, Any]] = []
         done = False
         content = ""
         policy_reasoning = ""
@@ -813,30 +813,30 @@ class StepEngine:
         task_id: str,
         prompt: str,
         web_project_id: str,
-        use_case: Dict[str, str],
+        use_case: dict[str, str],
         url: str,
         html: str,
         step_index: int,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         screenshot: Any,
         state: AgentState,
-        flags: Dict[str, Any],
-        text_ir: Dict[str, Any],
-        candidates: List[Candidate],
-        ranked: List[Candidate],
-        policy_obs: Dict[str, Any],
+        flags: dict[str, Any],
+        text_ir: dict[str, Any],
+        candidates: list[Candidate],
+        ranked: list[Candidate],
+        policy_obs: dict[str, Any],
         allowed: set[str],
         model_name: str,
         plan_model_name: str,
-        usage_payload: Dict[str, Any],
+        usage_payload: dict[str, Any],
         policy_model_used: str,
         route_reason: str,
-    ) -> tuple[List[Dict[str, Any]], bool, str, str, str, List[str]]:
-        chosen_actions: List[Dict[str, Any]] = []
+    ) -> tuple[list[dict[str, Any]], bool, str, str, str, list[str]]:
+        chosen_actions: list[dict[str, Any]] = []
         done = False
         content = ""
         policy_reasoning = ""
-        meta_exec_trace: List[str] = []
+        meta_exec_trace: list[str] = []
         step_vision_signatures: set[str] = set()
 
         pre_action, pre_done, pre_content, pre_note = self._deterministic_pre_action(
@@ -1248,14 +1248,14 @@ class StepEngine:
         *,
         done: bool,
         direct_loop: bool,
-        chosen_actions: List[Dict[str, Any]] | None,
+        chosen_actions: list[dict[str, Any]] | None,
         prompt: str,
-        history: List[Dict[str, Any]],
-        ranked: List[Candidate],
+        history: list[dict[str, Any]],
+        ranked: list[Candidate],
         state: AgentState,
         step_index: int,
-    ) -> tuple[List[Dict[str, Any]], str, Dict[str, Any] | None]:
-        actions: List[Dict[str, Any]] = []
+    ) -> tuple[list[dict[str, Any]], str, dict[str, Any] | None]:
+        actions: list[dict[str, Any]] = []
         browser_tool_name = ""
         chosen_actions = list(chosen_actions or [])
         if done or not chosen_actions:
@@ -1338,25 +1338,25 @@ class StepEngine:
         mode_out: str,
         direct_loop: bool,
         prompt: str,
-        text_ir: Dict[str, Any],
-        policy_obs: Dict[str, Any],
+        text_ir: dict[str, Any],
+        policy_obs: dict[str, Any],
         state_before: AgentState,
         state: AgentState,
-        meta_exec_trace: List[str],
-        chosen_action: Dict[str, Any] | None,
-        actions: List[Dict[str, Any]],
+        meta_exec_trace: list[str],
+        chosen_action: dict[str, Any] | None,
+        actions: list[dict[str, Any]],
         done: bool,
         content: str,
         browser_tool_name: str,
         include_reasoning: bool,
         policy_reasoning: str,
-        ranked: List[Candidate],
-        flags: Dict[str, Any],
-        history: List[Dict[str, Any]],
-        usage_payload: Dict[str, Any],
+        ranked: list[Candidate],
+        flags: dict[str, Any],
+        history: list[dict[str, Any]],
+        usage_payload: dict[str, Any],
         policy_model_used: str,
         model_name: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         final_content = _candidate_text(content)
         if done and not final_content:
             final_content = "Task completed."
@@ -1454,7 +1454,7 @@ class StepEngine:
         )
         return out
 
-    def _remember_reasoning_trace(self, *, state: AgentState, decision: Dict[str, Any]) -> None:
+    def _remember_reasoning_trace(self, *, state: AgentState, decision: dict[str, Any]) -> None:
         trace = _normalize_reasoning_trace(decision.get("reasoning_trace"))
         if not trace:
             return
@@ -1463,7 +1463,7 @@ class StepEngine:
         if next_expected:
             state.progress.pending_expected_effect = next_expected[:40]
 
-    def _remember_working_state(self, *, state: AgentState, decision: Dict[str, Any]) -> None:
+    def _remember_working_state(self, *, state: AgentState, decision: dict[str, Any]) -> None:
         ws = _normalize_working_state(decision.get("working_state"))
         if ws:
             state.memory.working_state = ws
@@ -1476,12 +1476,12 @@ class StepEngine:
         url: str,
         step_index: int,
         state: AgentState,
-        text_ir: Dict[str, Any],
-        flags: Dict[str, Any],
+        text_ir: dict[str, Any],
+        flags: dict[str, Any],
         include_reasoning: bool,
-        usage_payload: Dict[str, Any],
+        usage_payload: dict[str, Any],
         policy_model_used: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         done, content, policy_reasoning = self._completion_only_result(
             prompt=prompt,
             url=url,
@@ -1526,16 +1526,16 @@ class StepEngine:
         task_id: str,
         prompt: str,
         web_project_id: str,
-        use_case: Dict[str, str],
+        use_case: dict[str, str],
         url: str,
         html: str,
         screenshot: Any,
         step_index: int,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         state: AgentState,
         allowed: set[str],
         model_override: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         direct_loop = _env_bool("FSM_DIRECT_LOOP", True)
         flags = self.flags.detect(snapshot_html=html, url=url, history=history, state=state)
         state.counters.stall_count = int(flags.get("stall_count_suggested") or 0)
@@ -1599,7 +1599,7 @@ class StepEngine:
         )
         obs_extract_usage = obs_extract.get("__usage") if isinstance(obs_extract.get("__usage"), dict) else {}
         obs_extract_model = str(obs_extract.get("__model") or "").strip() if isinstance(obs_extract, dict) else ""
-        usage_payload: Dict[str, Any] = {
+        usage_payload: dict[str, Any] = {
             "helper_models": [],
             "call_breakdown": _empty_call_breakdown(),
             "usage_breakdown": _usage_breakdown_template(),
@@ -1697,7 +1697,7 @@ class StepEngine:
             "browser_allowed": browser_allowed,
         }
 
-    def run(self, *, payload: Dict[str, Any] | Any, model_override: str = "") -> Dict[str, Any]:
+    def run(self, *, payload: dict[str, Any] | Any, model_override: str = "") -> dict[str, Any]:
         payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
         prompt = str(payload_dict.get("prompt") or payload_dict.get("task_prompt") or "")
         web_project_id = _candidate_text(payload_dict.get("web_project_id"))
@@ -1757,9 +1757,9 @@ class StepEngine:
         policy_model_used = prepared["policy_model_used"]
         direct_loop = prepared["direct_loop"]
         browser_allowed = prepared["browser_allowed"]
-        meta_exec_trace: List[str] = []
+        meta_exec_trace: list[str] = []
         policy_reasoning = ""
-        chosen_actions: List[Dict[str, Any]] = []
+        chosen_actions: list[dict[str, Any]] = []
         done = False
         content = ""
         if completion_only:
@@ -1866,12 +1866,12 @@ class StepEngine:
         prompt: str,
         url: str,
         step_index: int,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         state: AgentState,
-        flags: Dict[str, Any],
-        ranked_candidates: List[Candidate],
+        flags: dict[str, Any],
+        ranked_candidates: list[Candidate],
         allowed: set[str],
-    ) -> tuple[Dict[str, Any] | None, bool, str, str]:
+    ) -> tuple[dict[str, Any] | None, bool, str, str]:
         def allow(name: str) -> bool:
             return (not allowed) or (name in allowed)
 
@@ -1928,13 +1928,13 @@ class StepEngine:
 
         return None, False, "", ""
 
-    def _typed_values_from_history(self, history: List[Dict[str, Any]]) -> List[str]:
-        out: List[str] = []
+    def _typed_values_from_history(self, history: list[dict[str, Any]]) -> list[str]:
+        out: list[str] = []
         for item in history:
             if not isinstance(item, dict):
                 continue
             action_raw = item.get("action")
-            action: Dict[str, Any] = action_raw if isinstance(action_raw, dict) else {}
+            action: dict[str, Any] = action_raw if isinstance(action_raw, dict) else {}
             action_type = str(action.get("type") or "")
             if not action_type and isinstance(action_raw, str):
                 action_type = str(action_raw)
@@ -1998,7 +1998,7 @@ class StepEngine:
         self,
         *,
         candidate: Candidate,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         state: AgentState,
     ) -> bool:
         remembered = self._remembered_value_for_candidate(candidate=candidate, state=state)
@@ -2259,7 +2259,7 @@ class StepEngine:
                 out.add(canonical)
         return out
 
-    def _tool_name_for_action(self, action: Dict[str, Any]) -> str:
+    def _tool_name_for_action(self, action: dict[str, Any]) -> str:
         t = str(action.get("type") or "")
         t_l = t.lower()
         mapping = {
@@ -2284,7 +2284,7 @@ class StepEngine:
         }
         return mapping.get(t_l, "")
 
-    def _candidate_for_action(self, *, action: Dict[str, Any], ranked_candidates: List[Candidate]) -> Candidate | None:
+    def _candidate_for_action(self, *, action: dict[str, Any], ranked_candidates: list[Candidate]) -> Candidate | None:
         element_id = str(action.get("_element_id") or "")
         if element_id:
             for cand in ranked_candidates:
@@ -2306,7 +2306,7 @@ class StepEngine:
                 return cand
         return None
 
-    def _same_group_candidates(self, *, target: Candidate, ranked_candidates: List[Candidate]) -> List[Candidate]:
+    def _same_group_candidates(self, *, target: Candidate, ranked_candidates: list[Candidate]) -> list[Candidate]:
         if target.group_id:
             return [cand for cand in ranked_candidates if cand.group_id == target.group_id and cand.id != target.id]
         target_context = _norm_ws(target.context)
@@ -2314,7 +2314,7 @@ class StepEngine:
             return []
         return [cand for cand in ranked_candidates if _norm_ws(cand.context) == target_context and cand.id != target.id]
 
-    def _remember_active_group(self, *, target: Candidate, ranked_candidates: List[Candidate], state: AgentState) -> None:
+    def _remember_active_group(self, *, target: Candidate, ranked_candidates: list[Candidate], state: AgentState) -> None:
         context = _norm_ws(target.context)
         if not context and not target.group_id:
             return
@@ -2341,14 +2341,14 @@ class StepEngine:
                 MAX_PENDING_ELEMENTS,
             )
 
-    def _candidate_constraint_keys(self, *, candidate: Candidate, task_constraints: Dict[str, str]) -> set[str]:
+    def _candidate_constraint_keys(self, *, candidate: Candidate, task_constraints: dict[str, str]) -> set[str]:
         return self.ranker._candidate_constraint_keys(cand=candidate, task_constraints=task_constraints)
 
     def _record_constraint_progress(
         self,
         *,
         prompt: str,
-        action: Dict[str, Any],
+        action: dict[str, Any],
         target: Candidate | None,
         state: AgentState,
     ) -> None:
@@ -2440,7 +2440,7 @@ class StepEngine:
             return self._generated_value_for_field(field_kind=field_kind or "text", prompt=prompt_text)
         return "autoppia"
 
-    def _selector_signature(self, selector: Dict[str, Any] | None) -> str:
+    def _selector_signature(self, selector: dict[str, Any] | None) -> str:
         selector = _sanitize_selector(selector)
         if not isinstance(selector, dict):
             return ""
@@ -2449,7 +2449,7 @@ class StepEngine:
         except Exception:
             return ""
 
-    def _typed_selector_signatures_from_history(self, history: List[Dict[str, Any]]) -> set[str]:
+    def _typed_selector_signatures_from_history(self, history: list[dict[str, Any]]) -> set[str]:
         out: set[str] = set()
         for item in history:
             if not isinstance(item, dict):
@@ -2470,7 +2470,7 @@ class StepEngine:
                 out.add(sig)
         return out
 
-    def _selected_selector_signatures_from_history(self, history: List[Dict[str, Any]]) -> set[str]:
+    def _selected_selector_signatures_from_history(self, history: list[dict[str, Any]]) -> set[str]:
         out: set[str] = set()
         for item in history:
             if not isinstance(item, dict):
@@ -2491,7 +2491,7 @@ class StepEngine:
                 out.add(sig)
         return out
 
-    def _typed_candidate_ids_from_history(self, history: List[Dict[str, Any]]) -> set[str]:
+    def _typed_candidate_ids_from_history(self, history: list[dict[str, Any]]) -> set[str]:
         out: set[str] = set()
         for item in history:
             if not isinstance(item, dict):
@@ -2516,12 +2516,12 @@ class StepEngine:
                 out.add(candidate_id)
         return out
 
-    def _typed_selector_signatures(self, history: List[Dict[str, Any]], state: AgentState) -> set[str]:
+    def _typed_selector_signatures(self, history: list[dict[str, Any]], state: AgentState) -> set[str]:
         out = set(self._typed_selector_signatures_from_history(history))
         out.update(state.form_progress.typed_selector_sigs)
         return out
 
-    def _typed_candidate_ids(self, history: List[Dict[str, Any]], state: AgentState) -> set[str]:
+    def _typed_candidate_ids(self, history: list[dict[str, Any]], state: AgentState) -> set[str]:
         out = set(self._typed_candidate_ids_from_history(history))
         out.update(state.form_progress.typed_candidate_ids)
         return out
@@ -2549,10 +2549,10 @@ class StepEngine:
         self,
         *,
         prompt: str,
-        ranked_candidates: List[Candidate],
+        ranked_candidates: list[Candidate],
         target: Candidate | None,
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         task_ops = self.ranker._task_operation_hints(prompt)
         if task_ops.intersection({"create", "update"}) or "delete" not in task_ops:
             return None
@@ -2582,11 +2582,11 @@ class StepEngine:
     def _guard_delete_task_against_unrelated_form_edits(
         self,
         *,
-        action: Dict[str, Any] | None,
+        action: dict[str, Any] | None,
         prompt: str,
-        ranked_candidates: List[Candidate],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict):
             return action
         task_ops = self.ranker._task_operation_hints(prompt)
@@ -2619,12 +2619,12 @@ class StepEngine:
     def _guard_submit_without_inputs(
         self,
         *,
-        action: Dict[str, Any] | None,
+        action: dict[str, Any] | None,
         prompt: str,
-        history: List[Dict[str, Any]],
-        ranked_candidates: List[Candidate],
+        history: list[dict[str, Any]],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict) or str(action.get("type") or "") != "ClickAction":
             return action
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
@@ -2675,12 +2675,12 @@ class StepEngine:
     def _guard_missing_group_inputs(
         self,
         *,
-        action: Dict[str, Any] | None,
+        action: dict[str, Any] | None,
         prompt: str,
-        history: List[Dict[str, Any]],
-        ranked_candidates: List[Candidate],
+        history: list[dict[str, Any]],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict):
             return action
         action_type = str(action.get("type") or "")
@@ -2696,7 +2696,7 @@ class StepEngine:
         group_context = _norm_ws(state.form_progress.active_group_context)
         group_candidate_ids = set(state.form_progress.active_group_candidate_ids)
 
-        missing_inputs: List[Candidate] = []
+        missing_inputs: list[Candidate] = []
         for cand in ranked_candidates:
             if cand.role != "input":
                 continue
@@ -2718,7 +2718,7 @@ class StepEngine:
                 continue
             missing_inputs.append(cand)
         if not missing_inputs:
-            target_group_candidates: List[Candidate] = []
+            target_group_candidates: list[Candidate] = []
             for cand in ranked_candidates:
                 if (group_id and cand.group_id == group_id) or (group_context and _norm_ws(cand.context) == group_context) or (group_candidate_ids and cand.id in group_candidate_ids):
                     target_group_candidates.append(cand)
@@ -2777,12 +2777,12 @@ class StepEngine:
     def _guard_redundant_type_action(
         self,
         *,
-        action: Dict[str, Any] | None,
+        action: dict[str, Any] | None,
         prompt: str,
-        history: List[Dict[str, Any]],
-        ranked_candidates: List[Candidate],
+        history: list[dict[str, Any]],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict) or str(action.get("type") or "") != "TypeAction":
             return action
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
@@ -2848,11 +2848,11 @@ class StepEngine:
     def _guard_redundant_select_action(
         self,
         *,
-        action: Dict[str, Any] | None,
-        history: List[Dict[str, Any]],
-        ranked_candidates: List[Candidate],
+        action: dict[str, Any] | None,
+        history: list[dict[str, Any]],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict) or str(action.get("type") or "") != "SelectDropDownOptionAction":
             return action
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
@@ -2903,11 +2903,11 @@ class StepEngine:
     def _promote_click_input_to_type(
         self,
         *,
-        action: Dict[str, Any] | None,
+        action: dict[str, Any] | None,
         prompt: str,
-        ranked_candidates: List[Candidate],
+        ranked_candidates: list[Candidate],
         state: AgentState,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         if not isinstance(action, dict):
             return action
         if str(action.get("type") or "") != "ClickAction":
@@ -2931,13 +2931,13 @@ class StepEngine:
     def _browser_action_from_tool_call(
         self,
         *,
-        tool_call: Dict[str, Any],
-        ranked_candidates: List[Candidate],
+        tool_call: dict[str, Any],
+        ranked_candidates: list[Candidate],
         state: AgentState,
         prompt: str,
         allowed: set[str],
         current_url: str = "",
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
         normalized_allowed.discard("")
         name = _canonical_allowed_tool_name(str(tool_call.get("name") or "").strip().lower())
@@ -2950,7 +2950,7 @@ class StepEngine:
         if not action_type:
             return None
 
-        def resolve_target(*, prefer_roles: set[str], allow_unmatched_selector: bool) -> tuple[Dict[str, Any] | None, str, int | None]:
+        def resolve_target(*, prefer_roles: set[str], allow_unmatched_selector: bool) -> tuple[dict[str, Any] | None, str, int | None]:
             selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
             element_id = str(args.get("element_id") or args.get("_element_id") or "")
             raw_index = args.get("index")
@@ -3301,13 +3301,13 @@ class StepEngine:
     def _resolve_selector_and_element_id(
         self,
         *,
-        selector: Dict[str, Any] | None,
+        selector: dict[str, Any] | None,
         element_id: str,
-        ranked_candidates: List[Candidate],
+        ranked_candidates: list[Candidate],
         state: AgentState,
         prefer_roles: set[str],
         allow_unmatched_selector: bool = True,
-    ) -> tuple[Dict[str, Any] | None, str]:
+    ) -> tuple[dict[str, Any] | None, str]:
         selector = _sanitize_selector(selector)
         if element_id:
             for cand in ranked_candidates:
@@ -3323,7 +3323,7 @@ class StepEngine:
             if needle:
                 ordered = sorted(
                     ranked_candidates,
-                    key=lambda c: (0 if c.role in prefer_roles else 1),
+                    key=lambda c: 0 if c.role in prefer_roles else 1,
                 )
                 for cand in ordered:
                     if cand.id in state.blocklist.element_ids:
@@ -3346,7 +3346,7 @@ class StepEngine:
             return None, ""
         return selector, element_id
 
-    def _candidate_by_index(self, candidates: List[Candidate], raw_index: Any) -> Candidate | None:
+    def _candidate_by_index(self, candidates: list[Candidate], raw_index: Any) -> Candidate | None:
         try:
             index = int(raw_index)
         except (TypeError, ValueError):
@@ -3358,8 +3358,8 @@ class StepEngine:
     def _candidate_id_for_selector(
         self,
         *,
-        selector: Dict[str, Any],
-        ranked_candidates: List[Candidate],
+        selector: dict[str, Any],
+        ranked_candidates: list[Candidate],
         prefer_roles: set[str] | None = None,
     ) -> str:
         selector = _sanitize_selector(selector)
@@ -3419,7 +3419,7 @@ class StepEngine:
         step_index: int,
         state: AgentState,
         allowed: set[str],
-    ) -> tuple[Dict[str, Any] | None, bool, str, str]:
+    ) -> tuple[dict[str, Any] | None, bool, str, str]:
         normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
         normalized_allowed.discard("")
 
@@ -3463,11 +3463,11 @@ class StepEngine:
         self,
         *,
         prompt: str,
-        ranked_candidates: List[Candidate],
+        ranked_candidates: list[Candidate],
         state: AgentState,
         allowed: set[str],
         current_url: str,
-    ) -> Dict[str, Any] | None:
+    ) -> dict[str, Any] | None:
         normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
         normalized_allowed.discard("")
 
@@ -3477,9 +3477,9 @@ class StepEngine:
         focus_region_id = str(state.focus_region.region_id or "").strip()
         focus_region_context = _norm_ws(state.focus_region.region_context)
         focus_candidate_ids = set(state.focus_region.candidate_ids)
-        local_ranked: List[Candidate] = []
-        escape_ranked: List[Candidate] = []
-        global_ranked: List[Candidate] = []
+        local_ranked: list[Candidate] = []
+        escape_ranked: list[Candidate] = []
+        global_ranked: list[Candidate] = []
         for cand in ranked_candidates:
             same_region = False
             if (
@@ -3529,7 +3529,7 @@ class StepEngine:
                     return {"type": "SelectDropDownOptionAction", "selector": cand.selector, "text": text, "_element_id": cand.id}
         return None
 
-    def _action_signature(self, action: Dict[str, Any]) -> str:
+    def _action_signature(self, action: dict[str, Any]) -> str:
         t = str(action.get("type") or "").strip()
         selector = ""
         if isinstance(action.get("selector"), dict):
@@ -3545,8 +3545,8 @@ class StepEngine:
         self,
         *,
         prompt: str,
-        action: Dict[str, Any],
-        ranked_candidates: List[Candidate],
+        action: dict[str, Any],
+        ranked_candidates: list[Candidate],
         state: AgentState,
     ) -> None:
         if not isinstance(action, dict):

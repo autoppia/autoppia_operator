@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 
-
 EXPECTED_USE_CASES = {
     "ADD_COMMENT",
     "ADD_FILM",
@@ -53,17 +52,14 @@ def main() -> int:
 
     got_use_cases = set(summary.get("use_cases") or [])
     assert got_use_cases == EXPECTED_USE_CASES, (
-        "The harvest summary must list every Autocinema use case.\n"
-        f"missing={sorted(EXPECTED_USE_CASES - got_use_cases)} extra={sorted(got_use_cases - EXPECTED_USE_CASES)}"
+        f"The harvest summary must list every Autocinema use case.\nmissing={sorted(EXPECTED_USE_CASES - got_use_cases)} extra={sorted(got_use_cases - EXPECTED_USE_CASES)}"
     )
 
     episodes_total = int(summary.get("episodes_total", 0))
     successes_total = int(summary.get("successes_total", 0))
     failures_total = int(summary.get("failures_total", 0))
     replayable_total = int(summary.get("replayable_episodes_total", 0))
-    assert successes_total >= len(EXPECTED_USE_CASES) * 10, (
-        "Need at least 10 successful trajectories per use case in the committed harvest."
-    )
+    assert successes_total >= len(EXPECTED_USE_CASES) * 10, "Need at least 10 successful trajectories per use case in the committed harvest."
     assert failures_total >= len(EXPECTED_USE_CASES), "The committed harvest must retain failures too."
     assert replayable_total == episodes_total, "Every committed episode must be replayable."
 
@@ -98,12 +94,8 @@ def main() -> int:
     )
 
     command_sources = manifest.get("command_sources") or []
-    assert any(item.get("type") == "fresh_eval" for item in command_sources), (
-        "The committed dataset must come from fresh harvest runs."
-    )
-    assert any(item.get("type") in {"dagger", "advice_loop", "correction_eval"} for item in command_sources), (
-        "The manifest must record at least one correction/advice-assisted harvest source."
-    )
+    assert any(item.get("type") == "fresh_eval" for item in command_sources), "The committed dataset must come from fresh harvest runs."
+    assert any(item.get("type") in {"dagger", "advice_loop", "correction_eval"} for item in command_sources), "The manifest must record at least one correction/advice-assisted harvest source."
     assert manifest.get("result_files"), "collection_manifest.json must record result files."
     assert manifest.get("trace_roots"), "collection_manifest.json must record trace roots."
 

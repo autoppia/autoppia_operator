@@ -1,10 +1,11 @@
 """Serialize policy observations to compact text for SFT training."""
+
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
-def serialize_observation(obs: Dict[str, Any]) -> str:
+def serialize_observation(obs: dict[str, Any]) -> str:
     """Convert a policy observation dict to compact text.
 
     Args:
@@ -14,7 +15,7 @@ def serialize_observation(obs: Dict[str, Any]) -> str:
     Returns:
         Compact text representation (<8000 chars / ~2000 tokens).
     """
-    parts: List[str] = []
+    parts: list[str] = []
 
     # Task
     task = obs.get("prompt", "") or obs.get("task_text", "")
@@ -80,9 +81,7 @@ def serialize_observation(obs: Dict[str, Any]) -> str:
                 tool = str(item.get("tool") or "")
                 url = str(item.get("url") or "")
                 exec_ok = bool(item.get("exec_ok", True))
-                parts.append(
-                    f"- step {int(item.get('step_index') or 0)}: {tool} exec_ok={str(exec_ok).lower()} url={url[:120]}"
-                )
+                parts.append(f"- step {int(item.get('step_index') or 0)}: {tool} exec_ok={str(exec_ok).lower()} url={url[:120]}")
         state_in = memory.get("state_in", {})
         if isinstance(state_in, dict) and state_in:
             parts.append("State in: " + _compact_json(state_in, max_chars=300))
@@ -111,7 +110,7 @@ def _compress_text(text: str, max_chars: int = 500) -> str:
     """Compress visible text by removing redundant whitespace and truncating."""
     # Normalize whitespace
     lines = text.split("\n")
-    cleaned: List[str] = []
+    cleaned: list[str] = []
     for line in lines:
         stripped = line.strip()
         if stripped:
@@ -125,9 +124,9 @@ def _compress_text(text: str, max_chars: int = 500) -> str:
     return compressed
 
 
-def _summarize_forms(forms: List[Any]) -> str:
+def _summarize_forms(forms: list[Any]) -> str:
     """Produce a compact summary of form fields."""
-    field_summaries: List[str] = []
+    field_summaries: list[str] = []
     for form in forms:
         if not isinstance(form, dict):
             continue
@@ -142,7 +141,7 @@ def _summarize_forms(forms: List[Any]) -> str:
     return ", ".join(field_summaries[:10]) if field_summaries else ""
 
 
-def _format_candidate(index: int, cand: Dict[str, Any]) -> str:
+def _format_candidate(index: int, cand: dict[str, Any]) -> str:
     """Format a single candidate as a compact indexed line."""
     ctype = cand.get("type", cand.get("element_type", "?"))
     role = cand.get("role", "")
@@ -150,13 +149,13 @@ def _format_candidate(index: int, cand: Dict[str, Any]) -> str:
     href = cand.get("href", "")
     field_hint = cand.get("field_hint", "")
     field_kind = cand.get("field_kind", "")
-    placeholder = cand.get("placeholder", "") or (("placeholder" if cand.get("has_placeholder", False) else ""))
+    placeholder = cand.get("placeholder", "") or ("placeholder" if cand.get("has_placeholder", False) else "")
     aria_label = cand.get("aria_label", "")
     name_attr = cand.get("name_attr", "")
     selector_summary = cand.get("selector_summary", "")
     current_value = cand.get("current_value", "")
 
-    extras: List[str] = []
+    extras: list[str] = []
     if role:
         extras.append(role)
     if href:
@@ -182,7 +181,7 @@ def _format_candidate(index: int, cand: Dict[str, Any]) -> str:
     return f"[{index}] {ctype}{text_str}{extra_str}"
 
 
-def _compact_json(payload: Dict[str, Any], *, max_chars: int) -> str:
+def _compact_json(payload: dict[str, Any], *, max_chars: int) -> str:
     try:
         text = str(payload)
     except Exception:

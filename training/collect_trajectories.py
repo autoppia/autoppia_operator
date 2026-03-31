@@ -7,14 +7,12 @@ Usage:
     python -m training.collect_trajectories --num-tasks 10
     COLLECT_TRAJECTORIES=1 python -m training.collect_trajectories
 """
+
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
-import sys
-from typing import Any, Dict, List, Optional
 
 from .collector import TrajectoryCollector
 
@@ -24,7 +22,7 @@ logger = logging.getLogger(__name__)
 def run_collection(
     num_tasks: int = 5,
     output_dir: str = "data/trajectories",
-    websites: Optional[List[str]] = None,
+    websites: list[str] | None = None,
 ) -> str:
     """Run trajectory collection on IWA tasks.
 
@@ -46,8 +44,7 @@ def run_collection(
     collector = TrajectoryCollector(output_dir=output_dir)
     output_path = os.path.join(output_dir, "episodes.jsonl")
 
-    logger.info("Starting trajectory collection: %d tasks across %d websites",
-                num_tasks, len(websites))
+    logger.info("Starting trajectory collection: %d tasks across %d websites", num_tasks, len(websites))
 
     # The actual integration with eval.py happens when COLLECT_TRAJECTORIES=1
     # is set and the FSMEngine hooks are active. This function provides
@@ -69,7 +66,7 @@ def run_collection(
 def _run_eval_loop(
     collector: TrajectoryCollector,
     num_tasks: int,
-    websites: List[str],
+    websites: list[str],
 ) -> None:
     """Run the eval pipeline with trajectory collection enabled.
 
@@ -83,8 +80,7 @@ def _run_eval_loop(
     try:
         from eval import run_eval  # type: ignore
     except ImportError:
-        logger.info("eval.run_eval not available — use eval.py directly with "
-                     "COLLECT_TRAJECTORIES=1 env var")
+        logger.info("eval.run_eval not available — use eval.py directly with COLLECT_TRAJECTORIES=1 env var")
         raise
 
     for i in range(num_tasks):

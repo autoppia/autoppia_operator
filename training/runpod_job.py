@@ -14,6 +14,7 @@ The command writes:
 
 It refuses to report success if the downloaded adapter still looks like a stub.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,9 +27,9 @@ import shutil
 import socket
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ def _parse_utc_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     except ValueError:
         return None
 
@@ -130,7 +131,7 @@ def _parse_runpodctl_created_at(value: str | None) -> str | None:
         parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S.%f %z UTC")
     except ValueError:
         return None
-    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _seconds_since(timestamp: str | None, *, now_utc: str | None = None) -> float | None:
@@ -143,7 +144,7 @@ def _seconds_since(timestamp: str | None, *, now_utc: str | None = None) -> floa
     return max(0.0, (now_value - observed).total_seconds())
 
 
-def _runpod_api(data: Dict[str, Any]) -> Dict[str, Any]:
+def _runpod_api(data: dict[str, Any]) -> dict[str, Any]:
     import requests
 
     api_key = os.environ.get("RUNPOD_API_KEY")
@@ -166,7 +167,7 @@ def _runpod_api(data: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-def _runpod_mutation(query: str, variables: Dict[str, Any]) -> Dict[str, Any]:
+def _runpod_mutation(query: str, variables: dict[str, Any]) -> dict[str, Any]:
     return _runpod_api({"query": query, "variables": variables}).get("data", {})
 
 
@@ -179,16 +180,16 @@ def _credential_blockers(*, require_runpod: bool = True, require_hf_token: bool 
     return blockers
 
 
-def _save_json(path: Path, payload: Dict[str, Any]) -> None:
+def _save_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _save_job_info(output_dir: Path, info: Dict[str, Any]) -> None:
+def _save_job_info(output_dir: Path, info: dict[str, Any]) -> None:
     _save_json(output_dir / "job.json", info)
 
 
-def _save_bootstrap_status(path: Path, payload: Dict[str, Any]) -> None:
+def _save_bootstrap_status(path: Path, payload: dict[str, Any]) -> None:
     if path.exists():
         try:
             existing = _load_json_file(path)
@@ -215,24 +216,24 @@ def _build_bootstrap_payload(
     *,
     base_model: str,
     preferred_gpu: str,
-    pod_id: Optional[str],
+    pod_id: str | None,
     pod_name: str,
     status: str,
-    started_at: Optional[str],
+    started_at: str | None,
     resumed: bool,
     newly_created: bool,
-    ssh: Optional[dict[str, Any]],
-    ssh_probe: Optional[dict[str, Any]],
-    runtime: Optional[dict[str, Any]],
-    machine: Optional[dict[str, Any]],
-    resume_attempt: Dict[str, Any],
-    source: Dict[str, Any],
-    status_reason: Optional[str] = None,
-    credential_blockers: Optional[list[str]] = None,
-    credential_warnings: Optional[list[str]] = None,
-    capacity_attempts: Optional[list[dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
+    ssh: dict[str, Any] | None,
+    ssh_probe: dict[str, Any] | None,
+    runtime: dict[str, Any] | None,
+    machine: dict[str, Any] | None,
+    resume_attempt: dict[str, Any],
+    source: dict[str, Any],
+    status_reason: str | None = None,
+    credential_blockers: list[str] | None = None,
+    credential_warnings: list[str] | None = None,
+    capacity_attempts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "base_model": base_model,
         "preferred_gpu": preferred_gpu,
         "pod_id": pod_id,
@@ -259,10 +260,7 @@ def _build_bootstrap_payload(
 def _credential_warnings(*, base_model: str) -> list[str]:
     warnings: list[str] = []
     if not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")):
-        warnings.append(
-            "HF_TOKEN/HUGGINGFACE_HUB_TOKEN not present; this is acceptable only if "
-            f"{base_model} remains publicly downloadable from the pod."
-        )
+        warnings.append(f"HF_TOKEN/HUGGINGFACE_HUB_TOKEN not present; this is acceptable only if {base_model} remains publicly downloadable from the pod.")
     return warnings
 
 
@@ -297,7 +295,7 @@ def _find_snapshot_pod(snapshot: dict[str, Any] | None, pod_id: str | None) -> d
         return None
     for pod in pods:
         if isinstance(pod, dict) and str(pod.get("id") or "") == pod_id:
-                return pod
+            return pod
     return None
 
 
@@ -457,7 +455,7 @@ def _resolve_status_with_ssh_probe(
             "running_ssh_unreachable",
             f"RunPod exposed runtime/SSH metadata, but the SSH endpoint is still unreachable from the local shell: {error}",
             ssh_probe,
-    )
+        )
     return status, status_reason, ssh_probe
 
 
@@ -523,9 +521,7 @@ def get_balance() -> float:
 
 def _require_runpodctl() -> None:
     if _find_runpodctl() is None:
-        raise RuntimeError(
-            "runpodctl is not installed in the local shell; cannot push code, execute training, or download adapters from RunPod."
-        )
+        raise RuntimeError("runpodctl is not installed in the local shell; cannot push code, execute training, or download adapters from RunPod.")
 
 
 def _find_runpodctl() -> str | None:
@@ -842,11 +838,7 @@ def download_from_pod(pod_id: str, remote_path: str, local_path: str) -> None:
         timeout=600,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            result.stderr.strip()
-            or result.stdout.strip()
-            or f"failed to download {remote_path} from pod {pod_id}"
-        )
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"failed to download {remote_path} from pod {pod_id}")
 
 
 def _probe_remote_training_progress(pod_id: str, remote_adapter_dir: str) -> dict[str, Any] | None:
@@ -950,15 +942,7 @@ def _refresh_local_stub_train_metrics(
 ) -> None:
     metrics_path = output_dir / "train_metrics.json"
     payload: dict[str, Any]
-    if metrics_path.exists():
-        payload = _load_json_file(metrics_path)
-    else:
-        payload = {
-            "base_model": base_model,
-            "epochs": epochs,
-            "lora_rank": lora_rank,
-            "stub": True,
-        }
+    payload = _load_json_file(metrics_path) if metrics_path.exists() else {"base_model": base_model, "epochs": epochs, "lora_rank": lora_rank, "stub": True}
 
     if payload.get("stub") is not True:
         return
@@ -1041,9 +1025,7 @@ def _validate_downloaded_adapter(output_dir: Path) -> None:
     if metrics.get("stub") is True:
         raise RuntimeError(f"downloaded training metrics are still marked stub: {metrics_path}")
     if str(metrics.get("base_model")) != DEFAULT_BASE_MODEL:
-        raise RuntimeError(
-            "downloaded training metrics do not point at browser-use/bu-30b-a3b-preview"
-        )
+        raise RuntimeError("downloaded training metrics do not point at browser-use/bu-30b-a3b-preview")
     if model_path.stat().st_size < 1024:
         raise RuntimeError(f"downloaded adapter weights look too small: {model_path}")
 
@@ -1084,14 +1066,14 @@ def run_job(
     gpu_type: str = DEFAULT_GPU,
     base_model: str = DEFAULT_BASE_MODEL,
     pod_name: str = DEFAULT_POD_NAME,
-    existing_pod_id: Optional[str] = None,
+    existing_pod_id: str | None = None,
     bootstrap_status_path: str = str(DEFAULT_BOOTSTRAP_STATUS_PATH),
     epochs: int = 3,
     lora_rank: int = 32,
     keep_pod: bool = False,
     bootstrap_only: bool = False,
     require_hf_token: bool = False,
-    inventory_snapshot_path: Optional[str] = None,
+    inventory_snapshot_path: str | None = None,
     replace_pending_runtime: bool = False,
     pending_runtime_threshold_seconds: int = 1800,
     replace_unreachable_ssh: bool = False,
@@ -1100,14 +1082,14 @@ def run_job(
     volume_gb: int = 80,
     remote_adapter_dir: str = DEFAULT_REMOTE_ADAPTER_DIR,
     download_only: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     output_path = Path(output_dir)
     bootstrap_path = Path(bootstrap_status_path)
     started_at = None
     pod_id = existing_pod_id
     pod_created = False
     pod_resumed = existing_pod_id is not None
-    job_info: Dict[str, Any] = {
+    job_info: dict[str, Any] = {
         "status": "starting",
         "base_model": base_model,
         "pod_id": existing_pod_id,
@@ -1118,8 +1100,8 @@ def run_job(
         "remote_adapter_dir": remote_adapter_dir,
         "started_at": _now_utc(),
     }
-    resume_attempt: Dict[str, Any] = {"attempted": bool(existing_pod_id), "attempted_at": None}
-    source: Dict[str, Any] = {"image_name": "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel"}
+    resume_attempt: dict[str, Any] = {"attempted": bool(existing_pod_id), "attempted_at": None}
+    source: dict[str, Any] = {"image_name": "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel"}
     machine = {
         "gpu_display_name": gpu_type,
     }
@@ -1194,11 +1176,7 @@ def run_job(
         if selected_pod is not None:
             runtime, status, status_reason, ssh_metadata, ssh_probe = _snapshot_runtime_status(selected_pod)
             prior_started_at = None
-            if (
-                isinstance(prior_bootstrap_status, dict)
-                and str(prior_bootstrap_status.get("pod_id") or "") == pod_id
-                and isinstance(prior_bootstrap_status.get("started_at"), str)
-            ):
+            if isinstance(prior_bootstrap_status, dict) and str(prior_bootstrap_status.get("pod_id") or "") == pod_id and isinstance(prior_bootstrap_status.get("started_at"), str):
                 prior_started_at = str(prior_bootstrap_status["started_at"])
             started_at = prior_started_at or inventory_snapshot.get("observed_at")
             pod_resumed, pod_created = _resolve_bootstrap_origin_flags(
@@ -1525,9 +1503,8 @@ def run_job(
         runpodctl_started_at, runpodctl_ssh = _runpodctl_runtime_metadata(pod_id)
         if runpodctl_started_at:
             started_at = runpodctl_started_at
-        if runtime is None or not (isinstance(ssh_metadata, dict) and ssh_metadata.get("host") and ssh_metadata.get("port")):
-            if runpodctl_ssh is not None:
-                ssh_metadata = runpodctl_ssh
+        if (runtime is None or not (isinstance(ssh_metadata, dict) and ssh_metadata.get("host") and ssh_metadata.get("port"))) and runpodctl_ssh is not None:
+            ssh_metadata = runpodctl_ssh
         status, status_reason, ssh_probe = _resolve_status_with_ssh_probe(
             status=status,
             status_reason=status_reason,

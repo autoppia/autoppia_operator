@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +16,8 @@ from training.focus_pipeline import (
 )
 from training.harvester_support import brief_prompt_lines, summarize_attempt_for_claude
 from training.trajectory_candidate import TrajectoryCandidate, candidate_path, load_candidate, write_candidate
-from training.trajectory_replay import candidate_row_from_replay, replay_output_paths, write_replay_report
 from training.trajectory_contract import build_provenance_fields
+from training.trajectory_replay import candidate_row_from_replay, replay_output_paths, write_replay_report
 
 
 @dataclass(frozen=True)
@@ -382,9 +382,7 @@ def generate_candidates_for_seeds(*, config: HarvestConfig, seeds: list[int]) ->
                         )
                     )
                 except Exception as exc:
-                    generation_failures.append(
-                        {"seed": int(seed), "feedback": _generation_failure_feedback(seed=seed, attempt_idx=attempt_idx, error=exc)}
-                    )
+                    generation_failures.append({"seed": int(seed), "feedback": _generation_failure_feedback(seed=seed, attempt_idx=attempt_idx, error=exc)})
         else:
             with ThreadPoolExecutor(max_workers=claude_workers) as pool:
                 futures = {
@@ -402,9 +400,7 @@ def generate_candidates_for_seeds(*, config: HarvestConfig, seeds: list[int]) ->
                     try:
                         generated_bundles.append(future.result())
                     except Exception as exc:
-                        generation_failures.append(
-                            {"seed": seed, "feedback": _generation_failure_feedback(seed=seed, attempt_idx=attempt_idx, error=exc)}
-                        )
+                        generation_failures.append({"seed": seed, "feedback": _generation_failure_feedback(seed=seed, attempt_idx=attempt_idx, error=exc)})
         next_pending: list[int] = []
         for bundle in generated_bundles:
             generated_paths.append(Path(bundle["stored_candidate_path"]))
@@ -523,7 +519,7 @@ def build_harvest_summary(*, use_case: str, target_seeds: list[int], rows: list[
         "avg_cost_usd_per_attempt": round((total_estimated_cost_usd / all_attempts) if all_attempts else 0.0, 8),
         "attempts_by_model": per_model_attempts,
         "passed_target": len(gold_seeds) >= len(target_seeds),
-        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     }
 
 
@@ -543,11 +539,7 @@ def write_harvest_artifacts(
     merged_rows = list(rows)
     if merge_existing:
         existing_attempts = _read_jsonl(attempts_path)
-        seen_attempt_keys = {
-            (int(row.get("seed") or 0), str(row.get("attempt_name") or ""))
-            for row in rows
-            if isinstance(row, dict)
-        }
+        seen_attempt_keys = {(int(row.get("seed") or 0), str(row.get("attempt_name") or "")) for row in rows if isinstance(row, dict)}
         for row in existing_attempts:
             key = (int(row.get("seed") or 0), str(row.get("attempt_name") or ""))
             if key not in seen_attempt_keys:

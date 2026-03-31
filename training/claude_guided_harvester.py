@@ -4,14 +4,13 @@ import asyncio
 import importlib.util
 import json
 import random
+import re
 import time
 import urllib.request
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
-from urllib.parse import parse_qsl, urlencode, urljoin, urlunparse
-import re
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import autoppia_iwa.src.execution.actions.actions  # noqa: F401
 from autoppia_iwa.src.data_generation.tasks.classes import Task
@@ -110,10 +109,7 @@ def _normalize_action_url(*, task_url: str, target_url: str) -> str:
 def _dataset_movie_candidates(*, task_url: str, filters: dict[str, Any]) -> list[str]:
     origin = _base_origin(task_url)
     seed = _seed_from_task_url(task_url)
-    params = (
-        "project_key=web_1_autocinema&entity_type=movies"
-        f"&seed_value={seed}&limit=50&method=distribute&filter_key=category"
-    )
+    params = f"project_key=web_1_autocinema&entity_type=movies&seed_value={seed}&limit=50&method=distribute&filter_key=category"
     url = f"{origin}/api/datasets/load?{params}"
     try:
         with urllib.request.urlopen(url, timeout=20) as response:
@@ -264,11 +260,7 @@ def _ordered_selector_candidates(
     explicit = list(planned_action.get("selector_candidates") or [])
     existing_exact = list(existing_exact_candidates or [])
     if existing_exact:
-        selector_stream = existing_exact + [
-            selector
-            for selector in list(resolved_candidates or [])
-            if selector not in existing_exact
-        ]
+        selector_stream = existing_exact + [selector for selector in list(resolved_candidates or []) if selector not in existing_exact]
     elif resolved_candidates and not exact_match_found:
         selector_stream = list(resolved_candidates)
     else:
@@ -359,9 +351,8 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
     hrefCandidates: uniqueHrefs
   };
 }
-                    """
-                    ,
-                    {"filters": filters}
+                    """,
+                    {"filters": filters},
                 )
             except Exception:
                 payload = {}
@@ -387,7 +378,12 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
         duration_gte = int(filters.get("duration_gte") or 0) if str(filters.get("duration_gte") or "").strip() else 0
         rating_gte = float(filters.get("rating_gte") or 0) if str(filters.get("rating_gte") or "").strip() else 0.0
         for candidate in candidate_pool:
-            navigate_payload = {"type": "NavigateAction", "url": _seeded_url(str(session.task.url), candidate), "go_back": False, "go_forward": False}
+            navigate_payload = {
+                "type": "NavigateAction",
+                "url": harvester_support._seeded_url(str(session.task.url), candidate),
+                "go_back": False,
+                "go_forward": False,
+            }
             action = BaseAction.create_action(navigate_payload)
             candidate_result = await session.step(action)
             success = bool(candidate_result.action_result.successfully_executed) if candidate_result.action_result is not None else True
@@ -402,9 +398,7 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
             except Exception:
                 body_text = str(candidate_result.snapshot.html or "")
             try:
-                title_text = await page.evaluate(
-                    "() => { const el = document.querySelector('main h1, h1'); return String(el?.textContent || '').replace(/\\s+/g, ' ').trim(); }"
-                )
+                title_text = await page.evaluate("() => { const el = document.querySelector('main h1, h1'); return String(el?.textContent || '').replace(/\\s+/g, ' ').trim(); }")
             except Exception:
                 title_text = ""
             body_lower = body_text.lower()
@@ -435,7 +429,12 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
             await session.step(back_action)
         if result is None:
             fallback_href = href or (candidate_pool[0] if candidate_pool else "")
-            navigate_payload = {"type": "NavigateAction", "url": _seeded_url(str(session.task.url), fallback_href), "go_back": False, "go_forward": False}
+            navigate_payload = {
+                "type": "NavigateAction",
+                "url": harvester_support._seeded_url(str(session.task.url), fallback_href),
+                "go_back": False,
+                "go_forward": False,
+            }
             action = BaseAction.create_action(navigate_payload)
             result = await session.step(action)
             selected_payload = navigate_payload
@@ -554,11 +553,7 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
                             for item in (planned_action.get("selector_candidates") or [])
                             if isinstance(item, dict) and item.get("type") == "attributeValueSelector" and item.get("attribute") == "id"
                         ],
-                        "label_hints": [
-                            item.get("value")
-                            for item in (planned_action.get("selector_candidates") or [])
-                            if isinstance(item, dict) and item.get("type") == "tagContainsSelector"
-                        ],
+                        "label_hints": [item.get("value") for item in (planned_action.get("selector_candidates") or []) if isinstance(item, dict) and item.get("type") == "tagContainsSelector"],
                     },
                 )
             except Exception:
@@ -681,9 +676,7 @@ async def _run_guided_brief_async(
     web_agent_id = f"claude-guided-{seed}-{random.randint(1000, 9999)}"
     validator_id = f"claude-guided-validator-{seed}-{random.randint(1000, 9999)}"
     planned_actions_source = (
-        list(planned_actions_override)
-        if isinstance(planned_actions_override, list) and planned_actions_override
-        else _guided_actions_from_brief(task_url=str(task.url), brief=brief)
+        list(planned_actions_override) if isinstance(planned_actions_override, list) and planned_actions_override else _guided_actions_from_brief(task_url=str(task.url), brief=brief)
     )
     planned_actions = _render_placeholders(
         planned_actions_source[: max(1, int(max_steps))],

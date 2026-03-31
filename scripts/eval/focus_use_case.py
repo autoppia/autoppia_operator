@@ -7,6 +7,7 @@ Typical flow:
 3. train a LoRA on that use case
 4. evaluate only that use case
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,6 +32,9 @@ def _load_operator_env(operator_dir: Path) -> None:
 
 _load_operator_env(REPO_ROOT)
 
+from training.claude_code_harvester import generate_claude_brief, save_claude_brief
+from training.focus_cost_analytics import build_focus_cost_report
+from training.focus_dataset_validation import validate_focus_dataset
 from training.focus_pipeline import (
     DEFAULT_TASK_CACHE,
     build_focus_eval_command,
@@ -39,7 +43,6 @@ from training.focus_pipeline import (
     build_task_cache_override,
     focus_root,
 )
-from training.claude_code_harvester import generate_claude_brief, save_claude_brief
 from training.harvester import (
     HarvestConfig,
     collect_rows_for_seeds,
@@ -51,8 +54,6 @@ from training.harvester import (
     replay_candidates,
     write_harvest_artifacts,
 )
-from training.focus_dataset_validation import validate_focus_dataset
-from training.focus_cost_analytics import build_focus_cost_report
 from training.use_case_registry import get_use_case_spec
 
 

@@ -114,5 +114,5 @@ def run_fsm_operator(fsm_operator: Any, payload: dict[str, Any], *, model_overri
         out = fsm_operator.run(payload=build_fsm_payload(payload), model_override=model_override)
     except Exception as exc:
         logger.exception(f"[AGENT_TRACE] strict_fsm_failed task_id={payload.get('task_id') or ''!s} step_index={int(payload.get('step_index') or 0)} err={exc!s}")
-        raise HTTPException(status_code=500, detail="fsm_operator_failed")
+        raise HTTPException(status_code=500, detail="fsm_operator_failed") from exc
     return normalize_fsm_output(out, model_override=model_override, return_metrics=env_bool("AGENT_RETURN_METRICS", False))

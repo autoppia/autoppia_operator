@@ -34,6 +34,15 @@ exclude = [
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 ignore = ["E402", "E501"]
 
+# Forward refs / star re-exports (see pyproject [tool.ruff.lint.per-file-ignores] mirror).
+[lint.per-file-ignores]
+"**/demo_webs/projects/*/events.py" = ["F821"]
+"**/demo_webs/projects/base_events.py" = ["F821"]
+"**/generated_projects/*/events.py" = ["F821"]
+"src/operator/agents/step_engine/*.py" = ["F403", "F405"]
+"src/operator/agents/step_engine/**/*.py" = ["F403", "F405"]
+"src/operator/agents/fsm/__init__.py" = ["F403", "F405"]
+
 [lint.isort]
 known-first-party = ["agent", "autoppia_operator", "infra", "src", "training", "tools"]
 known-third-party = [

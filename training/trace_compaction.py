@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 TRACE_SECTIONS = ("before", "after", "act_request")
 LARGE_INLINE_KEYS = ("screenshot", "snapshot_html")
 

@@ -6,6 +6,7 @@ Usage:
 
 This starts an OpenAI-compatible API server that the BUPolicy can query.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,10 +37,7 @@ def validate_adapter_artifacts(adapter_path: Path) -> None:
         raise RuntimeError(f"Refusing to serve stub adapter declared in {config_path}")
 
     if model_path.stat().st_size < 1024:
-        raise RuntimeError(
-            f"Refusing to serve suspiciously small adapter weights from {model_path} "
-            f"({model_path.stat().st_size} bytes)"
-        )
+        raise RuntimeError(f"Refusing to serve suspiciously small adapter weights from {model_path} ({model_path.stat().st_size} bytes)")
 
     if metrics_path.exists():
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
@@ -97,14 +95,22 @@ def main() -> None:
         ]
     else:
         cmd = [
-            sys.executable, "-m", "vllm.entrypoints.openai.api_server",
-            "--model", args.base_model,
-            "--served-model-name", args.served_model_name,
+            sys.executable,
+            "-m",
+            "vllm.entrypoints.openai.api_server",
+            "--model",
+            args.base_model,
+            "--served-model-name",
+            args.served_model_name,
             "--enable-lora",
-            "--lora-modules", f"{args.served_model_name}={adapter_path}",
-            "--port", str(args.port),
-            "--gpu-memory-utilization", str(args.gpu_memory_utilization),
-            "--max-model-len", str(args.max_model_len),
+            "--lora-modules",
+            f"{args.served_model_name}={adapter_path}",
+            "--port",
+            str(args.port),
+            "--gpu-memory-utilization",
+            str(args.gpu_memory_utilization),
+            "--max-model-len",
+            str(args.max_model_len),
             "--trust-remote-code",
         ]
         if args.max_num_seqs > 0:
@@ -119,7 +125,7 @@ def main() -> None:
     print(f"API endpoint: http://localhost:{args.port}/v1")
     print()
     print("Usage with operator:")
-    print(f"  export FSM_POLICY=learned")
+    print("  export FSM_POLICY=learned")
     print(f"  export BU_POLICY_ENDPOINT=http://localhost:{args.port}/v1")
     print(f"  export BU_POLICY_MODEL={args.served_model_name}")
     print()

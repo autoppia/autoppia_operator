@@ -2,18 +2,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from training.focus_pipeline import DEFAULT_TASK_CACHE
-from training.focus_pipeline import focus_root as _focus_root
+from training.focus_pipeline import DEFAULT_TASK_CACHE, focus_root as _focus_root
 from training.harvester import HarvestConfig, collect_rows_for_seeds, write_harvest_artifacts
 from training.use_case_registry import all_use_case_specs, get_use_case_spec
 
 
 def _now_utc() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

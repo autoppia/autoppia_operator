@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 REQUIRED_EPISODE_FIELDS = (
     "episode_task_id",
     "seed",

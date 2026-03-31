@@ -147,4 +147,3 @@ def validate_focus_dataset(
         "sft": sft,
         "issues": sorted(set(issues)),
     }
-

@@ -5,8 +5,8 @@ from pathlib import Path
 
 import training.focus_pipeline as focus_pipeline_module
 from training.focus_pipeline import (
-    build_focus_summary,
     build_focus_eval_command,
+    build_focus_summary,
     build_prompt_override,
     build_task_cache_override,
     focus_root,

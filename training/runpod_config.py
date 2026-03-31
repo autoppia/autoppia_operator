@@ -1,4 +1,5 @@
 """Configuration for RunPod GPU training infrastructure."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

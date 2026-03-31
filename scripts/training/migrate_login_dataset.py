@@ -83,14 +83,8 @@ def migrate_login_dataset(*, drop_unresolved: bool = True) -> dict[str, object]:
             out_rows.append(repaired)
 
     attempt_keys = {(int(row.get("seed") or 0), str(row.get("attempt_name") or "")) for row in migrated_attempts}
-    migrated_episodes = [
-        row for row in migrated_episodes
-        if (int(row.get("seed") or 0), str(row.get("attempt_name") or "")) in attempt_keys
-    ]
-    migrated_episodes = [
-        row for row in migrated_episodes
-        if bool(row.get("success")) and float(row.get("score") or 0.0) >= 1.0
-    ]
+    migrated_episodes = [row for row in migrated_episodes if (int(row.get("seed") or 0), str(row.get("attempt_name") or "")) in attempt_keys]
+    migrated_episodes = [row for row in migrated_episodes if bool(row.get("success")) and float(row.get("score") or 0.0) >= 1.0]
 
     summary = {
         "use_case": "LOGIN",

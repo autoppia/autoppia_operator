@@ -32,7 +32,7 @@ class TrajectoryCandidate:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "TrajectoryCandidate":
+    def from_dict(cls, payload: dict[str, Any]) -> TrajectoryCandidate:
         if not isinstance(payload, dict):
             raise TypeError("candidate payload must be a dict")
         actions = payload.get("actions")

@@ -26,7 +26,7 @@ def _load_task_row(use_case: str) -> dict[str, Any]:
     for row in rows:
         if not isinstance(row, dict):
             continue
-        row_use_case = ((row.get("use_case") or {}).get("name") if isinstance(row.get("use_case"), dict) else None)
+        row_use_case = (row.get("use_case") or {}).get("name") if isinstance(row.get("use_case"), dict) else None
         if str(row_use_case).strip().upper() == normalized:
             return row
     raise ValueError(f"use case not found in task cache: {use_case}")
@@ -134,9 +134,7 @@ def _extract_matching_windows(text: str, *, keywords: list[str], radius: int = 8
     lowered_keywords = [str(keyword).strip().lower() for keyword in keywords if str(keyword).strip()]
     if not lines or not lowered_keywords:
         return text[:max_chars]
-    matched_indexes = [
-        idx for idx, line in enumerate(lines) if any(keyword in line.lower() for keyword in lowered_keywords)
-    ]
+    matched_indexes = [idx for idx, line in enumerate(lines) if any(keyword in line.lower() for keyword in lowered_keywords)]
     if not matched_indexes:
         return text[:max_chars]
     ranges: list[tuple[int, int]] = []
@@ -261,11 +259,7 @@ def _load_existing_examples(use_case: str, max_examples: int = 1) -> list[dict[s
                 episode = episodes[0] if isinstance(episodes, list) and episodes else None
                 guided_execution = episode.get("guided_execution") if isinstance(episode, dict) else None
                 if isinstance(guided_execution, list) and guided_execution:
-                    summary["guided_actions"] = [
-                        item.get("planned_action")
-                        for item in guided_execution[:6]
-                        if isinstance(item, dict) and isinstance(item.get("planned_action"), dict)
-                    ]
+                    summary["guided_actions"] = [item.get("planned_action") for item in guided_execution[:6] if isinstance(item, dict) and isinstance(item.get("planned_action"), dict)]
             except Exception:
                 pass
         trace_file = str(payload.get("trace_file") or "").strip()
@@ -274,11 +268,7 @@ def _load_existing_examples(use_case: str, max_examples: int = 1) -> list[dict[s
                 trace_payload = json.loads(Path(trace_file).read_text(encoding="utf-8"))
                 steps = trace_payload.get("steps") if isinstance(trace_payload, dict) else None
                 if isinstance(steps, list) and steps:
-                    summary["trace_actions"] = [
-                        step.get("action")
-                        for step in steps[:6]
-                        if isinstance(step, dict) and isinstance(step.get("action"), dict)
-                    ]
+                    summary["trace_actions"] = [step.get("action") for step in steps[:6] if isinstance(step, dict) and isinstance(step.get("action"), dict)]
             except Exception:
                 pass
         rows.append(summary)
@@ -297,7 +287,7 @@ def _build_prompt(
     previous_attempts: list[dict[str, Any]] | None = None,
 ) -> str:
     prompt = str(task_row.get("prompt") or "").strip()
-    constraints = ((task_row.get("use_case") or {}).get("constraints") if isinstance(task_row.get("use_case"), dict) else None)
+    constraints = (task_row.get("use_case") or {}).get("constraints") if isinstance(task_row.get("use_case"), dict) else None
     previous_attempts = [row for row in (previous_attempts or []) if isinstance(row, dict)]
     source_hints = {
         "web_repo_root": str(WEB_REPO_ROOT),
@@ -485,10 +475,7 @@ def generate_claude_brief(
     raw = subprocess.check_output(cmd, cwd=str(REPO_ROOT), text=True, timeout=max(1, int(timeout_seconds)))
     payload = json.loads(raw)
     structured = payload.get("structured_output")
-    if isinstance(structured, dict):
-        result = structured
-    else:
-        result = json.loads(str(payload.get("result") or "{}"))
+    result = structured if isinstance(structured, dict) else json.loads(str(payload.get("result") or "{}"))
     return {
         "brief": result,
         "meta": {

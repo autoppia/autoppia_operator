@@ -8,6 +8,7 @@ This module is intentionally strict:
 It supports a pragmatic DAgger loop by re-running the same task seed with a
 prompt-corrected task cache when the baseline attempt fails.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -158,10 +159,7 @@ def build_task_cache_override(
         base_prompt = str(row.get("prompt") or "").strip()
         row["prompt"] = f"{base_prompt} {prompt_override}".strip()
         if use_case.upper() == "LOGIN":
-            row["prompt"] = (
-                "First, authenticate with username 'user1' and password 'Passw0rd!' to log in successfully. "
-                f"{prompt_override}"
-            ).strip()
+            row["prompt"] = (f"First, authenticate with username 'user1' and password 'Passw0rd!' to log in successfully. {prompt_override}").strip()
             relevant_data = row.get("relevant_data")
             if isinstance(relevant_data, dict):
                 user_for_login = relevant_data.get("user_for_login")
@@ -340,7 +338,7 @@ def build_focus_summary(*, use_case: str, target_seeds: list[int], rows: list[di
         "avg_cost_usd_per_attempt": round((total_estimated_cost_usd / all_attempts) if all_attempts else 0.0, 8),
         "attempts_by_model": per_model_attempts,
         "passed_target": len(gold_seeds) >= len(target_seeds),
-        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     }
 
 

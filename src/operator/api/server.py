@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 from importlib import import_module
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,10 +50,10 @@ async def capabilities() -> dict[str, Any]:
 
 
 @app.post("/step", summary="Decide next agent actions")
-async def step(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def step(payload: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
     return await _respond(payload, endpoint_name="step")
 
 
 @app.post("/act", summary="Compatibility alias for /step")
-async def act(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def act(payload: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
     return await _respond(payload, endpoint_name="act")

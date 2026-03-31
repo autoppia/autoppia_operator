@@ -2,11 +2,11 @@
 
 Coordinates the full pipeline from trajectory data to deployed models.
 """
+
 from __future__ import annotations
 
-import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .export import (
     export_dagger,
@@ -35,15 +35,15 @@ class TrainingOrchestrator:
         self,
         data_dir: str = "data/trajectories",
         models_dir: str = "models",
-        config: Optional[RunPodConfig] = None,
+        config: RunPodConfig | None = None,
     ) -> None:
         self.data_dir = data_dir
         self.models_dir = models_dir
-        self.gpu_runner: Optional[GPUTrainingRunner] = None
+        self.gpu_runner: GPUTrainingRunner | None = None
         if config:
             self.gpu_runner = GPUTrainingRunner(config=config)
 
-    def export_datasets(self) -> Dict[str, Any]:
+    def export_datasets(self) -> dict[str, Any]:
         """Export training datasets from collected episodes.
 
         Returns counts for each dataset type.
@@ -54,7 +54,7 @@ class TrainingOrchestrator:
         if not episodes:
             return {"error": "No episodes found", "path": episodes_path}
 
-        results: Dict[str, Any] = {"total_episodes": len(episodes)}
+        results: dict[str, Any] = {"total_episodes": len(episodes)}
 
         # Export pairwise ranking data
         ranking_path = os.path.join(self.data_dir, "ranking_pairs.jsonl")
@@ -76,10 +76,10 @@ class TrainingOrchestrator:
 
     def train_ranker_local(
         self,
-        data_path: Optional[str] = None,
-        output_path: Optional[str] = None,
+        data_path: str | None = None,
+        output_path: str | None = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Train ranker model locally (CPU or available GPU).
 
         Args:
@@ -96,10 +96,10 @@ class TrainingOrchestrator:
 
     def train_verifier_local(
         self,
-        data_path: Optional[str] = None,
-        output_path: Optional[str] = None,
+        data_path: str | None = None,
+        output_path: str | None = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Train verifier model locally.
 
         Args:
@@ -114,7 +114,7 @@ class TrainingOrchestrator:
 
         return train(data_path=data, output_path=output, **kwargs)
 
-    def train_on_gpu(self, component: str = "ranker") -> Dict[str, Any]:
+    def train_on_gpu(self, component: str = "ranker") -> dict[str, Any]:
         """Train a component on a RunPod GPU.
 
         Args:
@@ -143,7 +143,7 @@ class TrainingOrchestrator:
             output_path=output,
         )
 
-    def run_full_pipeline(self, use_gpu: bool = False) -> Dict[str, Any]:
+    def run_full_pipeline(self, use_gpu: bool = False) -> dict[str, Any]:
         """Run the complete training pipeline.
 
         1. Export datasets from episodes
@@ -157,7 +157,7 @@ class TrainingOrchestrator:
         Returns:
             Pipeline results dict.
         """
-        results: Dict[str, Any] = {}
+        results: dict[str, Any] = {}
 
         # Step 1: Export
         results["export"] = self.export_datasets()

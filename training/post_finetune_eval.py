@@ -11,6 +11,7 @@ Usage:
         --out data/autocinema_trajectory_harvest/post_finetune_eval.json \
         --summary-out data/autocinema_trajectory_harvest/post_finetune_eval_summary.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,9 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from training.serve_model import DEFAULT_BASE_MODEL as SERVE_BASE_MODEL
-from training.serve_model import _DEFAULT_ADAPTER_PATH as DEFAULT_ADAPTER_PATH
-from training.serve_model import validate_adapter_artifacts
+from training.serve_model import _DEFAULT_ADAPTER_PATH as DEFAULT_ADAPTER_PATH, DEFAULT_BASE_MODEL as SERVE_BASE_MODEL, validate_adapter_artifacts
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "data" / "autocinema_trajectory_harvest" / "post_finetune_eval.json"
@@ -75,23 +74,10 @@ def _build_summary(
     success_rate = float(raw_report.get("success_rate") or (successes / num_tasks if num_tasks else 0.0))
     failures = max(0, num_tasks - successes)
     successful_episode_ids = [
-        str(
-            episode.get("episode_task_id")
-            or episode.get("task_id")
-            or episode.get("id")
-            or ""
-        )
-        for episode in episodes
-        if isinstance(episode, dict) and bool(episode.get("success"))
+        str(episode.get("episode_task_id") or episode.get("task_id") or episode.get("id") or "") for episode in episodes if isinstance(episode, dict) and bool(episode.get("success"))
     ]
     successful_episode_ids = [episode_id for episode_id in successful_episode_ids if episode_id]
-    use_cases = sorted(
-        {
-            str(episode.get("use_case") or "")
-            for episode in episodes
-            if isinstance(episode, dict) and episode.get("use_case")
-        }
-    )
+    use_cases = sorted({str(episode.get("use_case") or "") for episode in episodes if isinstance(episode, dict) and episode.get("use_case")})
 
     return {
         "model_endpoint": endpoint,
@@ -116,9 +102,7 @@ def _build_summary(
 def _validate_real_success(summary: dict[str, Any]) -> None:
     successful_episode_ids = summary.get("successful_episode_ids")
     if not isinstance(successful_episode_ids, list) or not successful_episode_ids:
-        raise RuntimeError(
-            "Post-finetune eval did not produce any real successful Autocinema episode; refusing to write summary."
-        )
+        raise RuntimeError("Post-finetune eval did not produce any real successful Autocinema episode; refusing to write summary.")
 
 
 def main() -> None:

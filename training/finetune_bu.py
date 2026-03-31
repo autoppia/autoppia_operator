@@ -12,6 +12,7 @@ Usage:
 
 Hardware requirement: A100 80GB (4-bit quantisation keeps memory < 40GB).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,7 +25,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -115,9 +116,10 @@ def _ensure_deps() -> None:
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_sft_jsonl(path: str) -> List[Dict[str, Any]]:
+
+def load_sft_jsonl(path: str) -> list[dict[str, Any]]:
     """Load HuggingFace-messages-format JSONL file."""
-    examples: List[Dict[str, Any]] = []
+    examples: list[dict[str, Any]] = []
     with open(path) as fh:
         for line in fh:
             line = line.strip()
@@ -130,12 +132,12 @@ def load_sft_jsonl(path: str) -> List[Dict[str, Any]]:
     return examples
 
 
-def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _write_train_metrics(output_dir: str, payload: Dict[str, Any]) -> None:
+def _write_train_metrics(output_dir: str, payload: dict[str, Any]) -> None:
     _write_json(Path(output_dir) / "train_metrics.json", payload)
 
 
@@ -174,7 +176,7 @@ class ProgressMetricsCallback:
 
         return _noop
 
-    def _base_payload(self, state: Any) -> Dict[str, Any]:
+    def _base_payload(self, state: Any) -> dict[str, Any]:
         return {
             "base_model": self.base_model,
             "epochs": self.epochs,
@@ -202,7 +204,7 @@ class ProgressMetricsCallback:
         _write_train_metrics(self.output_dir, payload)
         return control
 
-    def on_log(self, args: Any, state: Any, control: Any, logs: Optional[Dict[str, Any]] = None, **kwargs: Any) -> None:
+    def on_log(self, args: Any, state: Any, control: Any, logs: dict[str, Any] | None = None, **kwargs: Any) -> None:
         payload = self._base_payload(state)
         payload["status"] = "training"
         if isinstance(logs, dict):
@@ -312,7 +314,7 @@ def _build_sft_training_args(
 def train(
     data_path: str,
     output_dir: str,
-    val_data_path: Optional[str] = None,
+    val_data_path: str | None = None,
     base_model: str = MODEL_ID,
     epochs: int = 3,
     lr: float = 2e-4,
@@ -322,7 +324,7 @@ def train(
     grad_accum: int = 8,
     max_seq_len: int = 2048,
     bf16: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run LoRA fine-tuning on the bu-30b model.
 
     Returns dict with training metrics.
@@ -335,7 +337,7 @@ def train(
     from transformers import AutoTokenizer, BitsAndBytesConfig, TrainingArguments
 
     trl_module = importlib.import_module("trl")
-    SFTTrainer = getattr(trl_module, "SFTTrainer")
+    SFTTrainer = trl_module.SFTTrainer
     SFTConfig = getattr(trl_module, "SFTConfig", None)
 
     # --- Quantisation config ---
@@ -369,15 +371,17 @@ def train(
     trainable, total = model.get_nb_trainable_parameters()
     logger.info(
         "Trainable params: %s / %s (%.2f%%)",
-        f"{trainable:,}", f"{total:,}", 100 * trainable / total,
+        f"{trainable:,}",
+        f"{total:,}",
+        100 * trainable / total,
     )
 
     # --- Load data ---
     train_examples = load_sft_jsonl(data_path)
 
-    def _format_messages(example: Dict[str, Any]) -> str:
+    def _format_messages(example: dict[str, Any]) -> str:
         """Convert messages list to a single string for SFT."""
-        parts: List[str] = []
+        parts: list[str] = []
         for msg in example["messages"]:
             role = msg["role"]
             content = msg["content"]
@@ -389,7 +393,7 @@ def train(
     train_ds = Dataset.from_dict({"text": train_texts})
 
     val_ds = None
-    val_examples: List[Dict[str, Any]] = []
+    val_examples: list[dict[str, Any]] = []
     if val_data_path and os.path.exists(val_data_path):
         val_examples = load_sft_jsonl(val_data_path)
         val_texts = [_format_messages(ex) for ex in val_examples]
@@ -495,6 +499,7 @@ def train(
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     logging.basicConfig(

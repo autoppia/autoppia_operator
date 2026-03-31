@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from src.operator import fsm_operator, step_engine
 from src.operator.agents import StepEngine
-from src.operator.agents.step_engine.candidates import Candidate
-from src.operator.agents.step_engine.candidates import CandidateExtractor
 from src.operator.agents.step_engine import CanonicalBrowserState
+from src.operator.agents.step_engine.candidates import Candidate, CandidateExtractor
 from src.operator.agents.step_engine.state import AgentState
 
 
