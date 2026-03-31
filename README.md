@@ -2,6 +2,11 @@
 
 This repo is a minimal FastAPI web-agent service intended to run as a **miner** in the Autoppia web-agents subnet.
 
+Current state of the local training assets:
+- the only trusted fine-tuning dataset kept in-repo is `data/autocinema/login`
+- the only trusted local adapter kept in-repo is `models/bu-30b-login-500-lora`
+- old multi-use-case harvests, reward-model experiments, and demo-seedpack-derived data were removed
+
 ## What the validator runs
 
 The validator starts your container with:
@@ -211,6 +216,50 @@ python scripts/eval/generate_tasks.py --project-id autocinema --prompts-per-use-
 ```
 
 Outputs are written to `data/` (gitignored).
+
+## Autocinema Trajectory Harvest
+
+For fine-tuning, treat old score-only eval JSONs as weak evidence. The preferred
+dataset is a fresh, replayable harvest with persisted per-episode trace files.
+
+Recommended fresh collection flow:
+
+```bash
+python scripts/autocinema_harvest.py \
+  --run-eval \
+  --project-id autocinema \
+  --provider openai \
+  --model gpt-5.2 \
+  --repeat 3 \
+  --seed-start 7000 \
+  --task-concurrency 2 \
+  --include-reasoning \
+  --use-site-knowledge \
+  --use-local-html-context \
+  --out-dir data/autocinema_trajectory_harvest
+```
+
+This writes:
+- `data/autocinema_trajectory_harvest/summary.json`
+- `data/autocinema_trajectory_harvest/episodes.jsonl`
+- `data/autocinema_trajectory_harvest/collection_manifest.json`
+- `data/autocinema_trajectory_harvest/golden_seeds.json`
+- `data/autocinema_trajectory_harvest/raw_eval_runs/...`
+
+Important:
+- The harvest script now defaults to `--require-trace-files`.
+- If an old eval result has no persisted trace bundle, it will be excluded from the replayable dataset.
+- `golden_seeds.json` lists the observed `score=1.0` seeds by use case, but those are historical winners, not guarantees. Re-verify them with a fresh eval before treating them as stable training goldens.
+
+If you already have a fresh eval result plus a matching trace root, aggregate them explicitly:
+
+```bash
+python scripts/autocinema_harvest.py \
+  --project-id autocinema \
+  --result-glob data/autocinema_trajectory_harvest/raw_eval_runs/eval_autocinema_*.json \
+  --trace-root data/autocinema_trajectory_harvest/raw_eval_runs/traces_autocinema_20260326T120000Z \
+  --out-dir data/autocinema_trajectory_harvest
+```
 
 
 ## Model comparison
@@ -482,3 +531,58 @@ python scripts/sn36_ops.py deploy-smoke
 This clones the configured repo using subnet clone rules, starts `uvicorn main:app`, and checks `/health`, `/capabilities`, and `/act`.
 
 If `SUBNET_MINER_GITHUB_URL` or `SN36_GITHUB_URL` is set, `python scripts/sn36_ops.py preflight` will run this deploy smoke automatically.
+
+## Reward Data Pipeline
+
+Reward-model artifacts should be derived from the harvested trajectories, not rebuilt ad hoc in `/tmp`.
+
+Canonical layout:
+
+```text
+data/autocinema_trajectory_harvest/
+  episodes.jsonl
+  collection_manifest.json
+  sft/
+  reward/
+    manifest.json
+    dataset/
+      step_reward.jsonl
+      step_reward_dense.jsonl
+      preference_pairs.jsonl
+      dense_label_candidates.jsonl
+      manifest.json
+    judges/
+      benchmark_report.json
+      trained_reward_mlp/
+        model.pt
+        manifest.json
+        train_rows.jsonl
+        val_rows.jsonl
+```
+
+Prepare or refresh the organized reward pipeline with:
+
+```bash
+python scripts/eval/prepare_reward_pipeline.py \
+  --episodes data/autocinema_trajectory_harvest/episodes.jsonl
+```
+
+This command:
+- reuses existing reward artifacts when the harvest source signature has not changed
+- writes all reward data under `data/autocinema_trajectory_harvest/reward/`
+- trains the structured reward baseline on an episode-group holdout split
+- writes a benchmark report for the heuristic and structured judges
+- exports `dense_label_candidates.jsonl` for future teacher relabel / LLM judge passes
+
+To add an LLM judge benchmark on top of the prepared artifacts:
+
+```bash
+OPENAI_API_KEY=... python scripts/eval/benchmark_reward_pipeline.py \
+  --episodes data/autocinema_trajectory_harvest/episodes.jsonl \
+  --out-dir data/autocinema_trajectory_harvest/reward \
+  --llm-model gpt-5.2 \
+  --llm-sample-per-label 6
+```
+
+Current caveat:
+- the harvested reward dataset still has no `local_progress` rows, so it is good for plumbing and judge comparison, but not yet good enough for dense reward shaping.

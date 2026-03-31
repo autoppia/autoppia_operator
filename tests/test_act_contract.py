@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from src.operator import agent, fsm_operator
+from src.operator import agent, step_engine
 
 
 def test_act_http_response_is_canonical_single_step(monkeypatch) -> None:
@@ -10,14 +10,7 @@ def test_act_http_response_is_canonical_single_step(monkeypatch) -> None:
         return {
             "protocol_version": "1.0",
             "actions": [
-                {
-                    "type": "ClickAction",
-                    "selector": {
-                        "type": "attributeValueSelector",
-                        "attribute": "id",
-                        "value": "go",
-                    },
-                },
+                {"type": "ClickAction", "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "go"}},
                 {"type": "DoneAction", "reason": "finished"},
             ],
             "reasoning": "pick next",
@@ -44,7 +37,6 @@ def test_act_http_response_is_canonical_single_step(monkeypatch) -> None:
     assert isinstance(body.get("tool_calls"), list)
     assert len(body["tool_calls"]) == 1
     assert body["tool_calls"][0]["name"] == "browser.click"
-    assert isinstance(body.get("state_out"), dict)
     assert body["done"] is True
 
 
@@ -75,9 +67,7 @@ def test_act_http_response_sets_done_from_done_action(monkeypatch) -> None:
     assert body["tool_calls"] == []
 
 
-def test_act_http_response_sets_done_and_result_from_done_action_content(
-    monkeypatch,
-) -> None:
+def test_act_http_response_sets_done_and_result_from_done_action_content(monkeypatch) -> None:
     async def _fake_act_from_payload(payload):
         return {
             "actions": [{"type": "DoneAction", "content": "Portfolio value is $120"}],
@@ -117,7 +107,6 @@ def test_act_http_response_passthroughs_canonical_tool_calls(monkeypatch) -> Non
             ],
             "content": "Navigating to docs",
             "done": False,
-            "state_out": {"phase": "navigate"},
         }
 
     monkeypatch.setattr(agent.OPERATOR, "act_from_payload", _fake_act_from_payload)
@@ -140,12 +129,9 @@ def test_act_http_response_passthroughs_canonical_tool_calls(monkeypatch) -> Non
     assert body["tool_calls"] == [{"name": "browser.navigate", "arguments": {"url": "https://example.com/docs"}}]
     assert body["content"] is None
     assert body["done"] is False
-    assert body["state_out"] == {"phase": "navigate"}
 
 
-def test_act_http_response_normalizes_browser_select_tool_call_to_value(
-    monkeypatch,
-) -> None:
+def test_act_http_response_normalizes_browser_select_tool_call_to_value(monkeypatch) -> None:
     async def _fake_act_from_payload(payload):
         return {
             "protocol_version": "1.0",
@@ -153,17 +139,12 @@ def test_act_http_response_normalizes_browser_select_tool_call_to_value(
                 {
                     "name": "browser.select_dropdown",
                     "arguments": {
-                        "selector": {
-                            "type": "attributeValueSelector",
-                            "attribute": "id",
-                            "value": "genre",
-                        },
+                        "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre"},
                         "text": "Comedy",
                     },
                 }
             ],
             "done": False,
-            "state_out": {"phase": "filter"},
         }
 
     monkeypatch.setattr(agent.OPERATOR, "act_from_payload", _fake_act_from_payload)
@@ -186,12 +167,7 @@ def test_act_http_response_normalizes_browser_select_tool_call_to_value(
         {
             "name": "browser.select_dropdown",
             "arguments": {
-                "selector": {
-                    "type": "attributeValueSelector",
-                    "attribute": "id",
-                    "value": "genre",
-                    "case_sensitive": False,
-                },
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "genre", "case_sensitive": False},
                 "text": "Comedy",
             },
         }
@@ -204,20 +180,7 @@ def test_act_http_response_passthroughs_metrics_and_usage(monkeypatch) -> None:
             "protocol_version": "1.0",
             "tool_calls": [{"name": "browser.scroll", "arguments": {"direction": "down"}}],
             "done": False,
-            "state_out": {"mode": "NAV"},
-            "metrics": {
-                "llm": {
-                    "llm_calls": 1,
-                    "llm_usages": [
-                        {
-                            "prompt_tokens": 11,
-                            "completion_tokens": 7,
-                            "total_tokens": 18,
-                        }
-                    ],
-                    "model": "gpt-5.2",
-                }
-            },
+            "metrics": {"llm": {"llm_calls": 1, "llm_usages": [{"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}], "model": "gpt-5.2"}},
             "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
             "total_tokens": 18,
             "model": "gpt-5.2",
@@ -254,25 +217,20 @@ def test_capabilities_exposes_protocol_and_tools() -> None:
     body = resp.json()
 
     assert isinstance(body.get("protocol_version"), str)
+    assert body.get("primary_endpoint") == "/step"
     assert body.get("act_endpoint") == "/act"
+    assert body.get("step_endpoint") == "/step"
     assert isinstance(body.get("tool_definitions"), list)
     assert body.get("supports_request_user_input") is True
-    assert body.get("supports_state_roundtrip") is True
 
 
 def test_step_endpoint_aliases_act_behavior(monkeypatch) -> None:
     async def _fake_step_from_payload(payload):
         return {
             "protocol_version": "1.0",
-            "tool_calls": [
-                {
-                    "name": "browser.navigate",
-                    "arguments": {"url": "https://example.com"},
-                }
-            ],
+            "tool_calls": [{"name": "browser.navigate", "arguments": {"url": "https://example.com"}}],
             "content": "navigating",
             "done": False,
-            "state_out": {"phase": "nav"},
         }
 
     monkeypatch.setattr(agent.OPERATOR, "step_from_payload", _fake_step_from_payload)
@@ -293,19 +251,10 @@ def test_step_endpoint_aliases_act_behavior(monkeypatch) -> None:
     assert body_step["tool_calls"] == [{"name": "browser.navigate", "arguments": {"url": "https://example.com"}}]
 
 
-def test_agent_step_method_aliases_act(monkeypatch) -> None:
+def test_agent_act_method_aliases_step(monkeypatch) -> None:
     captured = {}
 
-    async def _fake_act(
-        *,
-        task,
-        snapshot_html,
-        screenshot=None,
-        url,
-        step_index,
-        history=None,
-        state=None,
-    ):
+    async def _fake_step(*, task, snapshot_html, screenshot=None, url, step_index, history=None, state=None):
         captured["task"] = task
         captured["snapshot_html"] = snapshot_html
         captured["screenshot"] = screenshot
@@ -315,13 +264,13 @@ def test_agent_step_method_aliases_act(monkeypatch) -> None:
         captured["state"] = state
         return ["ok"]
 
-    monkeypatch.setattr(agent.OPERATOR, "act", _fake_act)
+    monkeypatch.setattr(agent.OPERATOR, "step", _fake_step)
 
     import asyncio
     from types import SimpleNamespace
 
     out = asyncio.run(
-        agent.OPERATOR.step(
+        agent.OPERATOR.act(
             task=SimpleNamespace(id="t", prompt="p"),
             snapshot_html="<html></html>",
             screenshot=None,
@@ -345,9 +294,10 @@ def test_act_from_payload_forwards_screenshot_to_fsm(monkeypatch) -> None:
     class _DummyFSM:
         def run(self, *, payload, model_override=""):
             captured["payload"] = payload
-            return {"protocol_version": "1.0", "actions": [], "state_out": {}}
+            return {"protocol_version": "1.0", "actions": [], "internal_state": {}}
 
-    monkeypatch.setattr(fsm_operator, "_FSM_OPERATOR", _DummyFSM())
+    monkeypatch.setattr(step_engine, "_STEP_ENGINE", _DummyFSM())
+    monkeypatch.setattr(step_engine, "_FSM_OPERATOR", step_engine._STEP_ENGINE)
 
     import asyncio
 
@@ -365,4 +315,4 @@ def test_act_from_payload_forwards_screenshot_to_fsm(monkeypatch) -> None:
         )
     )
 
-    assert captured["payload"]["screenshot"] == "data:image/png;base64,abc123"
+    assert captured["payload"].screenshot == "data:image/png;base64,abc123"

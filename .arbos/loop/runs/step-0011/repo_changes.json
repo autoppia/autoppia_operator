@@ -1,0 +1,49 @@
+{
+  "added": [
+    ".arbos/loop/executions/run-20260326-175703.json",
+    ".arbos/loop/runs/step-0011/events.jsonl",
+    ".arbos/loop/runs/step-0011/last-agent-message.txt",
+    ".arbos/loop/runs/step-0011/prompt.md",
+    ".arbos/loop/runs/step-0011/repo-before.json",
+    ".arbos/loop/runs/step-0011/response.json",
+    ".arbos/loop/runs/step-0011/stderr.txt",
+    ".arbos/loop/runs/step-0012/events.jsonl",
+    ".arbos/loop/runs/step-0012/prompt.md",
+    ".arbos/loop/runs/step-0012/repo-before.json",
+    ".arbos/loop/runs/step-0012/stderr.txt",
+    ".arbos/metrics.py"
+  ],
+  "removed": [],
+  "changed": [
+    ".arbos/TARGET_REPO.txt",
+    ".arbos/arbos.yml",
+    ".arbos/loop/STATUS.json",
+    ".arbos/loop/response.schema.json",
+    ".arbos/loop/supervisor.log",
+    ".pytest_cache/v/cache/nodeids"
+  ],
+  "all": [
+    ".arbos/TARGET_REPO.txt",
+    ".arbos/arbos.yml",
+    ".arbos/loop/STATUS.json",
+    ".arbos/loop/executions/run-20260326-175703.json",
+    ".arbos/loop/response.schema.json",
+    ".arbos/loop/runs/step-0011/events.jsonl",
+    ".arbos/loop/runs/step-0011/last-agent-message.txt",
+    ".arbos/loop/runs/step-0011/prompt.md",
+    ".arbos/loop/runs/step-0011/repo-before.json",
+    ".arbos/loop/runs/step-0011/response.json",
+    ".arbos/loop/runs/step-0011/stderr.txt",
+    ".arbos/loop/runs/step-0012/events.jsonl",
+    ".arbos/loop/runs/step-0012/prompt.md",
+    ".arbos/loop/runs/step-0012/repo-before.json",
+    ".arbos/loop/runs/step-0012/stderr.txt",
+    ".arbos/loop/supervisor.log",
+    ".arbos/metrics.py",
+    ".pytest_cache/v/cache/nodeids"
+  ],
+  "bytes_added": 1693549,
+  "bytes_removed": 0,
+  "bytes_delta": 1694545,
+  "bytes_modified": 1694545
+}

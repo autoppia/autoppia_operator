@@ -1,0 +1,3 @@
+{"name": "01 repo contract", "rc": 0, "passed": true}
+{"name": "02 daryxx eval smoke", "rc": 1, "passed": false}
+{"name": "03 eval migration progress", "rc": 1, "passed": false}

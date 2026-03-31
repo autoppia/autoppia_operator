@@ -1,183 +1,132 @@
-"""DAgger (Dataset Aggregation) oracle for querying an expert on uncertain states.
-
-The DAgger oracle intercepts action selection when the agent is uncertain,
-in a loop, or about to take an irreversible action. It queries a stronger
-model for the preferred action and records the correction for training.
-"""
 from __future__ import annotations
 
 import json
-import os
-import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
-from .dagger_config import DAggerConfig
-from .schema import FullStepRecord
+from training.focus_pipeline import DEFAULT_TASK_CACHE, build_prompt_override, build_task_cache_override, run_eval_attempt
+from training.layout import use_case_layout
+from training.use_case_registry import dagger_extra_lines
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-class DAggerOracle:
-    """Oracle that queries an expert model on uncertain/failed states.
+def focus_root(*, use_case: str) -> Path:
+    return use_case_layout(repo_root=REPO_ROOT, web_project="autocinema", use_case=use_case).root
 
-    Integrates with the FSM engine to provide expert corrections.
-    Records (state, expert_action) pairs for training set aggregation.
-    """
 
-    def __init__(
-        self,
-        config: Optional[DAggerConfig] = None,
-        expert_call: Optional[Callable[..., Dict[str, Any]]] = None,
-        output_dir: str = "data/trajectories",
-    ) -> None:
-        self.config = config or DAggerConfig()
-        self._expert_call = expert_call
-        self.output_dir = output_dir
-        self._query_count: int = 0
-        self._episode_query_count: int = 0
-        self._corrections: List[Dict[str, Any]] = []
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-    def reset_episode(self) -> None:
-        """Reset per-episode counters."""
-        self._episode_query_count = 0
 
-    def should_query(
-        self,
-        uncertainty: float = 0.0,
-        loop_count: int = 0,
-        steps_without_progress: int = 0,
-        action_type: str = "",
-    ) -> Tuple[bool, str]:
-        """Determine whether to query the expert for this state.
+def _load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
 
-        Returns (should_query, reason).
-        """
-        if not self.config.enabled:
-            return False, "dagger_disabled"
 
-        if self._query_count >= self.config.max_total_queries:
-            return False, "global_budget_exhausted"
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-        if self._episode_query_count >= self.config.max_queries_per_episode:
-            return False, "episode_budget_exhausted"
 
-        if uncertainty >= self.config.uncertainty_threshold:
-            return True, f"high_uncertainty({uncertainty:.2f})"
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-        if loop_count >= self.config.loop_threshold:
-            return True, f"loop_detected({loop_count})"
 
-        if steps_without_progress >= self.config.no_progress_threshold:
-            return True, f"no_progress({steps_without_progress})"
+def _load_results(summary_path: Path) -> list[dict[str, Any]]:
+    payload = _load_json(summary_path)
+    results = payload.get("results")
+    return [row for row in results if isinstance(row, dict)] if isinstance(results, list) else []
 
-        if self.config.query_on_irreversible and self.config.irreversible_action_types:
-            if action_type in self.config.irreversible_action_types:
-                return True, f"irreversible_action({action_type})"
 
-        return False, "not_needed"
+def run_dagger_round(
+    *,
+    use_case: str,
+    source_summary_path: Path,
+    split_name: str,
+    teacher_provider: str = "openai",
+    teacher_model: str = "gpt-5.4",
+    max_steps: int = 12,
+    task_cache_path: Path | None = None,
+    env_overrides: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    normalized_use_case = str(use_case or "").strip().upper()
+    source_results = _load_results(source_summary_path)
+    failed = [row for row in source_results if not bool(row.get("success"))]
+    output_root = focus_root(use_case=normalized_use_case) / "dagger" / split_name
+    correction_rows: list[dict[str, Any]] = []
+    merged_rows: list[dict[str, Any]] = []
 
-    def query_expert(
-        self,
-        task: str,
-        state: Dict[str, Any],
-        candidates: List[Dict[str, Any]],
-        reason: str = "",
-    ) -> Optional[Dict[str, Any]]:
-        """Query the expert model for the preferred action.
-
-        Args:
-            task: Task description.
-            state: Current agent state.
-            candidates: Available candidates.
-            reason: Why the query is triggered.
-
-        Returns:
-            Expert's preferred action dict, or None if query fails.
-        """
-        if self._expert_call is None:
-            return None
-
-        self._query_count += 1
-        self._episode_query_count += 1
-
-        # Build expert prompt
-        prompt = self._build_expert_prompt(task, state, candidates)
-
-        try:
-            response = self._expert_call(
-                prompt=prompt,
-                model=self.config.expert_model,
-            )
-            expert_action = self._parse_expert_response(response, candidates)
-
-            # Record the correction
-            correction = {
-                "task": task,
-                "state_summary": {
-                    "url": state.get("url", ""),
-                    "step_index": state.get("step_index", 0),
-                },
-                "candidate_count": len(candidates),
-                "expert_action": expert_action,
-                "reason": reason,
-                "timestamp": time.time(),
-            }
-            self._corrections.append(correction)
-            return expert_action
-
-        except Exception:
-            return None
-
-    def _build_expert_prompt(
-        self,
-        task: str,
-        state: Dict[str, Any],
-        candidates: List[Dict[str, Any]],
-    ) -> str:
-        """Build a prompt for the expert oracle."""
-        cand_lines = []
-        for i, c in enumerate(candidates[:15]):
-            text = str(c.get("text", ""))[:80]
-            ctype = c.get("element_type", "")
-            role = c.get("role", "")
-            cand_lines.append(f"  [{i}] {ctype}/{role}: {text}")
-
-        return (
-            f"Task: {task}\n"
-            f"URL: {state.get('url', '')}\n"
-            f"Step: {state.get('step_index', 0)}\n"
-            f"Candidates:\n" + "\n".join(cand_lines) + "\n\n"
-            f"Which candidate should be selected? Reply with just the index number."
+    for row in failed:
+        seed = int(row.get("seed") or 0)
+        failure_category = str(row.get("failure_category") or "")
+        extra_lines = dagger_extra_lines(use_case=normalized_use_case, failure_category=failure_category)
+        prompt_override = build_prompt_override(use_case=normalized_use_case, extra_lines=extra_lines)
+        out_task_cache = output_root / "task_cache" / f"{normalized_use_case.lower()}_seed_{seed:04d}.json"
+        build_task_cache_override(
+            source_task_cache=Path(task_cache_path or DEFAULT_TASK_CACHE).resolve(),
+            use_case=normalized_use_case,
+            prompt_override=prompt_override,
+            out_path=out_task_cache,
         )
+        corrected = run_eval_attempt(
+            use_case=normalized_use_case,
+            seed=seed,
+            attempt_name="dagger_teacher",
+            output_root=output_root,
+            provider=teacher_provider,
+            model=teacher_model,
+            max_steps=max_steps,
+            task_cache=out_task_cache,
+            env_overrides=dict(env_overrides or {}),
+        )
+        correction_row = {
+            "seed": seed,
+            "split": split_name,
+            "use_case": normalized_use_case,
+            "failure_category": failure_category,
+            "teacher_success": corrected.is_gold,
+            "teacher_result_path": str(corrected.out_path),
+            "teacher_trace_dir": str(corrected.trace_dir),
+            "teacher_trace_file": str((corrected.row or {}).get("trace_file") or ""),
+            "teacher_episode_task_id": str((corrected.row or {}).get("episode_task_id") or ""),
+            "generated_at": _now_utc(),
+        }
+        correction_rows.append(correction_row)
+        if corrected.row and corrected.is_gold:
+            merged_rows.append(corrected.row)
 
-    def _parse_expert_response(
-        self,
-        response: Dict[str, Any],
-        candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
-        """Parse expert response to extract the chosen candidate."""
-        text = str(response.get("text", response.get("content", "")))
-        # Extract first integer from response
-        for token in text.split():
-            token = token.strip("[]().,")
-            if token.isdigit():
-                idx = int(token)
-                if 0 <= idx < len(candidates):
-                    return candidates[idx]
-        return None
+    corrections_path = output_root / "corrections.jsonl"
+    merged_path = output_root / "teacher_gold_episodes.jsonl"
+    summary_path = output_root / "summary.json"
+    _write_jsonl(corrections_path, correction_rows)
+    _write_jsonl(merged_path, merged_rows)
+    summary = {
+        "split": split_name,
+        "use_case": normalized_use_case,
+        "source_summary_path": str(source_summary_path),
+        "failed_seed_count": len(failed),
+        "failed_seeds": [int(row.get("seed") or 0) for row in failed],
+        "teacher_successes": sum(1 for row in correction_rows if row.get("teacher_success")),
+        "teacher_failures": sum(1 for row in correction_rows if not row.get("teacher_success")),
+        "generated_at": _now_utc(),
+    }
+    _write_json(summary_path, summary)
+    return summary
 
-    def save_corrections(self) -> int:
-        """Save all collected corrections to disk. Returns count saved."""
-        if not self._corrections:
-            return 0
-        os.makedirs(self.output_dir, exist_ok=True)
-        path = os.path.join(self.output_dir, "dagger_corrections.jsonl")
-        with open(path, "a") as f:
-            for corr in self._corrections:
-                f.write(json.dumps(corr, ensure_ascii=False, default=str) + "\n")
-        count = len(self._corrections)
-        self._corrections.clear()
-        return count
 
-    @property
-    def total_queries(self) -> int:
-        """Total number of expert queries made."""
-        return self._query_count
+def merge_dagger_episodes(*, base_episodes_path: Path, dagger_teacher_path: Path, output_path: Path) -> dict[str, Any]:
+    base_rows = [json.loads(line) for line in base_episodes_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    teacher_rows = [json.loads(line) for line in dagger_teacher_path.read_text(encoding="utf-8").splitlines() if line.strip()] if dagger_teacher_path.exists() else []
+    merged = list(base_rows)
+    merged.extend(row for row in teacher_rows if isinstance(row, dict))
+    _write_jsonl(output_path, merged)
+    return {
+        "base_rows": len(base_rows),
+        "teacher_rows": len(teacher_rows),
+        "merged_rows": len(merged),
+        "output_path": str(output_path),
+    }

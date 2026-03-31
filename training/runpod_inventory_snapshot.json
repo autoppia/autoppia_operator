@@ -1,0 +1,225 @@
+{
+  "observed_at": "2026-03-26T16:29:16Z",
+  "provider": "runpod",
+  "observed_via": "runpod graphql api",
+  "account_balance_usd": 696.3528833395,
+  "current_spend_per_hour_usd": 1.589,
+  "pods": [
+    {
+      "id": "2w4f19x1jn4hp7",
+      "name": "mcu-agent-openports",
+      "desiredStatus": "EXITED",
+      "imageName": "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel",
+      "gpuCount": 1,
+      "vcpuCount": 8,
+      "memoryInGb": 54,
+      "volumeInGb": 250,
+      "containerDiskInGb": 100,
+      "costPerHr": 0.33,
+      "runtime": null,
+      "machine": {
+        "gpuDisplayName": "RTX A6000"
+      }
+    },
+    {
+      "id": "3o0teo624v5nb0",
+      "name": "A Control Pod",
+      "desiredStatus": "RUNNING",
+      "imageName": "runpod/base:0.5.1-cpu",
+      "gpuCount": 0,
+      "vcpuCount": 2,
+      "memoryInGb": 8,
+      "volumeInGb": 0,
+      "containerDiskInGb": 20,
+      "costPerHr": 0.08,
+      "runtime": {
+        "uptimeInSeconds": 6238320,
+        "ports": [
+          {
+            "ip": "213.173.105.82",
+            "isIpPublic": true,
+            "privatePort": 21045,
+            "publicPort": 21045,
+            "type": "tcp"
+          },
+          {
+            "ip": "213.173.105.82",
+            "isIpPublic": true,
+            "privatePort": 21047,
+            "publicPort": 21047,
+            "type": "tcp"
+          },
+          {
+            "ip": "213.173.105.82",
+            "isIpPublic": true,
+            "privatePort": 21050,
+            "publicPort": 21050,
+            "type": "tcp"
+          },
+          {
+            "ip": "213.173.105.82",
+            "isIpPublic": true,
+            "privatePort": 21052,
+            "publicPort": 21052,
+            "type": "tcp"
+          },
+          {
+            "ip": "100.65.19.241",
+            "isIpPublic": false,
+            "privatePort": 19123,
+            "publicPort": 60000,
+            "type": "http"
+          },
+          {
+            "ip": "213.173.105.82",
+            "isIpPublic": true,
+            "privatePort": 21044,
+            "publicPort": 21044,
+            "type": "tcp"
+          },
+          {
+            "ip": "213.173.105.82",
+            "isIpPublic": true,
+            "privatePort": 21046,
+            "publicPort": 21046,
+            "type": "tcp"
+          },
+          {
+            "ip": "213.173.105.82",
+            "isIpPublic": true,
+            "privatePort": 21048,
+            "publicPort": 21048,
+            "type": "tcp"
+          },
+          {
+            "ip": "213.173.105.82",
+            "isIpPublic": true,
+            "privatePort": 21049,
+            "publicPort": 21049,
+            "type": "tcp"
+          },
+          {
+            "ip": "213.173.105.82",
+            "isIpPublic": true,
+            "privatePort": 21051,
+            "publicPort": 21051,
+            "type": "tcp"
+          },
+          {
+            "ip": "213.173.105.82",
+            "isIpPublic": true,
+            "privatePort": 22,
+            "publicPort": 21043,
+            "type": "tcp"
+          }
+        ]
+      },
+      "machine": {
+        "gpuDisplayName": "unknown"
+      }
+    },
+    {
+      "id": "59dd4g1snevkqs",
+      "name": "bu-30b-a3b-bootstrap",
+      "desiredStatus": "EXITED",
+      "imageName": "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel",
+      "gpuCount": 1,
+      "vcpuCount": 16,
+      "memoryInGb": 125,
+      "volumeInGb": 80,
+      "containerDiskInGb": 100,
+      "costPerHr": 1.39,
+      "runtime": null,
+      "machine": {
+        "gpuDisplayName": "A100 PCIe"
+      }
+    },
+    {
+      "id": "x38f1yxpmngocu",
+      "name": "bu-30b-a3b-bootstrap-arbos-r3",
+      "desiredStatus": "RUNNING",
+      "imageName": "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel",
+      "gpuCount": 1,
+      "vcpuCount": 16,
+      "memoryInGb": 125,
+      "volumeInGb": 80,
+      "containerDiskInGb": 100,
+      "costPerHr": 1.39,
+      "runtime": {
+        "uptimeInSeconds": 3894,
+        "ports": [
+          {
+            "ip": "100.65.31.93",
+            "isIpPublic": false,
+            "privatePort": 19123,
+            "publicPort": 60292,
+            "type": "http"
+          },
+          {
+            "ip": "216.81.151.54",
+            "isIpPublic": true,
+            "privatePort": 22,
+            "publicPort": 17345,
+            "type": "tcp"
+          },
+          {
+            "ip": "100.65.31.93",
+            "isIpPublic": false,
+            "privatePort": 8000,
+            "publicPort": 60291,
+            "type": "http"
+          }
+        ]
+      },
+      "machine": {
+        "gpuDisplayName": "A100 PCIe"
+      }
+    }
+  ],
+  "resume_attempt": {
+    "attempted": true,
+    "attempted_at": "2026-03-26T14:45:33Z",
+    "result": "failed",
+    "error": "There are not enough free GPUs on the host machine to start this pod."
+  },
+  "capacity_attempts": [
+    {
+      "attempted_at": "2026-03-26T14:45:33Z",
+      "action": "resume_existing_pod",
+      "target_pod_id": "59dd4g1snevkqs",
+      "gpu_type": "NVIDIA A100 80GB PCIe",
+      "result": "failed",
+      "error": "There are not enough free GPUs on the host machine to start this pod."
+    },
+    {
+      "attempted_at": "2026-03-26T14:45:33Z",
+      "action": "create_new_pod",
+      "target_pod_name": "bu-30b-a3b-bootstrap-arbos",
+      "target_pod_id": "s7hx99y7tg1tld",
+      "gpu_type": "NVIDIA A100 80GB PCIe",
+      "cloud_type": "SECURE",
+      "result": "running_pending_runtime"
+    },
+    {
+      "attempted_at": "2026-03-26T15:05:00Z",
+      "action": "restart_existing_pod",
+      "target_pod_name": "bu-30b-a3b-bootstrap-arbos",
+      "target_pod_id": "s7hx99y7tg1tld",
+      "gpu_type": "NVIDIA A100 80GB PCIe",
+      "result": "running_pending_runtime",
+      "observed_at": "2026-03-26T15:06:16Z",
+      "error": "Pod returned to desiredStatus=RUNNING after stop/start, but GraphQL still reported runtime=null and no SSH metadata after four follow-up polls."
+    },
+    {
+      "attempted_at": "2026-03-26T15:08:34Z",
+      "action": "create_replacement_pod",
+      "target_pod_name": "bu-30b-a3b-bootstrap-arbos-r2",
+      "target_pod_id": "lgivqago326vr0",
+      "gpu_type": "NVIDIA A100 80GB PCIe",
+      "cloud_type": "SECURE",
+      "result": "running_pending_runtime",
+      "observed_at": "2026-03-26T15:08:59Z",
+      "via": "runpod graphql mutation"
+    }
+  ]
+}

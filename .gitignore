@@ -55,7 +55,9 @@ instance/
 .DS_Store
 Thumbs.db
 *.log
-data/
+data/*
+!data/autocinema_trajectory_harvest/
+!data/autocinema_trajectory_harvest/**
 Pipfile.lock  # Recommended to be included in version control per pypa/pipenv#598
 
 # Jupyter Notebook

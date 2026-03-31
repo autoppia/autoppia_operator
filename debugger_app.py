@@ -355,8 +355,9 @@ class ReplayManager:
         from autoppia_iwa.src.execution.actions.base import BaseAction
 
         import eval as eval_mod
+        from src.operator.eval.session import build_task_execution_session
 
-        previous_headless = getattr(eval_mod, "EVALUATOR_HEADLESS", True)
+        getattr(eval_mod, "EVALUATOR_HEADLESS", True)
         episode_meta = episode_payload.get("episode") if isinstance(episode_payload.get("episode"), dict) else {}
         episode_task_id = str(episode_meta.get("episode_task_id") or "")
         task_id = str(episode_meta.get("task_id") or "")
@@ -368,44 +369,30 @@ class ReplayManager:
             if not isinstance(task_payload, dict):
                 raise RuntimeError(f"task_not_found_in_cache:{task_id}")
             task = Task(**task_payload)
-            eval_mod.EVALUATOR_HEADLESS = False
-            evaluator = eval_mod._ScopedAsyncStatefulEvaluator(
+            evaluator = build_task_execution_session(
                 task=task,
                 web_agent_id=web_agent_id,
                 validator_id=validator_id,
                 enable_score_cheating=False,
                 capture_screenshot=False,
+                headless=False,
             )
             self._evaluator = evaluator
             step_result = await evaluator.reset()
-            self._touch(
-                state="running",
-                current_url=str(step_result.snapshot.url),
-                episode_task_id=episode_task_id,
-            )
+            self._touch(state="running", current_url=str(step_result.snapshot.url), episode_task_id=episode_task_id)
             for idx, step in enumerate(episode_payload.get("steps") or []):
                 if stop_after_step is not None and idx > int(stop_after_step):
                     break
                 await self._wait_turn()
                 actions = step.get("actions") if isinstance(step, dict) else []
-                self._touch(
-                    current_step_index=int(idx),
-                    current_action_index=-1,
-                    current_url=str(step_result.snapshot.url),
-                    state="running",
-                )
+                self._touch(current_step_index=int(idx), current_action_index=-1, current_url=str(step_result.snapshot.url), state="running")
                 for action_idx, action_item in enumerate(actions if isinstance(actions, list) else []):
                     await self._wait_turn()
                     raw_action = (action_item.get("raw") if isinstance(action_item, dict) else None) or action_item
                     action = BaseAction.create_action(raw_action) if isinstance(raw_action, dict) else None
                     if action is None:
                         raise RuntimeError(f"action_rehydrate_failed step={idx} action={action_idx}")
-                    self._touch(
-                        current_step_index=int(idx),
-                        current_action_index=int(action_idx),
-                        current_url=str(step_result.snapshot.url),
-                        action_type=str(getattr(action, "type", "")),
-                    )
+                    self._touch(current_step_index=int(idx), current_action_index=int(action_idx), current_url=str(step_result.snapshot.url), action_type=str(getattr(action, "type", "")))
                     step_result = await evaluator.step(action)
                     self._touch(current_url=str(step_result.snapshot.url))
                 await asyncio.sleep(0.15)
@@ -420,7 +407,6 @@ class ReplayManager:
                 with contextlib.suppress(Exception):
                     await self._evaluator.close()
             self._evaluator = None
-            eval_mod.EVALUATOR_HEADLESS = previous_headless
 
 
 REPLAY = ReplayManager()
@@ -469,11 +455,7 @@ async def api_replay_start(
         raise HTTPException(status_code=400, detail="episode_task_id_required")
     episode_payload = _load_episode(path, episode_task_id)
     step_index = payload.get("step_index")
-    status = await REPLAY.start(
-        trace_dir=path,
-        episode_payload=episode_payload,
-        step_index=(int(step_index) if step_index is not None else None),
-    )
+    status = await REPLAY.start(trace_dir=path, episode_payload=episode_payload, step_index=(int(step_index) if step_index is not None else None))
     return JSONResponse(_jsonable(status))
 
 

@@ -1,0 +1,16 @@
+{
+  "rc": "1",
+  "verdict": "TESTS_FAIL",
+  "decision": "deny",
+  "score": null,
+  "why": "",
+  "blocking_issues": [],
+  "next_actions": [],
+  "tail": [
+    "[rc=0]",
+    "[rc=0]",
+    "[rc=1]",
+    "TESTS_FAIL"
+  ],
+  "check_crashed": false
+}

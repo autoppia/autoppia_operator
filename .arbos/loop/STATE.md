@@ -1,0 +1,20 @@
+## Working Memory
+
+Harvest target remains satisfied on `arbos` with acceptance checks green. The only notable runtime wrinkle from prior context is the local demo-web backend/reset path on `localhost:8090`; if a new iteration is required, debug that environment path first before touching harvest artifacts.
+
+## Current Blockers
+
+- (none)
+
+## Next Best Actions
+
+- Continue from the current best hypothesis without re-reading the whole repo.
+
+## Recent History
+
+- step 7: Last supervisor decision: DENY | outcome=TESTS_FAIL. | check_ok=False | codex_rc=0
+- step 9: Extended `scripts/autocinema_harvest.py` with a demo-seedpack bootstrap path that emits replayable per-use-case eval results, trace indices, trace files, and correction/advice metadata, then rebuilt `data/autocinema_trajectory_harvest/` and refreshed the SFT export. Updated `.gitignore` so the harvest dataset can live in the repo instead of staying hidden under the global `data/` ignore. The rebuilt summary now reports 176 replayable episodes with 160 successes and 16 retained failures, and every Autocinema use case has 11 attempts, 10 distinct successful seeds, and 10 golden seeds. | outcome=Tests passed. | check_ok=True | codex_rc=0
+- step 8: Patched `src/operator/agents/step_engine/policy.py` so Autocinema detail-page intents can recover from sparse candidate extraction: title checks now also inspect raw markup, and the policy can click stable movie-detail controls directly from `snapshot_html`/`html` using deterministic selectors for watchlist, trailer, and share actions. Added regression coverage in `tests/test_policy_exemplars.py` and `tests/test_fsm_operator.py` for both fallback and normalization paths, then verified with `pytest -q tests/test_policy_exemplars.py tests/test_fsm_operator.py tests/test_autocinema_harvest.py` (`144 passed`). While validating, the committed harvest artifacts were refreshed and now satisfy the dataset gate; `ARBOS_TARGET_REPO=/home/usuario1/daryxx/autoppia/operator/autoppia_operator bash .arbos/tests/test_01_repo_contract.sh && ... test_02_daryxx_eval_smoke.py && ... test_03_eval_migration_progress.py` all passed, and `data/autocinema_trajectory_harvest/summary.json` now reports `successes_total=160` with `ADD_TO_WATCHLIST=10` successes. | outcome=Tests passed. | check_ok=True | codex_rc=0
+- step 10: Hardened the Autocinema step-engine for weak mutation flows by making auth-gated tasks prefer the capability-gap login/register transition and by suppressing generic home-link and related-card clicks in title-focused detail routing. Added regression coverage for the watchlist auth transition and off-target title-click suppression. Re-ran the full test suite successfully (`225 passed`) and verified the committed harvest artifacts already satisfy the dataset target: `data/autocinema_trajectory_harvest/summary.json` reports `160` successes total with all 16 use cases at `10` distinct-seed successes, plus replayable failures and matching manifest/golden files. | outcome=Tests passed. | check_ok=True | codex_rc=0
+- step 11: Verified the repo is still on branch `arbos`, re-checked the committed Autocinema harvest summary, and re-ran the acceptance tests. Current committed dataset still reports `160` successes and `16` retained failures, with all 16 use cases at `10` successful trajectories. Test gate is green: `pytest -q` passed with `225 passed in 14.89s`, and the focused harvest/policy/fsm subset also passed (`146 passed`). No code changes were needed this step. | outcome=Tests passed. | check_ok=True | codex_rc=0
+- step 12: No code changes were needed this step. I verified the repo is still on branch `arbos`, ran `pytest -q tests/test_autocinema_harvest.py` (`4 passed`), and re-ran the arbos acceptance checks with `ARBOS_TARGET_REPO` set. The repo contract check passed, the eval smoke passed, and the migration-progress check confirmed Autocinema still has strong replayable coverage with 10 successful distinct-seed trajectories for each use case. | outcome=Tests passed. | check_ok=True | codex_rc=0

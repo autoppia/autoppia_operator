@@ -25,13 +25,11 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
-from playwright.async_api import async_playwright
 
 # ── Ensure the operator repo is on sys.path ─────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
 OPERATOR_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(OPERATOR_ROOT))
-sys.path.insert(0, str(SCRIPT_DIR))
 
 
 # ── Load .env from autoppia_operator ────────────────────────────
@@ -75,22 +73,11 @@ def _normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
                 return value[:400]
         return ""
 
-    if sel_type in {
-        "text",
-        "textselector",
-        "textcontains",
-        "textcontainsselector",
-        "linktext",
-        "partiallinktext",
-    }:
+    if sel_type in {"text", "textselector", "textcontains", "textcontainsselector", "linktext", "partiallinktext"}:
         value = first_text("value", "text", "label", "name", "query")
         if not value:
             return None
-        return {
-            "type": "tagContainsSelector",
-            "value": value,
-            "case_sensitive": case_sensitive,
-        }
+        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
     if sel_type in {"attribute", "attributevalueselector"}:
         attribute = first_text("attribute", "attr", "name")
         value = first_text("value", "text", "label")
@@ -113,33 +100,13 @@ def _normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
         value = re.sub(r"\s+", " ", value).strip()
         if not value:
             return None
-        return {
-            "type": "xpathSelector",
-            "value": value,
-            "case_sensitive": case_sensitive,
-        }
+        return {"type": "xpathSelector", "value": value, "case_sensitive": case_sensitive}
     if sel_type == "tagcontainsselector":
         value = first_text("value", "text", "label")
         if not value:
             return None
-        return {
-            "type": "tagContainsSelector",
-            "value": value,
-            "case_sensitive": case_sensitive,
-        }
-    if sel_type in {
-        "id",
-        "class",
-        "name",
-        "href",
-        "placeholder",
-        "aria-label",
-        "aria_label",
-        "title",
-        "role",
-        "value",
-        "type",
-    }:
+        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
+    if sel_type in {"id", "class", "name", "href", "placeholder", "aria-label", "aria_label", "title", "role", "value", "type"}:
         value = first_text("value", "text", "label")
         if not value:
             return None
@@ -150,11 +117,7 @@ def _normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
             "value": value,
             "case_sensitive": case_sensitive,
         }
-    if sel_type not in {
-        "attributevalueselector",
-        "tagcontainsselector",
-        "xpathselector",
-    }:
+    if sel_type not in {"attributevalueselector", "tagcontainsselector", "xpathselector"}:
         attribute = first_text("attribute", "attr", "name")
         value = first_text("value", "text", "label", "query")
         if attribute and value:
@@ -165,11 +128,7 @@ def _normalize_selector_payload(raw_selector: Any) -> dict[str, Any] | None:
                 "case_sensitive": case_sensitive,
             }
         if value:
-            return {
-                "type": "tagContainsSelector",
-                "value": value,
-                "case_sensitive": case_sensitive,
-            }
+            return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
         return None
     return selector
 
@@ -186,26 +145,14 @@ def _sanitize_action_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 # ── Imports ──────────────────────────────────────────────────────
 import autoppia_iwa.src.execution.actions.actions  # noqa: F401
-from autoppia_iwa.config.config import (
-    EVALUATOR_HEADLESS,
-    VALIDATOR_ID as IWA_VALIDATOR_ID,
-)
-from autoppia_iwa.src.data_generation.tasks.classes import BrowserSpecification, Task
-from autoppia_iwa.src.demo_webs.classes import BackendEvent, WebProject
-from autoppia_iwa.src.demo_webs.config import demo_web_projects
-from autoppia_iwa.src.demo_webs.demo_webs_service import BackendDemoWebService
-from autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator
+from autoppia_iwa.config.config import VALIDATOR_ID as IWA_VALIDATOR_ID
+from autoppia_iwa.src.data_generation.tasks.classes import Task
 from autoppia_iwa.src.execution.actions.base import BaseAction
-
-try:
-    from autoppia_iwa.src.execution.playwright_browser_executor import PlaywrightBrowserExecutor
-except ModuleNotFoundError:  # pragma: no cover - older autoppia_iwa layouts
-    from autoppia_iwa.src.execution.browser_executor import PlaywrightBrowserExecutor
-
 from loguru import logger
 
 from infra.llm_gateway import openai_chat_completions
 from infra.pricing import estimate_cost_usd
+from src.operator.eval.session import build_task_execution_session
 
 # Default task cache path
 TASK_CACHE = OPERATOR_ROOT / "autoppia_rl" / "data" / "task_cache" / "autoppia_cinema_tasks.json"
@@ -371,118 +318,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
-class _ScopedBackendDemoWebService(BackendDemoWebService):
-    def __init__(self, web_project: WebProject, web_agent_id: str, validator_id: str) -> None:
-        super().__init__(web_project=web_project, web_agent_id=web_agent_id)
-        self.validator_id = str(validator_id or self.validator_id).strip() or "validator_001"
-
-    async def get_backend_events(self, web_agent_id: str) -> list[BackendEvent]:
-        if self.web_project.is_web_real:
-            return []
-        try:
-            endpoint = f"{self.base_url.rstrip('/')}/get_events/"
-            params = {
-                "web_url": (self.web_url or self.base_url).rstrip("/"),
-                "web_agent_id": web_agent_id,
-                "validator_id": self.validator_id,
-            }
-            session = await self._get_session()
-            async with session.get(endpoint, params=params) as response:
-                response.raise_for_status()
-                events_data = await response.json(loads=self._json_parser.loads)
-                return [BackendEvent(**event.get("data", {})) for event in events_data] if isinstance(events_data, list) else []
-        except Exception:
-            return await super().get_backend_events(web_agent_id)
-
-    async def reset_database(self, override_url: str | None = None, web_agent_id: str | None = None) -> bool:
-        if self.web_project.is_web_real:
-            return False
-        try:
-            endpoint = override_url or f"{self.base_url.rstrip('/')}/reset_events/"
-            params = {
-                "web_url": (self.web_url or self.base_url).rstrip("/"),
-                "web_agent_id": web_agent_id or self.web_agent_id,
-                "validator_id": self.validator_id,
-            }
-            session = await self._get_session()
-            async with session.delete(endpoint, params=params) as response:
-                return response.status in (200, 202)
-        except Exception:
-            return await super().reset_database(web_agent_id=web_agent_id)
-
-
-class _ScopedAsyncStatefulEvaluator(AsyncStatefulEvaluator):
-    def __init__(
-        self,
-        task: Task,
-        *,
-        web_agent_id: str,
-        validator_id: str,
-        enable_score_cheating: bool,
-        capture_screenshot: bool,
-    ) -> None:
-        super().__init__(
-            task=task,
-            web_agent_id=web_agent_id,
-            enable_score_cheating=enable_score_cheating,
-            should_record_gif=False,
-            capture_screenshot=capture_screenshot,
-        )
-        self.validator_id = str(validator_id or os.getenv("VALIDATOR_ID") or IWA_VALIDATOR_ID or "validator_001").strip() or "validator_001"
-
-    async def _init_async(self) -> None:
-        project: WebProject | None = None
-        try:
-            if getattr(self.task, "web_project_id", None):
-                pid = str(self.task.web_project_id)
-                for p in demo_web_projects:
-                    if getattr(p, "id", None) == pid:
-                        project = p
-                        break
-        except Exception:
-            project = None
-
-        if project is None:
-            raise RuntimeError("AsyncStatefulEvaluator: could not resolve WebProject from Task")
-        self._project = project
-
-        self._backend = _ScopedBackendDemoWebService(
-            web_project=project,
-            web_agent_id=self.web_agent_id,
-            validator_id=self.validator_id,
-        )
-        await self._backend.reset_database()
-
-        self._playwright = await async_playwright().start()
-        specs = self.task.specifications or BrowserSpecification()
-        self._browser = await self._playwright.chromium.launch(
-            headless=EVALUATOR_HEADLESS,
-            args=[f"--window-size={specs.screen_width},{specs.screen_height}"],
-        )
-        self._context = await self._browser.new_context(
-            no_viewport=True,
-            extra_http_headers={
-                "X-WebAgent-Id": self.web_agent_id,
-                "X-Validator-Id": self.validator_id,
-            },
-        )
-        with contextlib.suppress(Exception):
-            await self._context.add_init_script(
-                f"""
-(() => {{
-  try {{
-    localStorage.setItem("web_agent_id", {json.dumps(self.web_agent_id)});
-    localStorage.setItem("validator_id", {json.dumps(self.validator_id)});
-  }} catch (e) {{}}
-}})();
-"""
-            )
-        with contextlib.suppress(Exception):
-            self._context.set_default_timeout(self.config.page_default_timeout_ms)
-        self._page = await self._context.new_page()
-        self._executor = PlaywrightBrowserExecutor(specs, self._page, self._backend)
-
-
 def _safe_slug(value: str) -> str:
     txt = str(value or "").strip().lower()
     out = []
@@ -547,18 +382,9 @@ def _compute_results_summary(results: dict[str, Any], elapsed: float) -> None:
         "avg_policy_llm_calls_per_episode": round((total_policy_llm_calls / total) if total > 0 else 0.0, 6),
         "avg_obs_extract_llm_calls_per_episode": round((total_obs_extract_llm_calls / total) if total > 0 else 0.0, 6),
         "avg_vision_llm_calls_per_episode": round((total_vision_llm_calls / total) if total > 0 else 0.0, 6),
-        "avg_prompt_tokens_per_step": round(
-            (sum(int(ep.get("prompt_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0,
-            6,
-        ),
-        "avg_completion_tokens_per_step": round(
-            (sum(int(ep.get("completion_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0,
-            6,
-        ),
-        "avg_total_tokens_per_step": round(
-            (sum(int(ep.get("total_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0,
-            6,
-        ),
+        "avg_prompt_tokens_per_step": round((sum(int(ep.get("prompt_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0, 6),
+        "avg_completion_tokens_per_step": round((sum(int(ep.get("completion_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0, 6),
+        "avg_total_tokens_per_step": round((sum(int(ep.get("total_tokens") or 0) for ep in results["episodes"]) / total_steps) if total_steps > 0 else 0.0, 6),
         "avg_operator_ms_per_step": round((total_operator_duration_ms / total_steps) if total_steps > 0 else 0.0, 6),
         "avg_operator_seconds_per_task": round(((total_operator_duration_ms / 1000.0) / total) if total > 0 else 0.0, 6),
         "avg_http_roundtrip_ms_per_step": round((total_http_roundtrip_ms / total_steps) if total_steps > 0 else 0.0, 6),
@@ -725,7 +551,15 @@ def _step_lines_for_judge(step_traces: list[dict[str, Any]] | None, *, limit: in
         actions = step.get("actions") if isinstance(step, dict) else []
         action_types = [str(a.get("type") or "") for a in actions if isinstance(a, dict)]
         out.append(
-            f"step={int(step.get('step_index') or 0)} before_score={float(before.get('score') or 0.0):.2f} after_score={float(after.get('score') or 0.0):.2f} before_url={str(before.get('url') or '')[:120]} after_url={str(after.get('url') or '')[:120]} done={bool(agent.get('done'))} actions={','.join(action_types)[:120]} exec_ok={bool(execution.get('exec_ok', True))} error={str(execution.get('error') or '')[:140]}"
+            f"step={int(step.get('step_index') or 0)} "
+            f"before_score={float(before.get('score') or 0.0):.2f} "
+            f"after_score={float(after.get('score') or 0.0):.2f} "
+            f"before_url={str(before.get('url') or '')[:120]} "
+            f"after_url={str(after.get('url') or '')[:120]} "
+            f"done={bool(agent.get('done'))} "
+            f"actions={','.join(action_types)[:120]} "
+            f"exec_ok={bool(execution.get('exec_ok', True))} "
+            f"error={str(execution.get('error') or '')[:140]}"
         )
     return "\n".join(out)
 
@@ -749,11 +583,26 @@ async def _run_failure_judge(
     judge_max_tokens = int(os.getenv("EVAL_FAILURE_JUDGE_MAX_TOKENS", "140"))
 
     system_msg = (
-        "You are a strict evaluator for failed web-agent episodes.\nChoose exactly one failure category from this closed set:\n"
-        + ", ".join(FAILURE_JUDGE_CATEGORIES)
-        + ".\nReturn JSON only with keys: category, reasoning.\nreasoning must be short, concrete, and based on the evidence.\nDo not mention multiple categories. If unsure, return UNKNOWN."
+        "You are a strict evaluator for failed web-agent episodes.\n"
+        "Choose exactly one failure category from this closed set:\n" + ", ".join(FAILURE_JUDGE_CATEGORIES) + ".\n"
+        "Return JSON only with keys: category, reasoning.\n"
+        "reasoning must be short, concrete, and based on the evidence.\n"
+        "Do not mention multiple categories. If unsure, return UNKNOWN."
     )
-    user_msg = f"TASK_PROMPT: {str(getattr(prepared_task, 'prompt', '')).strip()[:800]}\nUSE_CASE: {str(getattr(getattr(prepared_task, 'use_case', None), 'name', '') or '')[:120]}\nFINAL_SUCCESS: {bool(final_success)}\nFINAL_SCORE: {float(final_score):.3f}\nFINAL_URL: {final_url[:300]}\nFINAL_CONTENT: {str(final_content or '')[:300]}\nRECENT_HISTORY:\n{_history_lines_for_judge(history)}\nRECENT_STEP_LOGS:\n{_step_lines_for_judge(episode_trace_steps)}\nFINAL_HTML_EXCERPT:\n{str(final_html or '')[:4000]}"
+    user_msg = (
+        f"TASK_PROMPT: {str(getattr(prepared_task, 'prompt', '')).strip()[:800]}\n"
+        f"USE_CASE: {str(getattr(getattr(prepared_task, 'use_case', None), 'name', '') or '')[:120]}\n"
+        f"FINAL_SUCCESS: {bool(final_success)}\n"
+        f"FINAL_SCORE: {float(final_score):.3f}\n"
+        f"FINAL_URL: {final_url[:300]}\n"
+        f"FINAL_CONTENT: {str(final_content or '')[:300]}\n"
+        "RECENT_HISTORY:\n"
+        f"{_history_lines_for_judge(history)}\n"
+        "RECENT_STEP_LOGS:\n"
+        f"{_step_lines_for_judge(episode_trace_steps)}\n"
+        "FINAL_HTML_EXCERPT:\n"
+        f"{str(final_html or '')[:4000]}"
+    )
 
     old_provider = os.environ.get("LLM_PROVIDER")
     os.environ["LLM_PROVIDER"] = str(provider or "openai")
@@ -865,7 +714,7 @@ async def run_evaluation(
             logger.error("OPENAI_API_KEY not set. Check .env file.")
             sys.exit(1)
     logger.info("=" * 60)
-    logger.info("  Autoppia Operator - LLM Agent Evaluation")
+    logger.info("  Autoppia Operator – LLM Agent Evaluation")
     logger.info(f"  Provider:   {provider_s}")
     logger.info(f"  Model:      {model}")
     logger.info(f"  Tasks:      {num_tasks}")
@@ -947,13 +796,7 @@ async def run_evaluation(
         load_limit = num_tasks
         if distinct_use_cases:
             load_limit = max(500, num_tasks * 20)
-        tasks = load_tasks(
-            cache_path=cache_path,
-            use_case=use_case,
-            web_project_id=web_project_id,
-            task_id=task_id,
-            limit=load_limit,
-        )
+        tasks = load_tasks(cache_path=cache_path, use_case=use_case, web_project_id=web_project_id, task_id=task_id, limit=load_limit)
     logger.info(f"Loaded {len(tasks)} tasks")
 
     if not tasks:
@@ -994,7 +837,8 @@ async def run_evaluation(
     # Agent endpoint config
     agent_base_url = os.getenv("AGENT_BASE_URL", "").strip().rstrip("/")
     start_server = os.getenv("START_AGENT_SERVER", "1") in {"1", "true", "yes"}
-    log_stack: contextlib.ExitStack | None = None
+    use_inproc_agent = os.getenv("AGENT_INPROC", "0").strip().lower() in {"1", "true", "yes"}
+    inproc_agent_client: httpx.AsyncClient | None = None
     base_web_agent_id = os.getenv("WEB_AGENT_ID", "1").strip() or "1"
     base_validator_id = os.getenv("VALIDATOR_ID", IWA_VALIDATOR_ID or "validator_001").strip() or "validator_001"
 
@@ -1014,10 +858,49 @@ async def run_evaluation(
             sock.bind(("127.0.0.1", 0))
             return int(sock.getsockname()[1])
 
+    async def _wait_for_server_health(url: str, *, timeout_s: float = 15.0) -> None:
+        deadline = time.time() + float(timeout_s)
+        last_error: str | None = None
+        async with aiohttp.ClientSession() as session:
+            while time.time() < deadline:
+                try:
+                    async with session.get(f"{url}/health") as resp:
+                        if int(resp.status) == 200:
+                            return
+                        last_error = f"status={resp.status}"
+                except Exception as exc:
+                    last_error = str(exc)
+                await asyncio.sleep(0.15)
+        raise RuntimeError(f"agent_server_healthcheck_failed url={url} err={last_error or 'timeout'}")
+
     # If we're starting the server locally, choose a free port and point the client to it.
-    if start_server:
+    if start_server and not use_inproc_agent:
         preferred_port = int(os.getenv("AGENT_PORT", "5000"))
-        port = _pick_port(preferred_port)
+        try:
+            port = _pick_port(preferred_port)
+        except OSError as exc:
+            logger.warning(f"Socket bind unavailable ({type(exc).__name__}: {exc}); switching eval agent client to in-process mode.")
+            use_inproc_agent = True
+            start_server = False
+
+    if use_inproc_agent:
+        os.environ["OPENAI_MODEL"] = str(model)
+        os.environ["LLM_PROVIDER"] = str(provider_s)
+        os.environ["OPENAI_TEMPERATURE"] = str(temperature)
+        os.environ["AGENT_RETURN_METRICS"] = "1"
+        os.environ["FSM_USE_SITE_KNOWLEDGE"] = "1" if bool(use_site_knowledge) else "0"
+        os.environ["FSM_USE_LOCAL_HTML_CONTEXT"] = "1" if bool(use_local_html_context) else "0"
+        from main import app as operator_app
+
+        inproc_agent_client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=operator_app),
+            base_url="http://operator-inproc",
+            timeout=300.0,
+        )
+        if not agent_base_url:
+            agent_base_url = "inproc://main:app"
+        server_proc = None
+    elif start_server:
         if not agent_base_url:
             agent_base_url = f"http://127.0.0.1:{port}"
 
@@ -1060,29 +943,13 @@ async def run_evaluation(
             stderr=subprocess.STDOUT,
             env=server_env,
         )
-
-        async def _wait_for_server_health(url: str, *, timeout_s: float = 15.0) -> None:
-            deadline = time.time() + float(timeout_s)
-            last_error: str | None = None
-            async with aiohttp.ClientSession() as session:
-                while time.time() < deadline:
-                    try:
-                        async with session.get(f"{url}/health") as resp:
-                            if int(resp.status) == 200:
-                                return
-                            last_error = f"status={resp.status}"
-                    except Exception as exc:
-                        last_error = str(exc)
-                    await asyncio.sleep(0.15)
-            raise RuntimeError(f"agent_server_healthcheck_failed url={url} err={last_error or 'timeout'}")
-
         await _wait_for_server_health(agent_base_url, timeout_s=max(15.0, 5.0 + agent_workers * 2.0))
     else:
         if not agent_base_url:
             agent_base_url = "http://127.0.0.1:5000"
         server_proc = None
 
-    async def call_agent_act(
+    async def call_agent_step(
         session: aiohttp.ClientSession,
         prepared_task: Task,
         episode_task_id: str,
@@ -1091,22 +958,14 @@ async def run_evaluation(
         step_index: int,
         history: list[dict],
         requested_model: str,
-        state_in: dict[str, Any],
+        score_feedback: dict[str, Any] | None,
         screenshot: str | None = None,
-    ) -> tuple[
-        list[BaseAction],
-        dict,
-        bool,
-        str | None,
-        str | None,
-        dict[str, Any],
-        dict[str, Any],
-        dict[str, Any],
-    ]:
+    ) -> tuple[list[BaseAction], dict, bool, str | None, str | None, dict[str, Any], dict[str, Any]]:
         payload = {
             "task_id": str(episode_task_id),
             "prompt": prepared_task.prompt,
             "url": url,
+            "html": snapshot_html,
             "snapshot_html": snapshot_html,
             "screenshot": screenshot,
             "step_index": int(step_index),
@@ -1115,8 +974,9 @@ async def run_evaluation(
             "history": history,
             "model": str(requested_model),
             "include_reasoning": bool(include_reasoning),
-            "state_in": state_in if isinstance(state_in, dict) else {},
         }
+        if isinstance(score_feedback, dict) and score_feedback:
+            payload["score_feedback"] = score_feedback
         if isinstance(allowed_tools_payload, list):
             payload["allowed_tools"] = allowed_tools_payload
         request_payload = dict(payload)
@@ -1126,21 +986,69 @@ async def run_evaluation(
         request_duration_ms = 0
         for attempt in range(1, 4):
             started_at = time.monotonic()
+            if inproc_agent_client is not None:
+                try:
+                    resp = await inproc_agent_client.post("/step", json=payload)
+                    request_duration_ms = int((time.monotonic() - started_at) * 1000)
+                    response_status = int(resp.status_code)
+                    if int(resp.status_code) >= 500 and attempt < 3:
+                        body_preview = (resp.text or "")[:400]
+                        logger.warning(
+                            f"/step server_error attempt={attempt}/3 task={episode_task_id} step={step_index} status={int(resp.status_code)} duration_ms={request_duration_ms} body={body_preview}"
+                        )
+                        await asyncio.sleep(0.35 * attempt)
+                        continue
+                    resp.raise_for_status()
+                    data = resp.json()
+                    logger.info(
+                        f"/step ok task={episode_task_id} step={step_index} attempt={attempt} "
+                        f"status={response_status} duration_ms={request_duration_ms} "
+                        f"tool_calls={len(data.get('tool_calls') if isinstance(data, dict) and isinstance(data.get('tool_calls'), list) else [])} "
+                        f"done={int(bool(data.get('done'))) if isinstance(data, dict) else 0}"
+                    )
+                    break
+                except (httpx.TransportError, httpx.TimeoutException) as exc:
+                    last_exc = exc
+                    if attempt >= 3:
+                        raise
+                    logger.warning(
+                        f"/step transient failure attempt={attempt}/3 task={episode_task_id} step={step_index} "
+                        f"duration_ms={int((time.monotonic() - started_at) * 1000)} "
+                        f"err_type={type(exc).__name__} err={exc!s}"
+                    )
+                    await asyncio.sleep(min(0.5 * attempt, 1.5))
+                    continue
+                except httpx.HTTPStatusError as exc:
+                    last_exc = exc
+                    status_code = int(exc.response.status_code) if exc.response is not None else 0
+                    if status_code >= 500 and attempt < 3:
+                        logger.warning(
+                            f"/step response_error attempt={attempt}/3 task={episode_task_id} step={step_index} "
+                            f"status={status_code} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s}"
+                        )
+                        await asyncio.sleep(min(0.5 * attempt, 1.5))
+                        continue
+                    logger.error(f"/step response_error task={episode_task_id} step={step_index} status={status_code} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s}")
+                    raise
+                continue
             try:
-                async with session.post(f"{agent_base_url}/act", json=payload) as resp:
+                async with session.post(f"{agent_base_url}/step", json=payload) as resp:
                     request_duration_ms = int((time.monotonic() - started_at) * 1000)
                     response_status = int(resp.status)
                     if int(resp.status) >= 500 and attempt < 3:
                         body_preview = (await resp.text())[:400]
                         logger.warning(
-                            f"/act server_error attempt={attempt}/3 task={episode_task_id} step={step_index} status={int(resp.status)} duration_ms={request_duration_ms} body={body_preview}"
+                            f"/step server_error attempt={attempt}/3 task={episode_task_id} step={step_index} status={int(resp.status)} duration_ms={request_duration_ms} body={body_preview}"
                         )
                         await asyncio.sleep(0.35 * attempt)
                         continue
                     resp.raise_for_status()
                     data = await resp.json()
                     logger.info(
-                        f"/act ok task={episode_task_id} step={step_index} attempt={attempt} status={response_status} duration_ms={request_duration_ms} tool_calls={len(data.get('tool_calls') if isinstance(data, dict) and isinstance(data.get('tool_calls'), list) else [])} done={int(bool(data.get('done'))) if isinstance(data, dict) else 0}"
+                        f"/step ok task={episode_task_id} step={step_index} attempt={attempt} "
+                        f"status={response_status} duration_ms={request_duration_ms} "
+                        f"tool_calls={len(data.get('tool_calls') if isinstance(data, dict) and isinstance(data.get('tool_calls'), list) else [])} "
+                        f"done={int(bool(data.get('done'))) if isinstance(data, dict) else 0}"
                     )
                     break
             except (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientOSError, aiohttp.ServerDisconnectedError) as exc:
@@ -1150,7 +1058,9 @@ async def run_evaluation(
                 if attempt >= 3:
                     raise
                 logger.warning(
-                    f"/act transient failure attempt={attempt}/3 task={episode_task_id} step={step_index} duration_ms={int((time.monotonic() - started_at) * 1000)} err_type={type(exc).__name__} err={exc!s}"
+                    f"/step transient failure attempt={attempt}/3 task={episode_task_id} step={step_index} "
+                    f"duration_ms={int((time.monotonic() - started_at) * 1000)} "
+                    f"err_type={type(exc).__name__} err={exc!s}"
                 )
                 with contextlib.suppress(Exception):
                     await _wait_for_server_health(agent_base_url, timeout_s=5.0)
@@ -1160,20 +1070,20 @@ async def run_evaluation(
                 body_preview = ""
                 if exc.status >= 500 and attempt < 3:
                     logger.warning(
-                        f"/act response_error attempt={attempt}/3 task={episode_task_id} step={step_index} status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s}"
+                        f"/step response_error attempt={attempt}/3 task={episode_task_id} step={step_index} status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s}"
                     )
                     with contextlib.suppress(Exception):
                         await _wait_for_server_health(agent_base_url, timeout_s=5.0)
                     await asyncio.sleep(min(0.5 * attempt, 1.5))
                     continue
                 logger.error(
-                    f"/act response_error task={episode_task_id} step={step_index} status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s} body={body_preview}"
+                    f"/step response_error task={episode_task_id} step={step_index} status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s} body={body_preview}"
                 )
                 raise
         if data is None:
             if last_exc is not None:
                 raise last_exc
-            raise RuntimeError(f"agent_act_no_response task={episode_task_id} step={step_index}")
+            raise RuntimeError(f"agent_step_no_response task={episode_task_id} step={step_index}")
 
         metrics = data.get("metrics") if isinstance(data, dict) else {}
         if not isinstance(metrics, dict):
@@ -1184,10 +1094,6 @@ async def run_evaluation(
         done = bool(data.get("done")) if isinstance(data, dict) else False
         content = data.get("content") if isinstance(data, dict) else None
         reasoning = data.get("reasoning") if isinstance(data, dict) else None
-        state_out = data.get("state_out") if isinstance(data, dict) else {}
-        if not isinstance(state_out, dict):
-            state_out = {}
-
         tool_calls_payload = data.get("tool_calls") if isinstance(data, dict) else None
         actions_alias_payload = data.get("actions") if isinstance(data, dict) else None
         actions_payload: list[Any] = []
@@ -1202,7 +1108,6 @@ async def run_evaluation(
                 done,
                 content if isinstance(content, str) else None,
                 reasoning if isinstance(reasoning, str) else None,
-                state_out,
                 request_payload,
                 data if isinstance(data, dict) else {},
             )
@@ -1250,7 +1155,6 @@ async def run_evaluation(
             done,
             content if isinstance(content, str) else None,
             reasoning if isinstance(reasoning, str) else None,
-            state_out,
             request_payload,
             data if isinstance(data, dict) else {},
         )
@@ -1343,21 +1247,9 @@ async def run_evaluation(
             episode_http_roundtrip_ms = 0
             episode_helper_models: list[str] = []
             episode_usage_breakdown = {
-                "policy": {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                },
-                "obs_extract": {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                },
-                "vision": {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                },
+                "policy": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "obs_extract": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "vision": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             }
             episode_model = str(model)
             final_content: str | None = None
@@ -1366,7 +1258,7 @@ async def run_evaluation(
             evaluator = None
 
             try:
-                evaluator = _ScopedAsyncStatefulEvaluator(
+                evaluator = build_task_execution_session(
                     task=prepared_task,
                     web_agent_id=episode_web_agent_id,
                     validator_id=episode_validator_id,
@@ -1376,7 +1268,6 @@ async def run_evaluation(
                 step_result = await evaluator.reset()
 
                 history: list[dict] = []
-                agent_state_in: dict[str, Any] = {}
                 final_score = 0.0
                 final_success = False
                 total_steps = 0
@@ -1385,25 +1276,16 @@ async def run_evaluation(
                     pre_url = str(step_result.snapshot.url)
                     pre_score = float(step_result.score.raw_score)
                     pre_success = bool(step_result.score.success)
-                    payload_state_in = dict(agent_state_in) if isinstance(agent_state_in, dict) else {}
+                    score_feedback = None
                     if bool(enable_score_cheating):
-                        payload_state_in["score_feedback"] = {
+                        score_feedback = {
                             "enabled": True,
                             "score": pre_score,
                             "success": pre_success,
                             "tests_passed": int(step_result.score.tests_passed),
                             "total_tests": int(step_result.score.total_tests),
                         }
-                    (
-                        actions,
-                        metrics,
-                        done,
-                        content,
-                        reasoning,
-                        state_out,
-                        act_request_payload,
-                        act_raw_response,
-                    ) = await call_agent_act(
+                    actions, metrics, done, content, reasoning, act_request_payload, act_raw_response = await call_agent_step(
                         agent_session,
                         prepared_task,
                         episode_task_id=episode_task_id,
@@ -1413,9 +1295,8 @@ async def run_evaluation(
                         screenshot=(_serialize_screenshot(getattr(step_result.snapshot, "screenshot", None)) if capture_agent_screenshot else None),
                         history=history,
                         requested_model=str(requested_model),
-                        state_in=payload_state_in,
+                        score_feedback=score_feedback,
                     )
-                    agent_state_in = state_out if isinstance(state_out, dict) else {}
                     if isinstance(content, str) and content.strip():
                         final_content = content.strip()
 
@@ -1533,8 +1414,7 @@ async def run_evaluation(
                                     "metrics": metrics if isinstance(metrics, dict) else {},
                                     "llm_call_breakdown": _normalize_call_breakdown(llm_meta.get("call_breakdown") if isinstance(llm_meta, dict) else None),
                                     "llm_usage_breakdown": _normalize_usage_breakdown(llm_meta.get("usage_breakdown") if isinstance(llm_meta, dict) else None),
-                                    "state_in": act_request_payload.get("state_in") if isinstance(act_request_payload, dict) else {},
-                                    "state_out": state_out if isinstance(state_out, dict) else {},
+                                    "score_feedback": act_request_payload.get("score_feedback") if isinstance(act_request_payload, dict) else {},
                                 },
                                 "action": None,
                                 "execution": {"executed": False, "done_break": True},
@@ -1561,20 +1441,12 @@ async def run_evaluation(
                         action = None
                         step_result = await evaluator.step(None)
 
-                    if os.getenv("EVAL_SAVE_TRACES", "0").lower() in {
-                        "1",
-                        "true",
-                        "yes",
-                    }:
+                    if os.getenv("EVAL_SAVE_TRACES", "0").lower() in {"1", "true", "yes"}:
                         try:
                             trace_dir = SCRIPT_DIR / "data" / "traces" / str(episode_task_id)
                             trace_dir.mkdir(parents=True, exist_ok=True)
                             (trace_dir / f"{step_idx:02d}.url.txt").write_text(str(step_result.snapshot.url), encoding="utf-8")
-                            (trace_dir / f"{step_idx:02d}.html").write_text(
-                                str(step_result.snapshot.html),
-                                encoding="utf-8",
-                                errors="replace",
-                            )
+                            (trace_dir / f"{step_idx:02d}.html").write_text(str(step_result.snapshot.html), encoding="utf-8", errors="replace")
                         except Exception:
                             pass
 
@@ -1679,21 +1551,10 @@ async def run_evaluation(
                             "operator_metrics": operator_meta,
                             "llm_call_breakdown": _normalize_call_breakdown(llm_meta.get("call_breakdown") if isinstance(llm_meta, dict) else None),
                             "llm_usage_breakdown": _normalize_usage_breakdown(llm_meta.get("usage_breakdown") if isinstance(llm_meta, dict) else None),
-                            "state_in": act_request_payload.get("state_in") if isinstance(act_request_payload, dict) else {},
-                            "state_out": state_out if isinstance(state_out, dict) else {},
+                            "score_feedback": act_request_payload.get("score_feedback") if isinstance(act_request_payload, dict) else {},
                         },
-                        "actions": [
-                            {
-                                "type": act.type,
-                                "raw": act.model_dump(mode="json", exclude_none=False),
-                            }
-                            for act in executed_actions
-                        ],
-                        "execution": {
-                            "executed": bool(executed_actions or action is not None),
-                            "exec_ok": bool(exec_ok),
-                            "error": exec_err,
-                        },
+                        "actions": [{"type": act.type, "raw": act.model_dump(mode="json", exclude_none=False)} for act in executed_actions],
+                        "execution": {"executed": bool(executed_actions or action is not None), "exec_ok": bool(exec_ok), "error": exec_err},
                     }
                     if bool(trace_full_payloads):
                         step_trace["act_request"] = act_request_payload
@@ -1726,11 +1587,7 @@ async def run_evaluation(
                         fail_dir = out_dir / "failures"
                         fail_dir.mkdir(parents=True, exist_ok=True)
                         (fail_dir / f"{episode_task_id}.url.txt").write_text(str(step_result.snapshot.url), encoding="utf-8")
-                        (fail_dir / f"{episode_task_id}.html").write_text(
-                            str(step_result.snapshot.html),
-                            encoding="utf-8",
-                            errors="replace",
-                        )
+                        (fail_dir / f"{episode_task_id}.html").write_text(str(step_result.snapshot.html), encoding="utf-8", errors="replace")
                     except Exception:
                         pass
 
@@ -1755,11 +1612,7 @@ async def run_evaluation(
                             "category": "UNKNOWN",
                             "reasoning": f"Failure judge errored: {str(judge_err)[:220]}",
                             "model": str(os.getenv("EVAL_FAILURE_JUDGE_MODEL", "gpt-4o-mini")),
-                            "usage": {
-                                "prompt_tokens": 0,
-                                "completion_tokens": 0,
-                                "total_tokens": 0,
-                            },
+                            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                             "estimated_cost_usd": 0.0,
                         }
 
@@ -1787,14 +1640,8 @@ async def run_evaluation(
                     "avg_step_seconds": round(avg_step_seconds, 4),
                     "operator_duration_ms": int(episode_operator_duration_ms),
                     "act_http_roundtrip_ms": int(episode_http_roundtrip_ms),
-                    "avg_operator_ms_per_step": round(
-                        (episode_operator_duration_ms / steps_count) if steps_count > 0 else 0.0,
-                        4,
-                    ),
-                    "avg_http_roundtrip_ms_per_step": round(
-                        (episode_http_roundtrip_ms / steps_count) if steps_count > 0 else 0.0,
-                        4,
-                    ),
+                    "avg_operator_ms_per_step": round((episode_operator_duration_ms / steps_count) if steps_count > 0 else 0.0, 4),
+                    "avg_http_roundtrip_ms_per_step": round((episode_http_roundtrip_ms / steps_count) if steps_count > 0 else 0.0, 4),
                     "final_content": final_content,
                     "vision_enabled": bool(use_vision),
                     "vision_used": bool(episode_vision_llm_calls > 0),
@@ -1881,11 +1728,7 @@ async def run_evaluation(
                         "category": "ACTION_EXECUTION_ERROR",
                         "reasoning": f"Episode raised an exception before completion: {str(e)[:220]}",
                         "model": "runtime",
-                        "usage": {
-                            "prompt_tokens": 0,
-                            "completion_tokens": 0,
-                            "total_tokens": 0,
-                        },
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                         "estimated_cost_usd": 0.0,
                     }
                     ep_data["failure_judge"] = failure_judge_payload
@@ -1979,10 +1822,17 @@ async def run_evaluation(
     print(f"  Avg LLM/step:   {float(llm_stats.get('avg_llm_calls_per_step') or 0.0):.2f}")
     print(f"  Avg LLM/task:   {float(llm_stats.get('avg_llm_calls_per_episode') or 0.0):.2f}")
     print(
-        f"  Operator time: {float(llm_stats.get('avg_operator_ms_per_step') or 0.0):.1f}ms/step {float(llm_stats.get('avg_operator_seconds_per_task') or 0.0):.2f}s/task (HTTP {float(llm_stats.get('avg_http_roundtrip_ms_per_step') or 0.0):.1f}ms/step)"
+        "  Operator time: "
+        f"{float(llm_stats.get('avg_operator_ms_per_step') or 0.0):.1f}ms/step "
+        f"{float(llm_stats.get('avg_operator_seconds_per_task') or 0.0):.2f}s/task "
+        f"(HTTP {float(llm_stats.get('avg_http_roundtrip_ms_per_step') or 0.0):.1f}ms/step)"
     )
     print(
-        f"  Vision stats:   enabled={bool(llm_stats.get('vision_enabled'))} episodes={int(llm_stats.get('vision_episodes') or 0)} steps={int(llm_stats.get('vision_steps') or 0)} calls={int(llm_stats.get('vision_helper_calls_total') or 0)}"
+        "  Vision stats:   "
+        f"enabled={bool(llm_stats.get('vision_enabled'))} "
+        f"episodes={int(llm_stats.get('vision_episodes') or 0)} "
+        f"steps={int(llm_stats.get('vision_steps') or 0)} "
+        f"calls={int(llm_stats.get('vision_helper_calls_total') or 0)}"
     )
     print(f"  Total time:     {elapsed:.1f}s")
     print("=" * 60)
@@ -2030,6 +1880,10 @@ async def run_evaluation(
         _json_dump_path(trace_root / "trace_index.json", trace_index)
         print(f"  Act traces saved to: {trace_root}\n")
 
+    if inproc_agent_client is not None:
+        with contextlib.suppress(Exception):
+            await inproc_agent_client.aclose()
+
     if server_proc:
         try:
             if log_stack is not None:
@@ -2049,8 +1903,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Autoppia Operator - LLM Agent Evaluation")
-    parser.add_argument("--provider", default="chutes", help="LLM provider: openai|chutes|anthropic")
-    parser.add_argument("--model", default="deepseek-ai/DeepSeek-V3-0324", help="Model name")
+    parser.add_argument("--provider", default="openai", help="LLM provider: openai|chutes|anthropic")
+    parser.add_argument("--model", default="gpt-5-mini", help="Model name")
     parser.add_argument("--num-tasks", type=int, default=20, help="Number of tasks to evaluate")
     parser.add_argument("--max-steps", type=int, default=15, help="Max steps per episode")
     parser.add_argument("--use-case", default=None, help="Filter by use case (e.g. LOGIN)")
@@ -2061,92 +1915,22 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
     parser.add_argument("--out", default=None, help="Output JSON path (default: data/eval_results.json)")
     parser.add_argument("--task-cache", default=None, help="Task cache JSON path")
-    parser.add_argument(
-        "--strict-model",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Fail episodes when effective model != requested model",
-    )
-    parser.add_argument(
-        "--distinct-use-cases",
-        action="store_true",
-        help="Pick tasks with distinct use cases",
-    )
-    parser.add_argument(
-        "--all-use-cases",
-        action="store_true",
-        help="Select all use cases for the given --web-project-id",
-    )
-    parser.add_argument(
-        "--tasks-per-use-case",
-        type=int,
-        default=1,
-        help="When --all-use-cases is set, number of tasks sampled per use case",
-    )
-    parser.add_argument(
-        "--task-concurrency",
-        type=int,
-        default=1,
-        help="Number of episodes to evaluate concurrently",
-    )
-    parser.add_argument(
-        "--agent-workers",
-        type=int,
-        default=None,
-        help="Number of uvicorn worker processes to serve /act locally (default: min(task_concurrency, cpu_count) or AGENT_SERVER_WORKERS)",
-    )
-    parser.add_argument(
-        "--list-web-projects",
-        action="store_true",
-        help="List web projects available in --task-cache and exit",
-    )
-    parser.add_argument(
-        "--list-use-cases",
-        action="store_true",
-        help="List use cases (optionally filtered by --web-project-id) and exit",
-    )
-    parser.add_argument(
-        "--save-act-traces",
-        action="store_true",
-        help="Persist /act request-response traces per step",
-    )
+    parser.add_argument("--strict-model", action=argparse.BooleanOptionalAction, default=True, help="Fail episodes when effective model != requested model")
+    parser.add_argument("--distinct-use-cases", action="store_true", help="Pick tasks with distinct use cases")
+    parser.add_argument("--all-use-cases", action="store_true", help="Select all use cases for the given --web-project-id")
+    parser.add_argument("--tasks-per-use-case", type=int, default=1, help="When --all-use-cases is set, number of tasks sampled per use case")
+    parser.add_argument("--task-concurrency", type=int, default=1, help="Number of episodes to evaluate concurrently")
+    parser.add_argument("--agent-workers", type=int, default=None, help="Number of uvicorn worker processes to serve /act locally (default: min(task_concurrency, cpu_count) or AGENT_SERVER_WORKERS)")
+    parser.add_argument("--list-web-projects", action="store_true", help="List web projects available in --task-cache and exit")
+    parser.add_argument("--list-use-cases", action="store_true", help="List use cases (optionally filtered by --web-project-id) and exit")
+    parser.add_argument("--save-act-traces", action="store_true", help="Persist /act request-response traces per step")
     parser.add_argument("--trace-dir", default=None, help="Custom trace directory")
-    parser.add_argument(
-        "--trace-full-payloads",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Include full payloads (snapshot_html/screenshot/history)",
-    )
-    parser.add_argument(
-        "--include-reasoning",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Request reasoning from /act and store it in traces",
-    )
-    parser.add_argument(
-        "--use-site-knowledge",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Expose project-level site knowledge to the operator prompt",
-    )
-    parser.add_argument(
-        "--use-local-html-context",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Expose active-form and local DOM HTML snippets to the operator prompt",
-    )
-    parser.add_argument(
-        "--enable-score-cheating",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Inject evaluator score feedback into state_in for local debug",
-    )
-    parser.add_argument(
-        "--failure-judge",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Run a cheap LLM judge on failed episodes and store category/reasoning",
-    )
+    parser.add_argument("--trace-full-payloads", action=argparse.BooleanOptionalAction, default=True, help="Include full payloads (snapshot_html/screenshot/history)")
+    parser.add_argument("--include-reasoning", action=argparse.BooleanOptionalAction, default=False, help="Request reasoning from /act and store it in traces")
+    parser.add_argument("--use-site-knowledge", action=argparse.BooleanOptionalAction, default=False, help="Expose project-level site knowledge to the operator prompt")
+    parser.add_argument("--use-local-html-context", action=argparse.BooleanOptionalAction, default=False, help="Expose active-form and local DOM HTML snippets to the operator prompt")
+    parser.add_argument("--enable-score-cheating", action=argparse.BooleanOptionalAction, default=False, help="Inject evaluator score feedback into the operator runtime for local debug")
+    parser.add_argument("--failure-judge", action=argparse.BooleanOptionalAction, default=True, help="Run a cheap LLM judge on failed episodes and store category/reasoning")
     args = parser.parse_args()
 
     cache_path = Path(args.task_cache).resolve() if args.task_cache else TASK_CACHE
@@ -2159,10 +1943,7 @@ def main():
                 print(f"- {project_id}: {int(payload.get('count') or 0)} task(s)")
             print("=" * 60)
         else:
-            print_task_catalog(
-                catalog,
-                only_project=args.web_project_id if args.web_project_id else None,
-            )
+            print_task_catalog(catalog, only_project=args.web_project_id if args.web_project_id else None)
         return
 
     asyncio.run(

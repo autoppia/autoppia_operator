@@ -101,8 +101,6 @@ def _check_action_payload_shape(resp: dict[str, Any]) -> str | None:
         pv = resp.get("protocol_version")
         if not isinstance(pv, str) or not pv.strip():
             return "protocol_version should be a non-empty string when present"
-    if "state_out" not in resp or not isinstance(resp.get("state_out"), dict):
-        return "state_out should be object"
     if "done" in resp and not isinstance(resp.get("done"), bool):
         return "done should be bool when present"
     return None
