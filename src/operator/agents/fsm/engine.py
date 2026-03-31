@@ -6,6 +6,7 @@ from .candidates import *
 from .observation import *
 from .meta_tools import *
 from .policy import *
+from .trajectory import get_trajectory_bootstrap_actions
 
 class FSMOperator:
     def __init__(
@@ -61,6 +62,56 @@ class FSMOperator:
         if mode not in {"off", "auto", "always"}:
             mode = "auto"
         return mode
+
+    def _trajectory_bootstrap(
+        self,
+        *,
+        prompt: str,
+        web_project_id: str,
+        use_case: Dict[str, str],
+        html: str,
+        step_index: int,
+        history: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not _env_bool("FSM_TRAJECTORY_BOOTSTRAP", True):
+            return []
+        if not _env_bool("FSM_USE_TRAJECTORY_EXAMPLES", False):
+            return []
+        if int(step_index) > 0 or bool(history):
+            return []
+
+        use_case_name = str(use_case.get("use_case") or use_case.get("id") or use_case.get("name") or "")
+        raw_actions = get_trajectory_bootstrap_actions(
+            web_project_id=web_project_id,
+            use_case=use_case_name,
+            prompt=prompt,
+            max_actions=max(1, min(_env_int("FSM_MAX_ACTIONS_PER_STEP", 3), 5)),
+        )
+        if not raw_actions:
+            return []
+
+        html_blob = str(html or "").lower()
+        has_movie_name_constraint = bool(re.search(r"movie[_ ]name", str(prompt or ""), flags=re.I))
+        out: List[Dict[str, Any]] = []
+        for action in raw_actions:
+            action_type = str(action.get("type") or "")
+            if action_type == "NavigateAction":
+                continue
+            if action_type not in {"ClickAction", "TypeAction", "SelectDropDownOptionAction", "SelectAction"}:
+                continue
+            selector = action.get("selector") if isinstance(action.get("selector"), dict) else {}
+            selector_value = str(selector.get("value") or "").strip().lower()
+            # Hard-coded featured card ids are brittle for constrained movie tasks.
+            if has_movie_name_constraint and re.match(r"featured-movie-view-details-btn-\d+$", selector_value):
+                continue
+            if selector_value and selector_value not in html_blob:
+                continue
+            clean = dict(action)
+            clean.pop("attributes", None)
+            out.append(clean)
+            if len(out) >= max(1, min(_env_int("FSM_MAX_ACTIONS_PER_STEP", 3), 5)):
+                break
+        return out
 
     def _completion_only_result(
         self,
@@ -1712,7 +1763,21 @@ class FSMOperator:
                 usage_payload=usage_payload,
                 policy_model_used=policy_model_used,
             )
-        if direct_loop:
+        boot_actions = self._trajectory_bootstrap(
+            prompt=prompt,
+            web_project_id=web_project_id,
+            use_case=use_case,
+            html=html,
+            step_index=step_index,
+            history=history,
+        )
+        if boot_actions:
+            chosen_actions = boot_actions
+            done = False
+            content = ""
+            policy_reasoning = "Applied matched successful trajectory pattern for first-step local workflow."
+            policy_model_used = "trajectory-bootstrap"
+        elif direct_loop:
             chosen_actions, done, content, policy_reasoning, policy_model_used = self._run_direct_loop(
                 task_id=task_id,
                 prompt=prompt,

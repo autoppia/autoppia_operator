@@ -10,6 +10,7 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -20,6 +21,9 @@ import socket
 import sys
 import time
 from typing import Any
+from urllib.parse import urlparse, urlunparse
+import urllib.error
+import urllib.request
 from copy import deepcopy
 from pathlib import Path
 from collections import defaultdict
@@ -145,6 +149,33 @@ def _sanitize_action_payload(payload: dict[str, Any]) -> dict[str, Any]:
         out.pop("selector", None)
     return out
 
+
+def _iwa_action_type_from_browser_tool_name(tool_name: str) -> str | None:
+    suffix = str(tool_name or "").strip().lower()
+    if suffix.startswith("browser."):
+        suffix = suffix.split(".", 1)[1].strip()
+    mapping = {
+        "search": "SearchAction",
+        "navigate": "NavigateAction",
+        "go_back": "GoBackAction",
+        "click": "ClickAction",
+        "dblclick": "DoubleClickAction",
+        "rightclick": "RightClickAction",
+        "middleclick": "MiddleClickAction",
+        "tripleclick": "TripleClickAction",
+        "input": "TypeAction",
+        "scroll": "ScrollAction",
+        "wait": "WaitAction",
+        "select_dropdown": "SelectDropDownOptionAction",
+        "dropdown_options": "GetDropDownOptionsAction",
+        "hover": "HoverAction",
+        "screenshot": "ScreenshotAction",
+        "send_keys": "SendKeysIWAAction",
+        "hold_key": "HoldKeyAction",
+        "extract": "ExtractAction",
+    }
+    return mapping.get(suffix)
+
 # ── Imports ──────────────────────────────────────────────────────
 from loguru import logger
 
@@ -263,10 +294,136 @@ def select_all_use_case_tasks(
         rnd.shuffle(bucket)
         for td in bucket[: max(1, int(tasks_per_use_case))]:
             try:
-                selected.append(Task(**td))
+                selected.append(_task_from_cache_dict(td))
             except Exception as e:
                 logger.debug(f"Skipping task {td.get('id', '?')} from use_case={uc_name}: {e}")
     return selected
+
+
+def _demo_project_by_id(project_id: str) -> WebProject | None:
+    pid = str(project_id or "").strip()
+    if not pid:
+        return None
+    for project in demo_web_projects:
+        if str(getattr(project, "id", "")).strip() == pid:
+            return project
+    return None
+
+
+_DISCOVERED_FRONTEND_URLS: dict[str, str] = {}
+
+
+def _discover_frontend_url(project_id: str, backend_url: str) -> str | None:
+    pid = str(project_id or "").strip().lower()
+    if not pid:
+        return None
+    cached = _DISCOVERED_FRONTEND_URLS.get(pid)
+    if cached:
+        return cached
+
+    backend = str(backend_url or "").strip()
+    if not backend:
+        return None
+    parsed_backend = urlparse(backend)
+    if not parsed_backend.scheme or not parsed_backend.netloc:
+        return None
+    health_url = urlunparse(parsed_backend._replace(path="/health/webs", params="", query="", fragment=""))
+
+    try:
+        req = urllib.request.Request(health_url, headers={"User-Agent": "autoppia-operator-eval/1.0"})
+        with urllib.request.urlopen(req, timeout=2.5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError):
+        return None
+    except Exception:
+        return None
+
+    webs = payload.get("webs") if isinstance(payload, dict) else None
+    if not isinstance(webs, list):
+        return None
+
+    for item in webs:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip().lower()
+        project_key = str(item.get("project_key") or "").strip().lower()
+        if name != pid and not project_key.endswith(pid):
+            continue
+        raw_url = str(item.get("url") or "").strip()
+        if not raw_url:
+            continue
+        parsed_frontend = urlparse(raw_url)
+        port = parsed_frontend.port
+        scheme = parsed_frontend.scheme or "http"
+        if port is not None:
+            discovered = f"{scheme}://localhost:{int(port)}/"
+        else:
+            discovered = raw_url
+        _DISCOVERED_FRONTEND_URLS[pid] = discovered
+        return discovered
+
+    return None
+
+
+def _normalize_task_url_for_project(task_dict: dict[str, Any]) -> dict[str, Any]:
+    """
+    Normalize cached task URLs that accidentally point to the backend service
+    (e.g. localhost:8090) instead of the demo frontend (e.g. localhost:8000).
+    """
+    if not isinstance(task_dict, dict):
+        return task_dict
+
+    raw_url = str(task_dict.get("url") or "").strip()
+    project_id = str(task_dict.get("web_project_id") or "").strip()
+    if not raw_url or not project_id:
+        return task_dict
+
+    project = _demo_project_by_id(project_id)
+    if project is None:
+        return task_dict
+
+    backend_url = str(getattr(project, "backend_url", "") or "").strip()
+    frontend_url = _discover_frontend_url(project_id=project_id, backend_url=backend_url) or str(
+        getattr(project, "frontend_url", "") or ""
+    ).strip()
+    if not frontend_url or not backend_url:
+        return task_dict
+
+    try:
+        parsed_task = urlparse(raw_url)
+        parsed_backend = urlparse(backend_url)
+        parsed_frontend = urlparse(frontend_url)
+    except Exception:
+        return task_dict
+
+    if not parsed_task.hostname or not parsed_backend.hostname:
+        return task_dict
+    if parsed_task.hostname.lower() != parsed_backend.hostname.lower():
+        return task_dict
+
+    task_port = parsed_task.port or (443 if parsed_task.scheme == "https" else 80)
+    backend_port = parsed_backend.port or (443 if parsed_backend.scheme == "https" else 80)
+    if task_port != backend_port:
+        return task_dict
+
+    # Only rewrite root-level task URLs (cache bug shape observed in benchmarks).
+    if (parsed_task.path or "/") not in {"", "/"}:
+        return task_dict
+
+    normalized = parsed_task._replace(
+        scheme=parsed_frontend.scheme or parsed_task.scheme,
+        netloc=parsed_frontend.netloc or parsed_task.netloc,
+        path=parsed_frontend.path or "/",
+    )
+    fixed = dict(task_dict)
+    fixed["url"] = urlunparse(normalized)
+    return fixed
+
+
+def _task_from_cache_dict(task_dict: dict[str, Any]) -> Task:
+    normalized = _normalize_task_url_for_project(task_dict)
+    return Task(**normalized)
+
 
 def load_tasks(
     cache_path: Path = TASK_CACHE,
@@ -298,7 +455,7 @@ def load_tasks(
                 continue
 
         try:
-            task = Task(**td)
+            task = _task_from_cache_dict(td)
             tasks.append(task)
         except Exception as e:
             logger.debug(f"Skipping task {td.get('id', '?')}: {e}")
@@ -341,7 +498,7 @@ class _ScopedBackendDemoWebService(BackendDemoWebService):
                 "web_agent_id": web_agent_id,
                 "validator_id": self.validator_id,
             }
-            session = await self._get_session()
+            session = self._get_session()
             async with session.get(endpoint, params=params) as response:
                 response.raise_for_status()
                 events_data = await response.json(loads=self._json_parser.loads)
@@ -359,7 +516,7 @@ class _ScopedBackendDemoWebService(BackendDemoWebService):
                 "web_agent_id": web_agent_id or self.web_agent_id,
                 "validator_id": self.validator_id,
             }
-            session = await self._get_session()
+            session = self._get_session()
             async with session.delete(endpoint, params=params) as response:
                 return response.status in (200, 202)
         except Exception:
@@ -376,13 +533,16 @@ class _ScopedAsyncStatefulEvaluator(AsyncStatefulEvaluator):
         enable_score_cheating: bool,
         capture_screenshot: bool,
     ) -> None:
-        super().__init__(
-            task=task,
-            web_agent_id=web_agent_id,
-            enable_score_cheating=enable_score_cheating,
-            should_record_gif=False,
-            capture_screenshot=capture_screenshot,
-        )
+        init_kwargs: dict[str, Any] = {
+            "task": task,
+            "web_agent_id": web_agent_id,
+            "should_record_gif": False,
+            "capture_screenshot": capture_screenshot,
+        }
+        init_sig = inspect.signature(AsyncStatefulEvaluator.__init__)
+        if "enable_score_cheating" in init_sig.parameters:
+            init_kwargs["enable_score_cheating"] = bool(enable_score_cheating)
+        super().__init__(**init_kwargs)
         self.validator_id = str(validator_id or os.getenv("VALIDATOR_ID") or IWA_VALIDATOR_ID or "validator_001").strip() or "validator_001"
 
     async def _init_async(self) -> None:
@@ -1216,13 +1376,21 @@ async def run_evaluation(
                 if not isinstance(args, dict):
                     args = {}
                 if name.startswith("browser."):
-                    action_type = name.split(".", 1)[1].strip()
+                    action_type = _iwa_action_type_from_browser_tool_name(name)
                     if action_type:
                         normalized = dict(args)
-                        normalized["type"] = str(normalized.get("type") or action_type)
+                        # Tool arguments may include unrelated "type" fields; always
+                        # force canonical IWA action type from the tool name.
+                        normalized["type"] = action_type
                         payload = normalized
                     else:
-                        payload = {"name": name, "arguments": args}
+                        suffix = name.split(".", 1)[1].strip()
+                        if suffix:
+                            normalized = dict(args)
+                            normalized["type"] = str(normalized.get("type") or suffix)
+                            payload = normalized
+                        else:
+                            payload = {"name": name, "arguments": args}
                 elif name == "user.request_input":
                     normalized = dict(args)
                     normalized["type"] = str(normalized.get("type") or "request_user_input")
@@ -1275,6 +1443,27 @@ async def run_evaluation(
     t_start = time.time()
     reps = max(1, int(repeat))
     concurrency = max(1, int(task_concurrency))
+    autocinema_project_ids = {"autocinema", "p01_autocinema"}
+
+    def _extract_base_web_agent_number(raw_web_agent_id: str) -> int:
+        matched = re.search(r"\d+", str(raw_web_agent_id or ""))
+        if matched is None:
+            return 1
+        try:
+            parsed = int(matched.group(0))
+            return parsed if parsed > 0 else 1
+        except ValueError:
+            return 1
+
+    def _build_episode_web_agent_id(task_web_project_id: str, episode_index: int) -> str:
+        project_key = str(task_web_project_id or "").strip().lower()
+        if project_key in autocinema_project_ids:
+            # Autocinema login expects pre-seeded users user1..user256.
+            base_number = _extract_base_web_agent_number(base_web_agent_id)
+            bounded = ((base_number - 1 + int(episode_index)) % 256) + 1
+            return str(bounded)
+        return f"{base_web_agent_id}-{run_scope}-{episode_index + 1}"
+
     episode_specs: list[dict[str, Any]] = []
     for i, base_task in enumerate(tasks):
         for r in range(reps):
@@ -1290,7 +1479,7 @@ async def run_evaluation(
                 else:
                     uc_name = str(uc)
             episode_index = len(episode_specs)
-            episode_web_agent_id = f"{base_web_agent_id}-{run_scope}-{episode_index + 1}"
+            episode_web_agent_id = _build_episode_web_agent_id(str(getattr(task, "web_project_id", "")), episode_index)
             episode_validator_id = f"{base_validator_id}-{run_scope}-{episode_index + 1}"
             episode_task_id = f"{task.id}-{seed_used}-{r}-{episode_web_agent_id}"
             episode_specs.append(

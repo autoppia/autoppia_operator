@@ -275,6 +275,7 @@ def _act_http_response(
 
     out: dict[str, Any] = {
         "protocol_version": str(raw_resp.get("protocol_version") or IWA_ACT_PROTOCOL_VERSION),
+        "actions": actions,
         "tool_calls": tool_calls,
         "content": (content if (bool(raw_resp.get("done")) or done_from_actions) and isinstance(content, str) and content.strip() else None),
         "reasoning": str(raw_resp.get("reasoning")).strip()[:200] if isinstance(raw_resp.get("reasoning"), str) and str(raw_resp.get("reasoning")).strip() else None,

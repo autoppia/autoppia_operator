@@ -4,6 +4,7 @@ from .utils import *
 from .state import *
 from .candidates import *
 from .site_knowledge import *
+from .trajectory import get_trajectory_examples
 
 class ObsBuilder:
     def _group_label_for_candidate(self, cand: Candidate) -> str:
@@ -2428,6 +2429,19 @@ class ObsBuilder:
             if _env_bool("FSM_USE_SITE_KNOWLEDGE", False)
             else {}
         )
+        use_case_name = ""
+        if isinstance(use_case, dict):
+            use_case_name = str(use_case.get("use_case") or use_case.get("id") or use_case.get("name") or "")
+        trajectory_examples = (
+            get_trajectory_examples(
+                web_project_id=_candidate_text(web_project_id),
+                use_case=use_case_name,
+                prompt=prompt,
+                limit=max(1, min(_env_int("FSM_TRAJECTORY_EXAMPLES_LIMIT", 2), 4)),
+            )
+            if _env_bool("FSM_USE_TRAJECTORY_EXAMPLES", False)
+            else []
+        )
         return {
             "task_id": str(task_id or ""),
             "web_project_id": _candidate_text(web_project_id),
@@ -2461,6 +2475,7 @@ class ObsBuilder:
             "local_workflow_closure": local_workflow_closure,
             "local_html_context": local_html_context,
             "site_knowledge": site_knowledge,
+            "trajectory_examples": trajectory_examples,
             "avoid_repeating": avoid_repeating,
             "reasoning_trace": reasoning_trace,
             "active_subgoal": active,

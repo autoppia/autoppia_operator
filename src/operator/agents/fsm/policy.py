@@ -193,6 +193,9 @@ class Policy:
                 "KNOWN SITE MAP (JSON):",
                 json.dumps(policy_obs.get("site_knowledge") if isinstance(policy_obs.get("site_knowledge"), dict) else {}, ensure_ascii=False),
                 "",
+                "REFERENCE TRAJECTORIES (JSON):",
+                json.dumps(policy_obs.get("trajectory_examples") if isinstance(policy_obs.get("trajectory_examples"), list) else [], ensure_ascii=False),
+                "",
                 "AVOID REPEATING (JSON):",
                 json.dumps(policy_obs.get("avoid_repeating") if isinstance(policy_obs.get("avoid_repeating"), dict) else {}, ensure_ascii=False),
                 "",
@@ -333,6 +336,9 @@ class Policy:
             "",
             "KNOWN SITE MAP (JSON):",
             json.dumps(policy_obs.get("site_knowledge") if isinstance(policy_obs.get("site_knowledge"), dict) else {}, ensure_ascii=False),
+            "",
+            "REFERENCE TRAJECTORIES (JSON):",
+            json.dumps(policy_obs.get("trajectory_examples") if isinstance(policy_obs.get("trajectory_examples"), list) else [], ensure_ascii=False),
             "",
             "AVOID REPEATING (JSON):",
             json.dumps(policy_obs.get("avoid_repeating") if isinstance(policy_obs.get("avoid_repeating"), dict) else {}, ensure_ascii=False),
@@ -1003,4 +1009,3 @@ class Policy:
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]
-
