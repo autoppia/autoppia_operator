@@ -4,16 +4,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import traceback
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 root_str = str(ROOT)
 if root_str not in sys.path:
     sys.path.insert(0, root_str)
+IWA_ROOT = ROOT.parent / "autoppia_iwa"
+iwa_root_str = str(IWA_ROOT)
+if IWA_ROOT.exists() and iwa_root_str not in sys.path:
+    sys.path.insert(0, iwa_root_str)
 
 # autoppia_iwa config enforces provider keys at import time.
 os.environ.setdefault("LLM_PROVIDER", "openai")
@@ -21,29 +25,45 @@ os.environ.setdefault("OPENAI_API_KEY", "dummy")
 
 from autoppia_iwa.src.data_generation.tasks.classes import Task
 from eval import _normalize_task_url_for_project
-from src.operator.agents.fsm.trajectory import get_trajectory_bootstrap_actions
+from src.operator.agents.fsm.trajectory import get_trajectory_replay_bundle
 from src.operator.runtime.trajectory_executor import TrajectoryExecutor
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run one Autoppia IWA task with trajectory actions only, then print final score "
-            "to check if it stays at 0 or not."
+            "Run strict trajectory replay for one task or all use-cases in a project, "
+            "then print final scores."
         )
     )
-    parser.add_argument("--task-cache", default="data/task_cache/tasks_cache.json")
+    parser.add_argument(
+        "--task-cache",
+        default="",
+        help=(
+            "Optional cache file path. If omitted, the script auto-detects a cache that contains "
+            "the requested project and creates one if none is found."
+        ),
+    )
     parser.add_argument("--web-project-id", default="autocinema")
     parser.add_argument("--use-case", default=None)
+    parser.add_argument(
+        "--all-use-cases",
+        action="store_true",
+        help=(
+            "Run strict replay for all use-cases in the selected project (one task per use-case). "
+            "If --use-case and --task-id are both omitted, this mode is enabled automatically."
+        ),
+    )
     parser.add_argument("--task-id", default=None)
     parser.add_argument("--web-agent-id", default="1")
     parser.add_argument("--validator-id", default="trajectory-test-validator")
-    parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--max-actions", type=int, default=12)
     parser.add_argument(
-        "--keep-navigate",
+        "--raw-placeholders",
         action="store_true",
-        help="Keep NavigateAction steps from trajectories. By default they are skipped to mirror FSM bootstrap.",
+        help=(
+            "Run strict replay with raw trajectory values. By default placeholders are resolved "
+            "from task prompt before execution."
+        ),
     )
     parser.add_argument("--capture-screenshot", action="store_true")
     parser.add_argument(
@@ -74,6 +94,90 @@ def _load_raw_tasks(cache_path: Path) -> list[dict[str, Any]]:
     raise ValueError(f"Unsupported cache format in {cache_path}")
 
 
+def _has_project_tasks(raw_tasks: list[dict[str, Any]], project_id: str) -> bool:
+    wanted = str(project_id or "").strip()
+    if not wanted:
+        return False
+    for task in raw_tasks:
+        if str(task.get("web_project_id") or "").strip() == wanted:
+            return True
+    return False
+
+
+def _try_load_cache_for_project(cache_path: Path, project_id: str) -> tuple[bool, list[dict[str, Any]]]:
+    try:
+        raw_tasks = _load_raw_tasks(cache_path)
+    except Exception:
+        return False, []
+    return _has_project_tasks(raw_tasks, project_id), raw_tasks
+
+
+def _auto_generate_cache(cache_path: Path, project_id: str) -> None:
+    cmd = [
+        # Keep the current interpreter to preserve active venv/site-packages.
+        str(Path(sys.executable)),
+        str((ROOT / "scripts" / "eval" / "generate_tasks.py").resolve()),
+        "--project-id",
+        str(project_id),
+        "--prompts-per-use-case",
+        "1",
+        "--out",
+        str(cache_path.resolve()),
+    ]
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(cmd, cwd=str(ROOT), check=False)
+    if int(proc.returncode) != 0:
+        raise RuntimeError(
+            f"Could not auto-generate task cache for project={project_id!r} at {cache_path}. "
+            "Run scripts/eval/generate_tasks.py manually."
+        )
+
+
+def _resolve_cache_and_tasks(args: argparse.Namespace) -> tuple[Path, list[dict[str, Any]]]:
+    project_id = str(args.web_project_id or "").strip()
+    explicit_cache = str(args.task_cache or "").strip()
+
+    if explicit_cache:
+        cache_path = Path(explicit_cache)
+        if not cache_path.is_absolute():
+            cache_path = (ROOT / explicit_cache).resolve()
+        if not cache_path.exists():
+            raise RuntimeError(f"task cache not found: {cache_path}")
+        ok, raw_tasks = _try_load_cache_for_project(cache_path, project_id)
+        if not ok:
+            raise RuntimeError(
+                f"task cache {cache_path} does not contain tasks for web_project_id={project_id!r}"
+            )
+        return cache_path, raw_tasks
+
+    candidates: list[Path] = [
+        (ROOT / "data" / "task_cache" / f"{project_id}_tasks_cache.json").resolve(),
+        (ROOT / "data" / "task_cache" / "tasks_cache.json").resolve(),
+        Path(f"/tmp/{project_id}_tasks_cache_seed1.json").resolve(),
+    ]
+    tmp_glob = sorted(Path("/tmp").glob(f"{project_id}_tasks_cache*.json"))
+    candidates.extend([p.resolve() for p in tmp_glob])
+
+    seen: set[str] = set()
+    for cache_path in candidates:
+        key = str(cache_path)
+        if key in seen or not cache_path.exists():
+            continue
+        seen.add(key)
+        ok, raw_tasks = _try_load_cache_for_project(cache_path, project_id)
+        if ok:
+            return cache_path, raw_tasks
+
+    generated = (ROOT / "data" / "task_cache" / f"{project_id}_tasks_cache.json").resolve()
+    _auto_generate_cache(generated, project_id)
+    ok, raw_tasks = _try_load_cache_for_project(generated, project_id)
+    if not ok:
+        raise RuntimeError(
+            f"Auto-generated cache at {generated} still does not contain project={project_id!r} tasks."
+        )
+    return generated, raw_tasks
+
+
 def _extract_use_case_name(task_dict: dict[str, Any]) -> str:
     use_case = task_dict.get("use_case")
     if isinstance(use_case, dict):
@@ -83,16 +187,27 @@ def _extract_use_case_name(task_dict: dict[str, Any]) -> str:
     return ""
 
 
+def _materialize_task(task_dict: dict[str, Any]) -> Task:
+    normalized = _normalize_task_url_for_project(task_dict)
+    task = Task(**normalized)
+    task.url = str(task.url or "")
+    return task
+
+
 def _pick_task(raw_tasks: list[dict[str, Any]], args: argparse.Namespace) -> Task:
+    project_id = str(args.web_project_id or "").strip()
+    use_case_filter = str(args.use_case or "").strip().upper()
+    task_id_filter = str(args.task_id or "").strip()
     selected: dict[str, Any] | None = None
+
     for task_dict in raw_tasks:
-        if str(task_dict.get("web_project_id") or "").strip() != str(args.web_project_id).strip():
+        if str(task_dict.get("web_project_id") or "").strip() != project_id:
             continue
-        if args.task_id and str(task_dict.get("id") or "").strip() != str(args.task_id).strip():
+        if task_id_filter and str(task_dict.get("id") or "").strip() != task_id_filter:
             continue
-        if args.use_case:
+        if use_case_filter:
             uc = _extract_use_case_name(task_dict).upper()
-            if uc != str(args.use_case).strip().upper():
+            if uc != use_case_filter:
                 continue
         selected = task_dict
         break
@@ -103,40 +218,80 @@ def _pick_task(raw_tasks: list[dict[str, Any]], args: argparse.Namespace) -> Tas
             f"use_case={args.use_case!r}, task_id={args.task_id!r}"
         )
 
-    normalized = _normalize_task_url_for_project(selected)
-    task = Task(**normalized)
-    task.url = _force_seed_in_url(str(task.url or ""), int(args.seed))
-    return task
+    return _materialize_task(selected)
 
 
-def _force_seed_in_url(url: str, seed: int) -> str:
-    split = urlsplit(str(url or "").strip())
-    query = dict(parse_qsl(split.query, keep_blank_values=True))
-    query["seed"] = str(int(seed))
-    return urlunsplit((split.scheme, split.netloc, split.path, urlencode(query), split.fragment))
+def _pick_all_use_case_tasks(raw_tasks: list[dict[str, Any]], args: argparse.Namespace) -> list[Task]:
+    project_id = str(args.web_project_id or "").strip()
+    first_by_use_case: dict[str, dict[str, Any]] = {}
+
+    for task_dict in raw_tasks:
+        if str(task_dict.get("web_project_id") or "").strip() != project_id:
+            continue
+        use_case_name = _extract_use_case_name(task_dict).strip()
+        if not use_case_name:
+            continue
+        uc_key = use_case_name.upper()
+        if uc_key not in first_by_use_case:
+            first_by_use_case[uc_key] = task_dict
+
+    if not first_by_use_case:
+        raise RuntimeError(f"No tasks found for web_project_id={args.web_project_id!r}")
+
+    ordered_keys = sorted(first_by_use_case.keys())
+    return [_materialize_task(first_by_use_case[key]) for key in ordered_keys]
 
 
-def _run(args: argparse.Namespace) -> int:
+def _extract_first_navigate_url(actions: list[dict[str, Any]]) -> str:
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        if str(action.get("type") or "") != "NavigateAction":
+            continue
+        url = str(action.get("url") or "").strip()
+        if url:
+            return url
+    return ""
+
+
+def _looks_like_placeholder_payload(actions: list[dict[str, Any]]) -> bool:
+    import re
+
+    token_re = re.compile(r"__[^_]{1,80}__|<[^>]{1,80}>")
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        blob = json.dumps(action, ensure_ascii=False)
+        if token_re.search(blob):
+            return True
+    return False
+
+
+def _run_single_task(args: argparse.Namespace, cache_path: Path, task: Task) -> float:
     from eval import _ScopedAsyncStatefulEvaluator  # delayed import
+    import asyncio
 
-    _configure_iwa_logs(str(args.iwa_log_level))
-
-    cache_path = (ROOT / args.task_cache).resolve()
-    raw_tasks = _load_raw_tasks(cache_path)
-    task = _pick_task(raw_tasks, args)
     use_case_name = _extract_use_case_name(task.model_dump())
-
-    actions = get_trajectory_bootstrap_actions(
+    resolve_placeholders = not bool(args.raw_placeholders)
+    selected_trajectory = get_trajectory_replay_bundle(
         web_project_id=str(task.web_project_id or args.web_project_id),
         use_case=use_case_name,
         prompt=str(task.prompt or ""),
-        max_actions=int(args.max_actions),
+        apply_prompt_overrides=resolve_placeholders,
     )
-    if not bool(args.keep_navigate):
-        actions = [a for a in actions if str(a.get("type") or "") != "NavigateAction"]
+    actions = selected_trajectory.get("actions") if isinstance(selected_trajectory.get("actions"), list) else []
+    if _looks_like_placeholder_payload(actions):
+        print("Warning: trajectory actions still contain placeholder tokens.")
+        print("         Use default mode (without --raw-placeholders) to resolve from task prompt.")
+
+    trajectory_url = str(selected_trajectory.get("url") or "").strip()
+    navigate_url = _extract_first_navigate_url(actions)
+    replay_url = navigate_url or trajectory_url
+    if replay_url:
+        task.url = replay_url
     if not actions:
         print("No trajectory actions found for this task.")
-        return 2
+        return 0.0
 
     executor = TrajectoryExecutor()
     mapped_payloads = executor.to_iwa_action_payloads(actions)
@@ -146,8 +301,12 @@ def _run(args: argparse.Namespace) -> int:
     print(f"- id: {task.id}")
     print(f"- web_project_id: {task.web_project_id}")
     print(f"- use_case: {use_case_name}")
+    print(f"- mode: strict-replay")
+    print(f"- task_cache: {cache_path}")
     print(f"- url: {task.url}")
     print(f"- prompt: {task.prompt}")
+    print(f"- trajectory_url: {str(selected_trajectory.get('url') or '')}")
+    print(f"- strict_resolve_placeholders: {resolve_placeholders}")
     print("")
     print("Task tests:")
     if getattr(task, "tests", None):
@@ -163,8 +322,6 @@ def _run(args: argparse.Namespace) -> int:
     print("")
     print("Mapped IWA payloads:")
     print(json.dumps(mapped_payloads, indent=2, ensure_ascii=False))
-
-    import asyncio
 
     async def _async_run() -> float:
         evaluator = _ScopedAsyncStatefulEvaluator(
@@ -246,7 +403,45 @@ def _run(args: argparse.Namespace) -> int:
         finally:
             await evaluator.close()
 
-    final_score = asyncio.run(_async_run())
+    return asyncio.run(_async_run())
+
+
+def _run(args: argparse.Namespace) -> int:
+    _configure_iwa_logs(str(args.iwa_log_level))
+    cache_path, raw_tasks = _resolve_cache_and_tasks(args)
+
+    run_all_use_cases = bool(args.all_use_cases) or (not args.use_case and not args.task_id)
+    if run_all_use_cases:
+        tasks = _pick_all_use_case_tasks(raw_tasks, args)
+        print(
+            f"Batch mode: web_project_id={args.web_project_id} "
+            f"use_cases={len(tasks)} strict_replay=True"
+        )
+        failed_use_cases: list[str] = []
+        for index, task in enumerate(tasks, 1):
+            use_case_name = _extract_use_case_name(task.model_dump()) or "UNKNOWN"
+            print("")
+            print("=" * 90)
+            print(f"[{index}/{len(tasks)}] use_case={use_case_name}")
+            print("=" * 90)
+            final_score = _run_single_task(args, cache_path, task)
+            if final_score <= 0.0:
+                failed_use_cases.append(use_case_name)
+                print("Score is still 0.0")
+
+        print("")
+        print("Batch summary:")
+        print(f"- total_use_cases: {len(tasks)}")
+        print(f"- passed: {len(tasks) - len(failed_use_cases)}")
+        print(f"- failed: {len(failed_use_cases)}")
+        if failed_use_cases:
+            print(f"- failed_use_cases: {', '.join(failed_use_cases)}")
+        if args.expect_non_zero and failed_use_cases:
+            return 1
+        return 0
+
+    task = _pick_task(raw_tasks, args)
+    final_score = _run_single_task(args, cache_path, task)
     if args.expect_non_zero and final_score <= 0.0:
         print("Score is still 0.0")
         return 1

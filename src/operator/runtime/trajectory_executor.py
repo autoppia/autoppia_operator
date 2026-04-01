@@ -11,6 +11,7 @@ from src.operator.support.utils import normalize_selector_payload
 SUPPORTED_TRAJECTORY_ACTIONS = {
     "ClickAction",
     "TypeAction",
+    "SelectAction",
     "SendKeysAction",
     "NavigateAction",
 }
@@ -109,6 +110,11 @@ class TrajectoryExecutor:
         if action_type == "TypeAction":
             text = self._extract_type_text(action)
             mapped["text"] = text
+        elif action_type == "SelectAction":
+            value = action.get("value")
+            if value is None:
+                raise TrajectoryMapperError("SelectAction requires 'value'.")
+            mapped["value"] = str(value)
 
         return mapped
 
@@ -169,6 +175,8 @@ class TrajectoryExecutor:
         payload = {"type": action_type, "selector": mapped["selector"]}
         if action_type == "TypeAction":
             payload["text"] = mapped["text"]
+        elif action_type == "SelectAction":
+            payload["value"] = mapped["value"]
         return payload
 
     def to_iwa_action_payloads(self, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -250,6 +258,17 @@ class TrajectoryExecutor:
             await self._ensure_selector_exists(page, playwright_selector)
             await _await_if_needed(page.fill(playwright_selector, text, timeout=self.timeout_ms))
             return f"page.fill({playwright_selector!r}, {text!r}, timeout={self.timeout_ms})"
+
+        if action_type == "SelectAction":
+            value = str(mapped_action.get("value") or "")
+            if not value:
+                raise TrajectoryMapperError("Mapped SelectAction has empty 'value'.")
+            playwright_selector = str(mapped_action.get("playwright_selector") or "")
+            await self._ensure_selector_exists(page, playwright_selector)
+            await _await_if_needed(
+                page.select_option(playwright_selector, value=value, timeout=self.timeout_ms)
+            )
+            return f"page.select_option({playwright_selector!r}, value={value!r}, timeout={self.timeout_ms})"
 
         if action_type == "SendKeysAction":
             keys = mapped_action.get("keys") if isinstance(mapped_action.get("keys"), list) else []

@@ -1,140 +1,113 @@
 # Operator Trajectory Context
 
-Last update: 2026-03-31
+Last update: 2026-04-01
 
 ## Scope
 
-This note is a quick handoff context for continuing trajectory work in `autoppia_operator`, especially for `autocinema` and `autobooks`.
+This is the handoff context to continue trajectory work in `autoppia_operator`.
+Current focus has been strict replay workflow consolidation plus trajectories for:
 
-## Where Trajectories Live
+- `autobooks`
+- `autozone`
+- `autodining`
+- `autocrm` (started today)
 
-- Main file: `src/operator/agents/fsm/trajectory.py`
-- Canonical variable: `TRAJECTORIES`
-- Current structure:
-  - `project_id: "p01_autocinema"`
-  - `project_id: "p02_autobooks"`
-- Both projects are unified in the same `TRAJECTORIES` list.
+## Current Replay Model (Important)
 
-## How Selection Works
+Trajectory testing is now strict replay-oriented:
 
-`get_trajectory_bootstrap_actions(...)` chooses one trajectory by score:
+- trajectory source: `src/operator/agents/fsm/trajectory.py`
+- selection API: `get_trajectory_replay_bundle(...)`
+- prompt adaptation: `_apply_prompt_overrides(...)`
+- runtime mapper/executor: `src/operator/runtime/trajectory_executor.py`
+- test runner: `scripts/test_trajectory_task_score.py`
 
-- project match (normalized alias, e.g. `autobooks` <-> `p02_autobooks`)
-- exact `use_case` match
-- prompt token overlap
+### Key behavior now
 
-Then `_apply_prompt_overrides(...)` adapts placeholders from the real task prompt:
+- URL/seed comes from trajectory (`NavigateAction` / trajectory `url`).
+- No CLI seed override in trajectory score script.
+- If you change seed in trajectory URL, many use cases can fail by criteria mismatch.
+- If `--use-case` and `--task-id` are omitted, the script runs all use cases in batch for the selected project.
 
-- `<username>`, `<password>`, email, comments
-- `__SEARCH_QUERY__`, `__RATING__`, `__AUTHOR__`, `__GENRE__`, etc.
+## Script Updates Implemented Today
 
-## Test Script Used
+File: `scripts/test_trajectory_task_score.py`
 
-- Script: `scripts/test_trajectory_task_score.py`
-- Purpose: run one benchmark task with trajectory actions only and print step-by-step score evolution.
+- Added `--all-use-cases`.
+- Added automatic batch mode when no `--use-case` and no `--task-id`.
+- Batch summary includes total/passed/failed and failed use case list.
+- Kept single-use-case mode unchanged.
 
-Key flags:
+## Runtime Updates Implemented Today
 
-- `--web-project-id`
-- `--use-case` or `--task-id`
-- `--task-cache` (important: choose cache for correct project)
-- `--seed`
-- `--expect-non-zero`
-- `--iwa-log-level INFO|ERROR`
-- `--keep-navigate` (disabled by default)
+File: `src/operator/runtime/trajectory_executor.py`
 
-## Important Pitfalls
+- `SelectAction` support was added end-to-end:
+  - accepted in supported action types
+  - mapped to IWA payload
+  - executed with Playwright `select_option`
 
-1. Wrong `web-project-id` typo
-- `autoboooks` fails.
-- Correct: `autobooks`.
+## Trajectory Adapter Updates Implemented Today
 
-2. Wrong cache for project
-- Default cache (`data/task_cache/tasks_cache.json`) currently contains only `autocinema`.
-- For Autobooks tests, use cache like `/tmp/autobooks_tasks_cache_seed1.json`.
+File: `src/operator/agents/fsm/trajectory.py`
 
-3. Seed behavior
-- Script forces task URL seed via `_force_seed_in_url(...)`.
-- By default it removes `NavigateAction` to mimic FSM bootstrap.
-- If `--keep-navigate` is used, navigate URLs inside trajectory must match seed or evaluator can fail with `Seed mismatch`.
+- Cleaned and reinforced strict replay overrides for `autodining`.
+- Added robust prompt extraction for negative constraints (`not`, `not_equals`, etc.).
+- Fixed selector/XPath generation issues (including invalid XPath in phone input case).
+- Added controlled no-op key steps in `SEARCH_RESTAURANT` to cover debounce-based event logging.
 
-4. Dynamic constraints
-- Many benchmark prompts are constraint-based (`equals`, `not_equals`, ranges).
-- A trajectory may execute fine but still score `0` if chosen entity/text does not satisfy task constraints.
+## IWA Alignment Changes Done
 
-## Recent Fix Applied
+Files in `autoppia_iwa`:
 
-In `trajectory.py`, search-query extraction was improved for prompts like:
+- `autoppia_iwa/src/demo_webs/projects/autodining_4/data.py`
+- `autoppia_iwa/src/demo_webs/projects/autodining_4/events.py`
 
-- `query not_equals 'X'`
+Purpose:
 
-Now the adapter avoids using the forbidden value as the search text, which fixed `SEARCH_BOOK` scoring in tested seed.
+- align constants and event parsing with real `web_4_autodining` frontend behavior and labels.
 
-## Autobooks Status (seed=1, task cache seed1)
+## Validation Snapshot
 
-Validated snapshot during this session:
+### Autobooks / Autozone
 
-- Passing (`1.0`):
-  - `SEARCH_BOOK`
-  - `ADD_TO_READING_LIST`
+- Work was migrated to strict replay style and validated in this session series.
 
-- Failing / needs adjustment:
-  - `EDIT_BOOK`
-  - `PURCHASE_BOOK`
-  - `REMOVE_FROM_READING_LIST`
-  - `VIEW_CART_BOOK`
-  - `ADD_TO_CART_BOOK`
-  - `REMOVE_FROM_CART_BOOK`
+### Autodining
 
-- Special case:
-  - `FILTER_BOOK`, `BOOK_DETAIL` are currently navigate-centric.
-  - Without `--keep-navigate`, they may show `No trajectory actions found`.
-  - With `--keep-navigate`, they can fail on seed mismatch if trajectory URL seed differs.
+- Final strict replay sweep: `20/20` use cases green.
+- Cache used/regenerated: `data/task_cache/autodining_tasks_cache.json`.
 
-## Recommended Command Templates
+### AutoCRM (new start)
 
-Autobooks:
+- Recording intake started.
+- First received recording: `SEARCH_MATTER` (`Estate`) on `http://localhost:8004/?seed=1`.
+- Next requested recording: `FILTER_MATTER_STATUS` with prompt:
+  - `Filter matters to only show those with status 'Active'.`
+
+## Commands (Short, from `autoppia_operator` with venv active)
+
+Single use case:
 
 ```bash
-.venv/bin/python scripts/test_trajectory_task_score.py \
-  --task-cache /tmp/autobooks_tasks_cache_seed1.json \
-  --web-project-id autobooks \
-  --use-case SEARCH_BOOK \
-  --seed 1 \
-  --expect-non-zero \
-  --iwa-log-level ERROR
+python scripts/test_trajectory_task_score.py --web-project-id autodining --use-case VIEW_RESTAURANT --expect-non-zero --iwa-log-level ERROR
 ```
 
-Autocinema:
+Whole project (batch):
 
 ```bash
-.venv/bin/python scripts/test_trajectory_task_score.py \
-  --web-project-id autocinema \
-  --use-case SEARCH_FILM \
-  --seed 1 \
-  --expect-non-zero \
-  --iwa-log-level ERROR
+python scripts/test_trajectory_task_score.py --web-project-id autodining --expect-non-zero --iwa-log-level ERROR
 ```
 
-Debug with full internal signals:
+Explicit batch flag:
 
 ```bash
-.venv/bin/python scripts/test_trajectory_task_score.py \
-  --task-cache /tmp/autobooks_tasks_cache_seed1.json \
-  --web-project-id autobooks \
-  --use-case PURCHASE_BOOK \
-  --seed 1 \
-  --iwa-log-level INFO
+python scripts/test_trajectory_task_score.py --web-project-id autodining --all-use-cases --expect-non-zero --iwa-log-level ERROR
 ```
 
-## Next Work Plan
+## Next Session Plan
 
-1. For each failing use case, run one task with `--iwa-log-level INFO`.
-2. Check first failing step:
-   - selector mismatch vs. DOM
-   - action order mismatch
-   - task-constraint mismatch
-3. Adjust trajectory to be constraint-robust (prefer placeholders and stable selectors).
-4. Re-run with `--expect-non-zero`.
-5. Repeat for remaining use cases.
-
+1. Continue `autocrm` recordings use case by use case (1x1).
+2. Convert each recording into strict replay trajectory entry.
+3. Run single-use-case score checks.
+4. Run full `autocrm` batch and close gaps to green.

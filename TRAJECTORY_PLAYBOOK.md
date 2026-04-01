@@ -4,6 +4,38 @@ This guide explains how trajectories work in `autoppia_operator` and how to crea
 
 It is written so another agent can execute the process without prior context.
 
+## 0. Quick Commands (Short)
+
+Assumption:
+
+- you are already in `AUTOPPIA/Autoppia_repos/autoppia_operator`
+- venv is already activated
+
+Run one strict replay trajectory (Autobooks):
+
+```bash
+python scripts/test_trajectory_task_score.py --web-project-id autobooks --use-case SEARCH_BOOK --expect-non-zero --iwa-log-level ERROR
+```
+
+Run all use cases in one project (strict replay batch):
+
+```bash
+python scripts/test_trajectory_task_score.py --web-project-id autobooks --expect-non-zero --iwa-log-level ERROR
+```
+
+Restart operator agent:
+
+```bash
+pkill -f "uvicorn main:app" || true
+python -m uvicorn main:app --host 0.0.0.0 --port "${AGENT_PORT:-9000}"
+```
+
+Health check:
+
+```bash
+curl -sS "http://127.0.0.1:${AGENT_PORT:-9000}/health"
+```
+
 ## 1. What a trajectory is
 
 A trajectory is a fixed list of UI actions for a specific use case (for example `LOGIN`, `REGISTRATION`, `ADD_FILM`) stored in:
@@ -24,7 +56,7 @@ Main structure:
 
 The execution path is:
 
-1. `get_trajectory_bootstrap_actions(...)` reads the trajectory actions.
+1. `get_trajectory_replay_bundle(...)` selects trajectory + full action list.
 2. `TrajectoryExecutor` maps trajectory dictionaries into executable IWA actions.
 3. Evaluator runs actions step by step on the web.
 4. Benchmark score is computed from tests/event criteria.
@@ -33,9 +65,14 @@ Key files:
 
 - Trajectories: `src/operator/agents/fsm/trajectory.py`
 - Mapper: `src/operator/runtime/trajectory_executor.py`
-- Single-task debugger: `scripts/test_trajectory_task_score.py`
+- Strict replay tester (single and batch): `scripts/test_trajectory_task_score.py`
 
 ## 3. Prerequisites
+
+Assumption for all commands in this document:
+
+- you are already in `AUTOPPIA/Autoppia_repos/autoppia_operator`
+- your virtual environment is already activated
 
 To test only action format/mapping logic:
 
@@ -67,7 +104,7 @@ Given a recording JSON:
 5. Replace hardcoded values with placeholders when required by benchmark:
    - for login: `user<web_agent_id>`, `Passw0rd!`
    - for registration username/email: `newuser<web_agent_id>`, `newuser<web_agent_id>@gmail.com`
-6. Add the new trajectory under `p01_autocinema` with correct `use_case`.
+6. Add the new trajectory under the correct project block (`p01_autocinema`, `p02_autobooks`, `p03_autozone`, `p04_autodining`, etc.) with correct `use_case`.
 
 Minimal action examples:
 
@@ -98,48 +135,135 @@ Minimal action examples:
 
 ## 5. Quick local validation after editing trajectories
 
-Check that the use case exists and actions are loaded:
+Check that the use case exists and a strict replay bundle is loaded:
 
 ```bash
-.venv/bin/python - <<'PY'
-from src.operator.agents.fsm.trajectory import get_trajectory_bootstrap_actions
-actions = get_trajectory_bootstrap_actions(
+python - <<'PY'
+from src.operator.agents.fsm.trajectory import get_trajectory_replay_bundle
+bundle = get_trajectory_replay_bundle(
     web_project_id="autocinema",
     use_case="LOGIN",
     prompt="",
-    max_actions=20,
+    apply_prompt_overrides=True,
 )
+actions = bundle.get("actions", [])
+print("url:", bundle.get("url"))
 print("count:", len(actions))
 print(actions[:2])
 PY
 ```
 
-## 6. Score testing for one use case
+## 6. Score testing (single use case or full project batch)
 
-Run trajectory-only evaluator for one use case:
+Run strict replay evaluator for one use case:
 
 ```bash
-LLM_PROVIDER=openai OPENAI_API_KEY=dummy \
-PYTHONPATH=../autoppia_iwa:. \
-.venv/bin/python scripts/test_trajectory_task_score.py \
+python scripts/test_trajectory_task_score.py \
 --web-project-id autocinema \
 --use-case LOGIN \
---seed 1 \
 --web-agent-id 1 \
 --expect-non-zero
 ```
 
-For registration, use an id that matches `newuser<web_agent_id>` in your run:
+For Autobooks:
 
 ```bash
-LLM_PROVIDER=openai OPENAI_API_KEY=dummy \
-PYTHONPATH=../autoppia_iwa:. \
-.venv/bin/python scripts/test_trajectory_task_score.py \
---web-project-id autocinema \
---use-case REGISTRATION \
---seed 1 \
---web-agent-id 177 \
---expect-non-zero
+python scripts/test_trajectory_task_score.py \
+--web-project-id autobooks \
+--use-case SEARCH_BOOK \
+--expect-non-zero \
+--iwa-log-level ERROR
+```
+
+Run all Autobooks use cases (no `--use-case`):
+
+```bash
+python scripts/test_trajectory_task_score.py \
+--web-project-id autobooks \
+--expect-non-zero \
+--iwa-log-level ERROR
+```
+
+Equivalent explicit batch mode:
+
+```bash
+python scripts/test_trajectory_task_score.py \
+--web-project-id autobooks \
+--all-use-cases \
+--expect-non-zero \
+--iwa-log-level ERROR
+```
+
+### 6.1 Why this command is long (and what each argument does)
+
+`scripts/test_trajectory_task_score.py` is a debugging/evaluation runner, not a short UX command.  
+It asks for several arguments to make runs explicit and reproducible.
+
+Most important arguments:
+
+- `--web-project-id`: project id to filter tasks (`autocinema`, `autobooks`, etc.).
+- `--use-case`: use case to test (`SEARCH_BOOK`, `ADD_BOOK`, `LOGIN`, etc.). If omitted (and no `--task-id`), the script runs all use cases for that project.
+- `--all-use-cases`: explicit batch mode for all use cases in the project (optional, same behavior as omitting `--use-case` and `--task-id`).
+- `--task-cache`: optional. If omitted, script auto-detects a cache that contains the requested project and auto-generates one if needed.
+
+Seed behavior in strict replay:
+
+- reset URL comes from trajectory (`NavigateAction` / trajectory `url`)
+- the script does not override trajectory seed via CLI
+
+Common supporting arguments:
+
+- `--expect-non-zero`: exits with error code if final score stays `0.0` (useful for quick pass/fail).
+- `--iwa-log-level ERROR|INFO|...`: controls evaluator verbosity.
+- `--web-agent-id`: useful when prompts/criteria depend on `web_agent_id`.
+- `--raw-placeholders`: disables prompt-based placeholder resolution and runs raw trajectory values as-is.
+
+Environment variables used in examples:
+
+- None required for normal strict replay usage of this script.
+- If auto-cache generation is needed and no usable cache exists, ensure `autoppia_operator/.env` has a valid `OPENAI_API_KEY`.
+
+Common mistakes:
+
+- Typo in project id: `autoboooks` (wrong) vs `autobooks` (correct).
+- Passing a cache that does not contain the selected project.
+
+Autobooks example (single use case):
+
+```bash
+python scripts/test_trajectory_task_score.py \
+--web-project-id autobooks \
+--use-case SEARCH_BOOK \
+--expect-non-zero \
+--iwa-log-level ERROR
+```
+
+Optional shortcut alias for Autobooks:
+
+```bash
+alias test_ab='python scripts/test_trajectory_task_score.py --web-project-id autobooks --expect-non-zero --iwa-log-level ERROR'
+```
+
+Then run:
+
+```bash
+test_ab --use-case SEARCH_BOOK
+```
+
+### 6.2 Placeholder behavior in strict replay
+
+This script runs strict replay by default.
+
+Default behavior:
+
+- keeps `NavigateAction` and action order as stored
+- uses trajectory URL/seed for reset
+- resolves placeholders from task prompt before execution
+
+If you want raw literal values from the trajectory file:
+
+```bash
+--raw-placeholders
 ```
 
 ## 7. Test by task id
@@ -147,7 +271,7 @@ PYTHONPATH=../autoppia_iwa:. \
 Get task ids from cache:
 
 ```bash
-.venv/bin/python - <<'PY'
+python - <<'PY'
 import json
 from pathlib import Path
 p = Path("data/task_cache/tasks_cache.json")
@@ -164,9 +288,7 @@ PY
 Run by id:
 
 ```bash
-LLM_PROVIDER=openai OPENAI_API_KEY=dummy \
-PYTHONPATH=../autoppia_iwa:. \
-.venv/bin/python scripts/test_trajectory_task_score.py \
+python scripts/test_trajectory_task_score.py \
 --task-id <TASK_ID> \
 --web-agent-id 1 \
 --expect-non-zero
@@ -204,7 +326,7 @@ Always verify printed task details:
 If needed, regenerate cache:
 
 ```bash
-.venv/bin/python scripts/eval/generate_tasks.py --project-id autocinema --prompts-per-use-case 1
+python scripts/eval/generate_tasks.py --project-id autocinema --prompts-per-use-case 1
 ```
 
 ## 10. Criteria vs event payload rule
@@ -221,11 +343,11 @@ For any failing use case:
 
 A trajectory is considered correct when:
 
-1. Actions are loaded by `get_trajectory_bootstrap_actions(...)`.
+1. Actions are loaded by `get_trajectory_replay_bundle(...)`.
 2. Mapper converts actions without schema errors.
 3. Steps execute without critical action errors.
 4. Final benchmark score is non-zero for the target task/use case.
-5. Result is reproducible with same seed.
+5. Result is reproducible with the trajectory's recorded URL/seed.
 
 ## 12. Suggested working loop
 
@@ -235,4 +357,3 @@ A trajectory is considered correct when:
 4. Re-test same use case until non-zero.
 5. Move to next use case.
 6. Run an autocinema sweep at the end.
-
