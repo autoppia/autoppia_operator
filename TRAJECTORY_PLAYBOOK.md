@@ -227,7 +227,7 @@ python scripts/test_trajectory_task_score.py \
 
 ### 6.1 Why this command is long (and what each argument does)
 
-`scripts/test_trajectory_task_score.py` is a debugging/evaluation runner, not a short UX command.  
+`scripts/test_trajectory_task_score.py` is a debugging/evaluation runner, not a short UX command.
 It asks for several arguments to make runs explicit and reproducible.
 
 Most important arguments:

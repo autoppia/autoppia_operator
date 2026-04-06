@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import re
-from datetime import date as _date
-from datetime import datetime as _datetime
-from datetime import timedelta as _timedelta
-from typing import Any, Dict, List
+from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
+from typing import Any
 
-TRAJECTORIES: List[Dict[str, Any]] = [
+TRAJECTORIES: list[dict[str, Any]] = [
     {
         "project_id": "p01_autocinema",
         "trajectories": [
@@ -339,13 +337,13 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                         "type": "ClickAction",
                         "selector": {
                             "type": "xpathSelector",
-                            "value": "//*[@id=\"login-username-input\"]",
+                            "value": '//*[@id="login-username-input"]',
                             "case_sensitive": False,
                         },
                         "attributes": {
                             "selector": {
                                 "type": "xpathSelector",
-                                "value": "//*[@id=\"login-username-input\"]",
+                                "value": '//*[@id="login-username-input"]',
                                 "case_sensitive": False,
                             }
                         },
@@ -355,14 +353,14 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                         "type": "TypeAction",
                         "selector": {
                             "type": "xpathSelector",
-                            "value": "//*[@id=\"login-username-input\"]",
+                            "value": '//*[@id="login-username-input"]',
                             "case_sensitive": False,
                         },
                         "attributes": {
                             "text": "user<web_agent_id>",
                             "selector": {
                                 "type": "xpathSelector",
-                                "value": "//*[@id=\"login-username-input\"]",
+                                "value": '//*[@id="login-username-input"]',
                                 "case_sensitive": False,
                             },
                         },
@@ -371,13 +369,13 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                         "type": "ClickAction",
                         "selector": {
                             "type": "xpathSelector",
-                            "value": "//*[@id=\"login-password-input\"]",
+                            "value": '//*[@id="login-password-input"]',
                             "case_sensitive": False,
                         },
                         "attributes": {
                             "selector": {
                                 "type": "xpathSelector",
-                                "value": "//*[@id=\"login-password-input\"]",
+                                "value": '//*[@id="login-password-input"]',
                                 "case_sensitive": False,
                             }
                         },
@@ -387,14 +385,14 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                         "type": "TypeAction",
                         "selector": {
                             "type": "xpathSelector",
-                            "value": "//*[@id=\"login-password-input\"]",
+                            "value": '//*[@id="login-password-input"]',
                             "case_sensitive": False,
                         },
                         "attributes": {
                             "text": "Passw0rd!",
                             "selector": {
                                 "type": "xpathSelector",
-                                "value": "//*[@id=\"login-password-input\"]",
+                                "value": '//*[@id="login-password-input"]',
                                 "case_sensitive": False,
                             },
                         },
@@ -1828,13 +1826,13 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                         "type": "ClickAction",
                         "selector": {
                             "type": "xpathSelector",
-                            "value": "//*[@id=\"login-username-input\"]",
+                            "value": '//*[@id="login-username-input"]',
                             "case_sensitive": False,
                         },
                         "attributes": {
                             "selector": {
                                 "type": "xpathSelector",
-                                "value": "//*[@id=\"login-username-input\"]",
+                                "value": '//*[@id="login-username-input"]',
                                 "case_sensitive": False,
                             }
                         },
@@ -1844,14 +1842,14 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                         "type": "TypeAction",
                         "selector": {
                             "type": "xpathSelector",
-                            "value": "//*[@id=\"login-username-input\"]",
+                            "value": '//*[@id="login-username-input"]',
                             "case_sensitive": False,
                         },
                         "attributes": {
                             "text": "user<web_agent_id>",
                             "selector": {
                                 "type": "xpathSelector",
-                                "value": "//*[@id=\"login-username-input\"]",
+                                "value": '//*[@id="login-username-input"]',
                                 "case_sensitive": False,
                             },
                         },
@@ -1860,13 +1858,13 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                         "type": "ClickAction",
                         "selector": {
                             "type": "xpathSelector",
-                            "value": "//*[@id=\"login-password-input\"]",
+                            "value": '//*[@id="login-password-input"]',
                             "case_sensitive": False,
                         },
                         "attributes": {
                             "selector": {
                                 "type": "xpathSelector",
-                                "value": "//*[@id=\"login-password-input\"]",
+                                "value": '//*[@id="login-password-input"]',
                                 "case_sensitive": False,
                             }
                         },
@@ -1876,14 +1874,14 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                         "type": "TypeAction",
                         "selector": {
                             "type": "xpathSelector",
-                            "value": "//*[@id=\"login-password-input\"]",
+                            "value": '//*[@id="login-password-input"]',
                             "case_sensitive": False,
                         },
                         "attributes": {
                             "text": "Passw0rd!",
                             "selector": {
                                 "type": "xpathSelector",
-                                "value": "//*[@id=\"login-password-input\"]",
+                                "value": '//*[@id="login-password-input"]',
                                 "case_sensitive": False,
                             },
                         },
@@ -2029,9 +2027,7 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                     {
                         "type": "SendKeysAction",
                         "keys": ["Enter"],
-                        "attributes": {
-                            "keys": ["Enter"]
-                        },
+                        "attributes": {"keys": ["Enter"]},
                     },
                 ],
                 "use_case": "SEARCH_FILM",
@@ -2196,13 +2192,13 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                         "type": "ClickAction",
                         "selector": {
                             "type": "xpathSelector",
-                            "value": "//*[@id=\"movie_player\"]/div[1]/video",
+                            "value": '//*[@id="movie_player"]/div[1]/video',
                             "case_sensitive": False,
                         },
                         "attributes": {
                             "selector": {
                                 "type": "xpathSelector",
-                                "value": "//*[@id=\"movie_player\"]/div[1]/video",
+                                "value": '//*[@id="movie_player"]/div[1]/video',
                                 "case_sensitive": False,
                             }
                         },
@@ -9501,9 +9497,7 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                     {
                         "type": "SendKeysAction",
                         "keys": ["Enter"],
-                        "attributes": {
-                            "keys": ["Enter"]
-                        },
+                        "attributes": {"keys": ["Enter"]},
                     },
                 ],
                 "use_case": "SEARCH_DELIVERY_RESTAURANT",
@@ -9577,9 +9571,7 @@ TRAJECTORIES: List[Dict[str, Any]] = [
                     {
                         "type": "SendKeysAction",
                         "keys": ["Enter"],
-                        "attributes": {
-                            "keys": ["Enter"]
-                        },
+                        "attributes": {"keys": ["Enter"]},
                     },
                 ],
                 "use_case": "RESTAURANT_FILTER",
@@ -10556,9 +10548,9 @@ def _project_keys(project_id: str) -> set[str]:
     return {item for item in out if item}
 
 
-def _compact_trajectory(trajectory: Dict[str, Any], *, max_actions: int = 8) -> Dict[str, Any]:
+def _compact_trajectory(trajectory: dict[str, Any], *, max_actions: int = 8) -> dict[str, Any]:
     actions = trajectory.get("actions") if isinstance(trajectory.get("actions"), list) else []
-    compact_actions: List[Dict[str, Any]] = []
+    compact_actions: list[dict[str, Any]] = []
     for action in actions[: max(1, int(max_actions))]:
         if not isinstance(action, dict):
             continue
@@ -10588,13 +10580,13 @@ def get_trajectory_examples(
     use_case: str = "",
     prompt: str = "",
     limit: int = 2,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     max_items = max(1, int(limit))
     wanted_project_keys = _project_keys(web_project_id)
     wanted_use_case = str(use_case or "").strip().lower()
     prompt_terms = {t for t in re.findall(r"[a-zA-Z0-9_]{4,}", str(prompt or "").lower())}
 
-    ranked: List[tuple[int, Dict[str, Any]]] = []
+    ranked: list[tuple[int, dict[str, Any]]] = []
     for project in TRAJECTORIES:
         if not isinstance(project, dict):
             continue
@@ -10619,7 +10611,7 @@ def get_trajectory_examples(
 
     ranked.sort(key=lambda item: item[0], reverse=True)
     if not ranked:
-        fallback: List[Dict[str, Any]] = []
+        fallback: list[dict[str, Any]] = []
         for project in TRAJECTORIES:
             for trajectory in project.get("trajectories") if isinstance(project.get("trajectories"), list) else []:
                 if isinstance(trajectory, dict):
@@ -10635,12 +10627,12 @@ def _find_best_trajectory(
     web_project_id: str = "",
     use_case: str = "",
     prompt: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     wanted_project_keys = _project_keys(web_project_id)
     wanted_use_case = str(use_case or "").strip().lower()
     prompt_terms = {t for t in re.findall(r"[a-zA-Z0-9_]{4,}", str(prompt or "").lower())}
     best_score = -1
-    best_out: Dict[str, Any] = {}
+    best_out: dict[str, Any] = {}
 
     for project in TRAJECTORIES:
         if not isinstance(project, dict):
@@ -10677,7 +10669,7 @@ def _find_best_trajectory(
     return best_out
 
 
-def _extract_prompt_value(prompt: str, patterns: List[str]) -> str:
+def _extract_prompt_value(prompt: str, patterns: list[str]) -> str:
     text = str(prompt or "")
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.I)
@@ -10688,7 +10680,7 @@ def _extract_prompt_value(prompt: str, patterns: List[str]) -> str:
     return ""
 
 
-def _default_comment_text(forbidden_terms: List[str]) -> str:
+def _default_comment_text(forbidden_terms: list[str]) -> str:
     candidates = ["Great movie and solid pacing.", "Really enjoyed this film.", "Excellent direction and cast."]
     blocked = [str(x or "").strip().lower() for x in forbidden_terms if str(x or "").strip()]
     for candidate in candidates:
@@ -10712,9 +10704,7 @@ def _is_unusable_query_candidate(value: str) -> bool:
         return True
     if len(cleaned) > 80:
         return True
-    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", cleaned):
-        return True
-    return False
+    return bool(re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", cleaned))
 
 
 def _extract_search_query(prompt: str) -> str:
@@ -10755,9 +10745,7 @@ def _extract_search_query(prompt: str) -> str:
         r"(?:email_from|from_email)\s*(?:equals|=|is|:|contains)\s*['\"]([^'\"]+)['\"]",
     ]
     extracted = _extract_prompt_value(prompt, patterns)
-    if extracted and not _is_unusable_query_candidate(extracted) and (
-        not forbidden_query or _norm_key(extracted) != _norm_key(forbidden_query)
-    ) and _norm_key(extracted) not in forbidden_norm:
+    if extracted and not _is_unusable_query_candidate(extracted) and (not forbidden_query or _norm_key(extracted) != _norm_key(forbidden_query)) and _norm_key(extracted) not in forbidden_norm:
         return extracted
 
     generic = re.findall(r"['\"]([^'\"]+)['\"]", str(prompt or ""))
@@ -10816,9 +10804,7 @@ def _extract_automail_label_name(prompt: str) -> str:
             return False
         if forbidden_equals and _norm_key(value) == _norm_key(forbidden_equals):
             return False
-        if forbidden_contains and str(forbidden_contains).strip().lower() in value.lower():
-            return False
-        return True
+        return not (forbidden_contains and str(forbidden_contains).strip().lower() in value.lower())
 
     if extracted and _is_valid(extracted):
         return extracted
@@ -10885,16 +10871,14 @@ def _extract_automail_add_label_query(prompt: str) -> str:
         ],
     )
     cleaned = str(candidate or "").strip()
-    if cleaned and not _is_unusable_query_candidate(cleaned):
-        if forbidden and _norm_key(cleaned) == _norm_key(forbidden):
-            cleaned = ""
+    if cleaned and not _is_unusable_query_candidate(cleaned) and forbidden and _norm_key(cleaned) == _norm_key(forbidden):
+        cleaned = ""
     if cleaned:
         return cleaned
 
     fallback = _extract_search_query(prompt)
-    if fallback and not _is_unusable_query_candidate(fallback):
-        if not forbidden or _norm_key(fallback) != _norm_key(forbidden):
-            return fallback
+    if fallback and not _is_unusable_query_candidate(fallback) and (not forbidden or _norm_key(fallback) != _norm_key(forbidden)):
+        return fallback
     return "eric.baker@management.com"
 
 
@@ -11071,16 +11055,14 @@ def _extract_automail_reply_query(prompt: str) -> str:
     )
 
     value = str(preferred or "").strip()
-    if value and not _is_unusable_query_candidate(value):
-        if blocked and _norm_key(value) == _norm_key(blocked):
-            value = ""
+    if value and not _is_unusable_query_candidate(value) and blocked and _norm_key(value) == _norm_key(blocked):
+        value = ""
     if value:
         return value
 
     generic = _extract_search_query(prompt)
-    if generic and not _is_unusable_query_candidate(generic):
-        if not blocked or _norm_key(generic) != _norm_key(blocked):
-            return generic
+    if generic and not _is_unusable_query_candidate(generic) and (not blocked or _norm_key(generic) != _norm_key(blocked)):
+        return generic
     return "eric.baker@management.com"
 
 
@@ -11102,16 +11084,14 @@ def _extract_automail_forward_query(prompt: str) -> str:
     )
 
     value = str(preferred or "").strip()
-    if value and not _is_unusable_query_candidate(value):
-        if blocked and _norm_key(value) == _norm_key(blocked):
-            value = ""
+    if value and not _is_unusable_query_candidate(value) and blocked and _norm_key(value) == _norm_key(blocked):
+        value = ""
     if value:
         return value
 
     generic = _extract_search_query(prompt)
-    if generic and not _is_unusable_query_candidate(generic):
-        if not blocked or _norm_key(generic) != _norm_key(blocked):
-            return generic
+    if generic and not _is_unusable_query_candidate(generic) and (not blocked or _norm_key(generic) != _norm_key(blocked)):
+        return generic
     return "Year-End Review Meeting - Schedule"
 
 
@@ -11138,9 +11118,8 @@ def _extract_automail_template_query(prompt: str) -> str:
     )
 
     value = str(preferred or "").strip()
-    if value and not _is_unusable_query_candidate(value):
-        if blocked and _norm_key(value) == _norm_key(blocked):
-            value = ""
+    if value and not _is_unusable_query_candidate(value) and blocked and _norm_key(value) == _norm_key(blocked):
+        value = ""
     if value:
         return value
 
@@ -11736,7 +11715,7 @@ def _extract_autocrm_calendar_label(prompt: str) -> str:
 
 def _extract_autocrm_calendar_event_type(prompt: str) -> str:
     text = str(prompt or "")
-    options: List[tuple[str, str]] = [
+    options: list[tuple[str, str]] = [
         ("Matter/Event", "forest"),
         ("Internal", "indigo"),
         ("Filing", "blue"),
@@ -11789,7 +11768,7 @@ def _extract_autocrm_calendar_event_type(prompt: str) -> str:
     return "Filing"
 
 
-def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case: str = "") -> List[Dict[str, Any]]:
+def _apply_prompt_overrides(actions: list[dict[str, Any]], prompt: str, use_case: str = "") -> list[dict[str, Any]]:
     def _resolved_value(raw_value: str, fallback: str) -> str:
         cleaned = str(raw_value or "").strip()
         if not cleaned or _is_placeholder_token(cleaned):
@@ -11802,7 +11781,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
         contains_value: str,
         forbidden_value: str,
         default_value: str,
-        alternatives: List[str],
+        alternatives: list[str],
     ) -> str:
         candidate = equals_value or contains_value or default_value
         blocked = str(forbidden_value or "").strip().lower()
@@ -11904,7 +11883,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
     prompt_forbidden_category = _extract_prompt_forbidden_category(prompt)
     prompt_forbidden_brand = _extract_prompt_forbidden_brand(prompt)
     prompt_total_amount = _extract_prompt_total_amount(prompt)
-    prompt_forbidden_carousel_title = _extract_prompt_forbidden_carousel_title(prompt)
+    _extract_prompt_forbidden_carousel_title(prompt)
     carousel_direction = _extract_carousel_direction(prompt)
     autocrm_sort_direction = _extract_autocrm_sort_direction(prompt)
     autocrm_sort_prep = "asc" if autocrm_sort_direction == "desc" else "desc"
@@ -12103,12 +12082,8 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
         "or @id='product-search' or @id='item-search' or @id='search-field' or @id='lookup-input' "
         "or @id='find-input' or @id='search-box']"
     )
-    autozone_carousel_left_xpath = (
-        "//button[@id='carousel-left-arrow' and count(preceding::button[@id='carousel-left-arrow'])=1]/*[name()='svg']"
-    )
-    autozone_carousel_right_xpath = (
-        "//button[@id='carousel-right-control' and count(preceding::button[@id='carousel-right-control'])=1]/*[name()='svg']"
-    )
+    autozone_carousel_left_xpath = "//button[@id='carousel-left-arrow' and count(preceding::button[@id='carousel-left-arrow'])=1]/*[name()='svg']"
+    autozone_carousel_right_xpath = "//button[@id='carousel-right-control' and count(preceding::button[@id='carousel-right-control'])=1]/*[name()='svg']"
     autozone_add_cart_xpath = (
         "(//*[@id='add-cart-btn' or @id='cart-add' or @id='add-basket' or @id='add-to-basket' "
         "or @id='add-to-cart' or @id='add-to-cart-button' or @id='add-cart-button' "
@@ -12135,7 +12110,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
         "or @id='toggle-choice' or @id='toggle'])[1]"
     )
 
-    def _set_xpath_selector(action_obj: Dict[str, Any], xpath_value: str) -> None:
+    def _set_xpath_selector(action_obj: dict[str, Any], xpath_value: str) -> None:
         selector_payload = {
             "type": "xpathSelector",
             "value": str(xpath_value),
@@ -12193,15 +12168,9 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
     )
     year_select_xpath = "//*[@id='library']//select[.//option[contains(translate(normalize-space(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'all years')]]"
     genre_select_xpath = "//*[@id='library']//select[.//option[contains(translate(normalize-space(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'all genres')]]"
-    year_option_xpath = (
-        f"({year_select_xpath}/option[@value='{prompt_year}'] | {year_select_xpath}/option[2])[1]"
-        if prompt_year
-        else f"{year_select_xpath}/option[2]"
-    )
+    year_option_xpath = f"({year_select_xpath}/option[@value='{prompt_year}'] | {year_select_xpath}/option[2])[1]" if prompt_year else f"{year_select_xpath}/option[2]"
     genre_option_xpath = (
-        f"({genre_select_xpath}/option[@value='{prompt_genre}' or normalize-space()='{prompt_genre}'] | {genre_select_xpath}/option[2])[1]"
-        if prompt_genre
-        else f"{genre_select_xpath}/option[2]"
+        f"({genre_select_xpath}/option[@value='{prompt_genre}' or normalize-space()='{prompt_genre}'] | {genre_select_xpath}/option[2])[1]" if prompt_genre else f"{genre_select_xpath}/option[2]"
     )
 
     def _xpath_literal(value: str) -> str:
@@ -12211,7 +12180,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
         if '"' not in text:
             return f'"{text}"'
         parts = text.split("'")
-        pieces: List[str] = []
+        pieces: list[str] = []
         for idx, part in enumerate(parts):
             if part:
                 pieces.append(f"'{part}'")
@@ -12219,10 +12188,10 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
                 pieces.append('"\'"')
         return "concat(" + ", ".join(pieces) + ")"
 
-    def _make_nav(url: str) -> Dict[str, Any]:
+    def _make_nav(url: str) -> dict[str, Any]:
         return {"type": "NavigateAction", "url": str(url)}
 
-    def _make_click(xpath: str) -> Dict[str, Any]:
+    def _make_click(xpath: str) -> dict[str, Any]:
         return {
             "type": "ClickAction",
             "selector": {
@@ -12232,7 +12201,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
             },
         }
 
-    def _make_type(xpath: str, text: str) -> Dict[str, Any]:
+    def _make_type(xpath: str, text: str) -> dict[str, Any]:
         return {
             "type": "TypeAction",
             "text": str(text),
@@ -12243,7 +12212,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
             },
         }
 
-    def _make_select(xpath: str, value: str) -> Dict[str, Any]:
+    def _make_select(xpath: str, value: str) -> dict[str, Any]:
         return {
             "type": "SelectAction",
             "value": str(value),
@@ -12254,7 +12223,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
             },
         }
 
-    def _make_send_keys(key: str) -> Dict[str, Any]:
+    def _make_send_keys(key: str) -> dict[str, Any]:
         return {
             "type": "SendKeysAction",
             "keys": [str(key)],
@@ -12272,7 +12241,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
     def _extract_numeric_constraint(field: str) -> tuple[str, float | None]:
         escaped = re.escape(str(field or ""))
         text = str(prompt or "")
-        patterns: List[tuple[str, str]] = [
+        patterns: list[tuple[str, str]] = [
             ("not_equals", rf"{escaped}\s*(?:is\s+)?(?:not_equals|!=|not\s+equal(?:s)?(?:\s+to)?)\s*['\"]?([0-9]+(?:\.[0-9]+)?)['\"]?"),
             ("greater_equal", rf"{escaped}\s*(?:greater_equal|greater\s+equal|>=|greater than or equal to)\s*['\"]?([0-9]+(?:\.[0-9]+)?)['\"]?"),
             ("greater_than", rf"{escaped}\s*(?:greater_than|greater\s+than|>)\s*['\"]?([0-9]+(?:\.[0-9]+)?)['\"]?"),
@@ -12305,12 +12274,12 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
     def _extract_named_constraint(field: str) -> tuple[str, str]:
         escaped = re.escape(str(field or ""))
         text = str(prompt or "")
-        patterns: List[tuple[str, str]] = [
+        patterns: list[tuple[str, str]] = [
             ("not_contains", rf"{escaped}\s*(?:that\s+)?[^'\"]{{0,80}}(?:does\s+not\s+contain|not_contains|not\s+contain)\s*['\"]([^'\"]+)['\"]"),
             ("not_equals", rf"{escaped}\s*(?:that\s+)?(?:is\s+)?(?:not_equals|!=|is\s+not)\s*['\"]([^'\"]+)['\"]"),
             ("contains", rf"{escaped}\s*(?:that\s+)?(?:contains)\s*['\"]([^'\"]+)['\"]"),
             ("equals", rf"{escaped}\s*(?:that\s+)?(?:equals|=|is|:)\s*['\"]([^'\"]+)['\"]"),
-            ("equals", rf"(?:named|titled)\s*['\"]([^'\"]+)['\"]"),
+            ("equals", r"(?:named|titled)\s*['\"]([^'\"]+)['\"]"),
         ]
         for op, pattern in patterns:
             m = re.search(pattern, text, flags=re.I)
@@ -12318,7 +12287,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
                 return op, str(m.group(1) or "").strip()
         return "equals", ""
 
-    def _pick_text_for_constraint(op: str, token: str, *, default: str, alternatives: List[str]) -> str:
+    def _pick_text_for_constraint(op: str, token: str, *, default: str, alternatives: list[str]) -> str:
         cleaned = str(token or "").strip()
         if op in {"equals", "contains"} and cleaned:
             return cleaned
@@ -12560,15 +12529,11 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
 
     autodining_restaurant_id = _pick_restaurant_id()
     autodining_time_segment = autodining_time.replace(":", "%3A").replace(" ", "%20")
-    autodining_booking_url = (
-        f"http://localhost:8003/booking/{autodining_restaurant_id}/{autodining_time_segment}"
-        f"?seed=1&people={autodining_people}&date={autodining_date}"
-    )
+    autodining_booking_url = f"http://localhost:8003/booking/{autodining_restaurant_id}/{autodining_time_segment}?seed=1&people={autodining_people}&date={autodining_date}"
 
     autodining_home_url = "http://localhost:8003/?seed=1"
     autodining_search_xpath = (
-        "//*[@id='search-input' or @id='search-input-help' or @id='search-box' or @id='search-field' "
-        "or @id='query-box' or @id='restaurant-search' or @id='search-restaurants' or @id='search-text']"
+        "//*[@id='search-input' or @id='search-input-help' or @id='search-box' or @id='search-field' or @id='query-box' or @id='restaurant-search' or @id='search-restaurants' or @id='search-text']"
     )
     autodining_search_input_xpath = (
         "//input[@id='search-input' or @id='search-input-help' or @id='search-box' or @id='search-field' "
@@ -12626,14 +12591,8 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
         "or @id='matter-state-filter' or @id='case-state-filter' or @id='project-state-filter' "
         "or @id='status-selector' or @id='state-selector' or @id='status-dropdown' or @id='state-dropdown']"
     )
-    autocrm_calendar_nav_xpath = (
-        "(//a[contains(@id,'calendar') or contains(@id,'schedule') or contains(@id,'appointments') "
-        "or contains(@id,'planner') or contains(@id,'timeline')])[1]"
-    )
-    autocrm_toggle_pending_xpath = (
-        "(//button[contains(@id,'pending') or contains(@id,'upcoming') or contains(@id,'scheduled') "
-        "or contains(@id,'future') or contains(@id,'awaiting')])[1]"
-    )
+    autocrm_calendar_nav_xpath = "(//a[contains(@id,'calendar') or contains(@id,'schedule') or contains(@id,'appointments') or contains(@id,'planner') or contains(@id,'timeline')])[1]"
+    autocrm_toggle_pending_xpath = "(//button[contains(@id,'pending') or contains(@id,'upcoming') or contains(@id,'scheduled') or contains(@id,'future') or contains(@id,'awaiting')])[1]"
     autocrm_prev_month_xpath = (
         "(//button[contains(@id,'month') and "
         "(contains(@id,'prev') or contains(@id,'prior') or contains(@id,'back') or contains(@id,'earlier') "
@@ -12646,9 +12605,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
     )
     autocrm_event_label_xpath = "//input[contains(@id,'event') and contains(@id,'label')]"
     autocrm_event_time_xpath = "//input[contains(@id,'event') and contains(@id,'time')]"
-    autocrm_event_color_xpath = (
-        "//select[contains(@id,'event') and (contains(@id,'color') or contains(@id,'type') or contains(@id,'category'))]"
-    )
+    autocrm_event_color_xpath = "//select[contains(@id,'event') and (contains(@id,'color') or contains(@id,'type') or contains(@id,'category'))]"
     autocrm_save_button_xpath = (
         "(//button[contains(@id,'save') or contains(@id,'submit') or contains(@id,'confirm') or contains(@id,'apply') "
         "or contains(@id,'store') or contains(@id,'commit') or contains(@id,'persist') or contains(@id,'accept') "
@@ -12686,10 +12643,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
     autocrm_billing_nav_xpath = "//*[@id='billing-nav-link' or @id='billing_link' or @id='billing-link']"
     autocrm_settings_nav_xpath = "//*[@id='settings-nav-link' or @id='settings_link' or @id='settings-link']"
     autocrm_help_nav_xpath = "//*[@id='help-nav-link' or @id='help_link' or @id='help-link']"
-    autocrm_clients_search_xpath = (
-        "//input[@id='search-input-field' or @id='search_input' or @id='client-search-input' or @id='client-search-field' "
-        "or @id='clients-search-input']"
-    )
+    autocrm_clients_search_xpath = "//input[@id='search-input-field' or @id='search_input' or @id='client-search-input' or @id='client-search-field' or @id='clients-search-input']"
     autocrm_clients_status_filter_xpath = "//*[@id='status-filter' or @id='status_filter' or @id='client-status-filter']"
     autocrm_clients_matters_filter_xpath = "//*[@id='matters-filter' or @id='matters_filter' or @id='client-matters-filter']"
     autocrm_add_client_btn_xpath = "//*[@id='add-client-btn' or @id='add_client_button' or @id='add-client-button']"
@@ -12700,19 +12654,15 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
     autocrm_add_client_submit_xpath = "(//form//button[@type='submit' and contains(normalize-space(), 'Add client')])[1]"
     autocrm_client_name_id_xpath = "//*[starts-with(@id, 'client-name-')]"
     autocrm_delete_client_xpath = "//*[@id='delete-client-button' or @id='delete_client_button']"
-    autocrm_documents_rename_btn_xpath = (
-        "//*[contains(@id, 'rename-document') or contains(@id, 'rename_document') or contains(@id, 'rename-doc')]"
-    )
+    autocrm_documents_rename_btn_xpath = "//*[contains(@id, 'rename-document') or contains(@id, 'rename_document') or contains(@id, 'rename-doc')]"
     autocrm_documents_delete_btn_xpath = "//*[contains(@id, 'delete-document-btn') or contains(@id, 'delete_document_button')]"
     autocrm_documents_rename_input_xpath = "//*[starts-with(@id, 'document-rename-')]"
-    autocrm_documents_save_name_xpath = "//*[contains(@id, 'save-document-name') or contains(@id, 'save_document_name')]"
     autocrm_billing_search_xpath = "//input[@id='billing-search' or @id='billing_search']"
     autocrm_billing_date_filter_xpath = "//*[@id='date-filter' or @id='date_filter']"
     autocrm_manual_matter_xpath = "//input[@id='manual-matter-input' or @id='manual_matter_input']"
     autocrm_manual_description_xpath = "//input[@id='manual-desc-input' or @id='manual_description_input']"
     autocrm_manual_hours_xpath = "//input[@id='manual-hours-input' or @id='manual_hours_input']"
     autocrm_add_entry_xpath = "//*[@id='add-entry-btn' or @id='add_entry_button']"
-    autocrm_log_entry_xpath = "//*[starts-with(@id, 'log-entry-')]"
     autocrm_edit_log_button_xpath = "//*[contains(@aria-label, 'Edit ') or contains(@aria-label, 'Edit')][.//*[name()='svg']]"
     autocrm_delete_log_button_xpath = "//*[contains(@id, 'delete-log-btn') or contains(@id, 'delete_log_button')]"
     autocrm_edit_log_matter_xpath = "//input[starts-with(@id, 'edit-matter-')]"
@@ -12736,7 +12686,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
         target_date = _parse_iso_date_or_none(autocrm_calendar_date) or _date.today()
         today = _date.today()
         month_diff = (target_date.year - today.year) * 12 + (target_date.month - today.month)
-        calendar_actions: List[Dict[str, Any]] = [
+        calendar_actions: list[dict[str, Any]] = [
             _make_nav(autocrm_home_url),
             _make_click(autocrm_calendar_nav_xpath),
         ]
@@ -12776,7 +12726,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
         ]
 
     if normalized_use_case == "UPDATE_MATTER":
-        updated_actions: List[Dict[str, Any]] = [
+        updated_actions: list[dict[str, Any]] = [
             _make_nav(autocrm_home_url),
             _make_click(autocrm_matters_nav_xpath),
         ]
@@ -12890,7 +12840,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
                 if blocked not in option.lower():
                     detail_status = option
                     break
-        actions_out: List[Dict[str, Any]] = [
+        actions_out: list[dict[str, Any]] = [
             _make_nav(autocrm_home_url),
             _make_click(autocrm_matters_nav_xpath),
         ]
@@ -12905,8 +12855,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
             )
             actions_out.append(
                 _make_click(
-                    f"({autocrm_matter_title_xpath}[contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), "
-                    f"{_xpath_literal(detail_query.lower())})])[1]"
+                    f"({autocrm_matter_title_xpath}[contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), {_xpath_literal(detail_query.lower())})])[1]"
                 )
             )
         else:
@@ -12946,7 +12895,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
         if not batch_status:
             batch_status = "Active"
         button_xpath = autocrm_archive_button_xpath if normalized_use_case == "ARCHIVE_MATTER" else autocrm_delete_button_xpath
-        out_actions: List[Dict[str, Any]] = [
+        out_actions: list[dict[str, Any]] = [
             _make_nav(autocrm_home_url),
             _make_click(autocrm_matters_nav_xpath),
             _make_select(autocrm_matter_status_filter_xpath, batch_status),
@@ -13017,9 +12966,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
             if matters_op in {"equals", "greater_equal", "greater_than"}:
                 if number >= 5:
                     matters_filter_value = "5plus"
-                elif number > 1:
-                    matters_filter_value = "3-4"
-                elif number >= 3:
+                elif number > 1 or number >= 3:
                     matters_filter_value = "3-4"
                 else:
                     matters_filter_value = "1-2"
@@ -13027,7 +12974,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
                 matters_filter_value = "1-2"
             elif matters_op == "not_equals":
                 matters_filter_value = "3-4" if int(number) != 3 else "1-2"
-        out_actions: List[Dict[str, Any]] = [
+        out_actions: list[dict[str, Any]] = [
             _make_nav(autocrm_home_url),
             _make_click(autocrm_clients_nav_xpath),
         ]
@@ -13089,7 +13036,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
                     status_value = candidate
                     break
         matters_value = _pick_numeric_value(matters_op, matters_token, 3.0, step=1.0, min_value=1.0)
-        matters_int = max(1, int(round(matters_value)))
+        matters_int = max(1, round(matters_value))
         return [
             _make_nav(autocrm_home_url),
             _make_click(autocrm_clients_nav_xpath),
@@ -13132,7 +13079,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
                 matters_filter_value = "5plus"
             elif "matters" in prompt_l and ("less than" in prompt_l or "less_than" in prompt_l or "<" in prompt_l):
                 matters_filter_value = "1-2"
-        delete_actions: List[Dict[str, Any]] = [
+        delete_actions: list[dict[str, Any]] = [
             _make_nav(autocrm_home_url),
             _make_click(autocrm_clients_nav_xpath),
         ]
@@ -13140,8 +13087,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
             delete_actions.append(_make_select(autocrm_clients_matters_filter_xpath, matters_filter_value))
         if delete_query:
             client_click_xpath = (
-                f"//*[starts-with(@id, 'client-name-') and contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), "
-                f"{_xpath_literal(delete_query.lower())})]"
+                f"//*[starts-with(@id, 'client-name-') and contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), {_xpath_literal(delete_query.lower())})]"
             )
             if "@" in delete_query:
                 client_click_xpath = f"({autocrm_client_name_id_xpath})[1]"
@@ -13350,7 +13296,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
                     status_value = candidate
                     break
         hours_value = _pick_numeric_value(hours_op, hours_token, 2.5, step=0.5, min_value=0.1)
-        edit_actions: List[Dict[str, Any]] = [
+        edit_actions: list[dict[str, Any]] = [
             _make_nav(autocrm_home_url),
             _make_click(autocrm_billing_nav_xpath),
         ]
@@ -13474,7 +13420,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
                 if blocked not in candidate:
                     date_filter_value = candidate
                     break
-        search_actions: List[Dict[str, Any]] = [
+        search_actions: list[dict[str, Any]] = [
             _make_nav(autocrm_home_url),
             _make_click(autocrm_billing_nav_xpath),
             _make_click(autocrm_billing_search_xpath),
@@ -13526,9 +13472,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
         return [
             _make_nav(autocrm_home_url),
             _make_click(autocrm_help_nav_xpath),
-            _make_click(
-                "(//button[starts-with(@id, 'faq-question-') or starts-with(@id, 'faq_question_')])[1]"
-            ),
+            _make_click("(//button[starts-with(@id, 'faq-question-') or starts-with(@id, 'faq_question_')])[1]"),
         ]
 
     if normalized_use_case == "VIEW_RESTAURANT":
@@ -13546,10 +13490,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
         return [
             _make_nav(autodining_home_url),
             _make_click(autodining_people_picker_xpath),
-            _make_click(
-                f"(//button[contains(normalize-space(), '{autodining_people}') "
-                "and (contains(normalize-space(), 'Guest') or contains(normalize-space(), 'Guests'))])[1]"
-            ),
+            _make_click(f"(//button[contains(normalize-space(), '{autodining_people}') and (contains(normalize-space(), 'Guest') or contains(normalize-space(), 'Guests'))])[1]"),
         ]
 
     if normalized_use_case == "SEARCH_RESTAURANT":
@@ -13622,11 +13563,6 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
             "or @id='finalize-reservation-button' or @id='submit-reservation-button' or @id='reservation-confirm-button' "
             "or @id='finish-booking-button' or @id='complete-booking-button' or @id='confirm-reservation-button' "
             "or @id='reservation-submit-button']"
-        )
-        phone_xpath = (
-            "//*[@id='phone-number-input' or @id='phone-input' or @id='booking-phone' or @id='reservation-phone' "
-            "or @id='customer-phone' or @id='phone-field' or @id='mobile-input' or @id='contact-phone' "
-            "or @id='phone-number' or @id='phone']"
         )
         phone_input_xpath = (
             "//input[@id='phone-number-input' or @id='phone-input' or @id='booking-phone' or @id='reservation-phone' "
@@ -13794,7 +13730,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
             _make_click(faq_button_xpath),
         ]
 
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for action in actions:
         if not isinstance(action, dict):
             continue
@@ -13803,22 +13739,19 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
         selector_type = str(selector.get("type") or "").strip().lower()
         selector_value = str(selector.get("value") or "").strip().lower()
         action_type = str(updated.get("type") or "").strip()
-        is_autozone_search_selector = (
-            selector_type == "xpathselector"
-            and any(
-                token in selector_value
-                for token in (
-                    "type-to-search",
-                    "search-input",
-                    "query-box",
-                    "filter-input",
-                    "product-search",
-                    "item-search",
-                    "search-field",
-                    "lookup-input",
-                    "find-input",
-                    "search-box",
-                )
+        is_autozone_search_selector = selector_type == "xpathselector" and any(
+            token in selector_value
+            for token in (
+                "type-to-search",
+                "search-input",
+                "query-box",
+                "filter-input",
+                "product-search",
+                "item-search",
+                "search-field",
+                "lookup-input",
+                "find-input",
+                "search-box",
             )
         )
 
@@ -13887,23 +13820,12 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
             replaced = str(selector.get("value") or "")
             replaced = replaced.replace("__DELIVERY_MENU_ITEM__", item_label_l).replace("__delivery_menu_item__", item_label_l)
             _set_xpath_selector(updated, replaced)
-        elif (
-            action_type == "ClickAction"
-            and selector_type == "xpathselector"
-            and "category-link" in selector_value
-            and "technology" in selector_value
-            and prompt_category
-        ):
+        elif action_type == "ClickAction" and selector_type == "xpathselector" and "category-link" in selector_value and "technology" in selector_value and prompt_category:
             category_token = re.sub(r"[^a-z0-9 _-]", "", str(prompt_category).strip().lower())
             if category_token:
                 replaced = re.sub(r"technology", category_token, str(selector.get("value") or ""), flags=re.I)
                 _set_xpath_selector(updated, replaced)
-        elif (
-            action_type == "ClickAction"
-            and selector_type == "xpathselector"
-            and "carousel-" in selector_value
-            and ("right" in selector_value or "left" in selector_value)
-        ):
+        elif action_type == "ClickAction" and selector_type == "xpathselector" and "carousel-" in selector_value and ("right" in selector_value or "left" in selector_value):
             if carousel_direction == "LEFT":
                 _set_xpath_selector(updated, autozone_carousel_left_xpath)
             else:
@@ -13978,9 +13900,7 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
                 updated["text"] = automail_reply_query or search_query or "eric.baker@management.com"
             elif raw_text == "__FORWARD_QUERY__":
                 updated["text"] = automail_forward_query or search_query or "Year-End Review Meeting - Schedule"
-            elif raw_text == "__READING_LIST_QUERY__":
-                updated["text"] = "Romeo and Juliet"
-            elif raw_text == "__CART_QUERY__":
+            elif raw_text == "__READING_LIST_QUERY__" or raw_text == "__CART_QUERY__":
                 updated["text"] = "Romeo and Juliet"
             elif raw_text == "__COMMENTER_NAME__":
                 updated["text"] = commenter_name or "Alicia"
@@ -14010,21 +13930,22 @@ def _apply_prompt_overrides(actions: List[Dict[str, Any]], prompt: str, use_case
                 updated["text"] = commenter_name
             elif selector_value == "comment-message-textarea":
                 updated["text"] = content_text
-            elif (
-                selector_value in {"login-username-input", "register-username-input", "username-input"}
-                and username
-                and raw_text != "__SIGNUP_USERNAME__"
-            ):
+            elif selector_value in {"login-username-input", "register-username-input", "username-input"} and username and raw_text != "__SIGNUP_USERNAME__":
                 updated["text"] = username
             elif selector_value in {"register-email-input", "signup-email-input"} and email and raw_text != "__SIGNUP_EMAIL__":
                 updated["text"] = email
-            elif selector_value in {
-                "login-password-input",
-                "register-password-input",
-                "register-confirm-password-input",
-                "password-input",
-                "confirm-password-input",
-            } and password and raw_text != "__SIGNUP_PASSWORD__":
+            elif (
+                selector_value
+                in {
+                    "login-password-input",
+                    "register-password-input",
+                    "register-confirm-password-input",
+                    "password-input",
+                    "confirm-password-input",
+                }
+                and password
+                and raw_text != "__SIGNUP_PASSWORD__"
+            ):
                 updated["text"] = password
             elif selector_value in {"input", "search-input"} and search_query and raw_text not in {"__DELIVERY_SEARCH_QUERY__", "__DELIVERY_RESTAURANT_QUERY__"}:
                 updated["text"] = search_query
@@ -14080,7 +14001,7 @@ def get_trajectory_bootstrap_actions(
     use_case: str = "",
     prompt: str = "",
     max_actions: int = 8,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     selected = _find_best_trajectory(web_project_id=web_project_id, use_case=use_case, prompt=prompt)
     best_actions = selected.get("actions") if isinstance(selected.get("actions"), list) else []
     selected_use_case = str(selected.get("use_case") or use_case or "")
@@ -14094,7 +14015,7 @@ def get_trajectory_replay_bundle(
     use_case: str = "",
     prompt: str = "",
     apply_prompt_overrides: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     selected = _find_best_trajectory(web_project_id=web_project_id, use_case=use_case, prompt=prompt)
     if not selected:
         return {}
@@ -14110,7 +14031,7 @@ def get_trajectory_replay_bundle(
 
 
 __all__ = [
-    "get_trajectory_examples",
     "get_trajectory_bootstrap_actions",
+    "get_trajectory_examples",
     "get_trajectory_replay_bundle",
 ]

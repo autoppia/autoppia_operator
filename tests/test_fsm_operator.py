@@ -1,10 +1,25 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 from bs4 import BeautifulSoup
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+loaded_src = sys.modules.get("src")
+if loaded_src is not None:
+    local_src = str((ROOT / "src").resolve())
+    loaded_src_file = str(getattr(loaded_src, "__file__", "") or "")
+    loaded_src_paths = [str(Path(p).resolve()) for p in list(getattr(loaded_src, "__path__", []))]
+    is_local_src = loaded_src_file.startswith(local_src) or any(path.startswith(local_src) for path in loaded_src_paths)
+    if not is_local_src:
+        sys.modules.pop("src", None)
 
 import src.operator.agents.fsm.state as fsm_state
 from src.operator.agents.fsm import (
@@ -3285,12 +3300,42 @@ def test_policy_obs_does_not_expose_browser_evaluate() -> None:
 
 def test_policy_obs_uses_crawler_routes_when_static_map_missing(monkeypatch: Any) -> None:
     from src.operator import fsm_operator as fsm
+    import src.operator.agents.fsm as fsm_package
+    from src.operator.agents.fsm import site_knowledge as fsm_site_knowledge
+    from src.operator.agents.fsm import utils as fsm_utils
 
     monkeypatch.setenv("FSM_USE_SITE_KNOWLEDGE", "1")
     monkeypatch.setenv("FSM_ENABLE_SITE_CRAWLER", "1")
+    monkeypatch.setattr(fsm_package, "_load_static_site_maps", lambda: {})
     monkeypatch.setattr(fsm, "_load_static_site_maps", lambda: {})
+    monkeypatch.setattr(fsm_site_knowledge, "_load_static_site_maps", lambda: {})
+    monkeypatch.setattr(fsm_utils, "_load_static_site_maps", lambda: {})
+    monkeypatch.setattr(
+        fsm_package,
+        "_crawl_site_routes",
+        lambda start_url, depth, max_pages, timeout_s: (
+            ("Login", "https://example.com/login", "/login", "auth"),
+            ("Search", "https://example.com/search", "/search", "catalog"),
+        ),
+    )
     monkeypatch.setattr(
         fsm,
+        "_crawl_site_routes",
+        lambda start_url, depth, max_pages, timeout_s: (
+            ("Login", "https://example.com/login", "/login", "auth"),
+            ("Search", "https://example.com/search", "/search", "catalog"),
+        ),
+    )
+    monkeypatch.setattr(
+        fsm_site_knowledge,
+        "_crawl_site_routes",
+        lambda start_url, depth, max_pages, timeout_s: (
+            ("Login", "https://example.com/login", "/login", "auth"),
+            ("Search", "https://example.com/search", "/search", "catalog"),
+        ),
+    )
+    monkeypatch.setattr(
+        fsm_utils,
         "_crawl_site_routes",
         lambda start_url, depth, max_pages, timeout_s: (
             ("Login", "https://example.com/login", "/login", "auth"),

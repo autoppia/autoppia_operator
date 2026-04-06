@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
-
 import importlib.util
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -103,11 +102,7 @@ async def test_trajectory_executor_executes_mapped_bootstrap_actions_on_dummy_pa
     actions = _load_bootstrap_actions()
 
     mapped = executor.map_actions(actions)
-    selectors = {
-        str(item.get("playwright_selector") or "")
-        for item in mapped
-        if str(item.get("playwright_selector") or "").strip()
-    }
+    selectors = {str(item.get("playwright_selector") or "") for item in mapped if str(item.get("playwright_selector") or "").strip()}
     page = _DummyPage(available_selectors={selector for selector in selectors if selector})
 
     results = await executor.execute_on_page(page, actions)
@@ -120,11 +115,7 @@ async def test_trajectory_executor_prints_exact_selector_error_for_debugging(cap
     executor = TrajectoryExecutor(timeout_ms=1200)
     actions = _load_bootstrap_actions()
     mapped = executor.map_actions(actions)
-    selectors = [
-        str(item.get("playwright_selector") or "")
-        for item in mapped
-        if str(item.get("playwright_selector") or "").strip()
-    ]
+    selectors = [str(item.get("playwright_selector") or "") for item in mapped if str(item.get("playwright_selector") or "").strip()]
     available = set(selectors)
     if selectors:
         available.discard(selectors[0])

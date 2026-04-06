@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from typing import Any
-
 import argparse
 import asyncio
 import importlib.util
@@ -10,6 +8,7 @@ import json
 import sys
 import traceback
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 root_str = str(ROOT)
@@ -92,12 +91,7 @@ class DummyPage:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Debug trajectory execution flow: "
-            "get_trajectory_bootstrap_actions -> TrajectoryExecutor mapper -> execution"
-        )
-    )
+    parser = argparse.ArgumentParser(description=("Debug trajectory execution flow: get_trajectory_bootstrap_actions -> TrajectoryExecutor mapper -> execution"))
     parser.add_argument("--web-project-id", default="p01_autocinema")
     parser.add_argument("--use-case", default="SEARCH_FILM")
     parser.add_argument("--prompt", default="Search for the movie 'La La Land'")
@@ -136,11 +130,7 @@ async def _run(args: argparse.Namespace) -> int:
     print("\nMapped actions:")
     print(json.dumps(mapped_actions, indent=2, ensure_ascii=False))
 
-    available_selectors = {
-        str(action.get("playwright_selector") or "")
-        for action in mapped_actions
-        if str(action.get("playwright_selector") or "").strip()
-    }
+    available_selectors = {str(action.get("playwright_selector") or "") for action in mapped_actions if str(action.get("playwright_selector") or "").strip()}
     available_selectors = {selector for selector in available_selectors if selector}
 
     if args.drop_first_selector and available_selectors:

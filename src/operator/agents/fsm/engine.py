@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from .utils import *
-from .state import *
+import contextlib
+
 from .candidates import *
-from .observation import *
 from .meta_tools import *
+from .observation import *
 from .policy import *
+from .state import *
 from .trajectory import get_trajectory_bootstrap_actions
+from .utils import *
+
 
 class FSMOperator:
     def __init__(
@@ -26,10 +29,7 @@ class FSMOperator:
         self.obs_extract_call = llm_call
         self.debug_dir = str(os.getenv("FSM_POLICY_DEBUG_DIR", "") or "").strip()
         self.trace_json = _env_bool("FSM_TRACE_JSON", False)
-        self.trace_dir = str(
-            os.getenv("FSM_TRACE_DIR", self.debug_dir or str((_REPO_ROOT / "data" / "fsm_traces").resolve()))
-            or ""
-        ).strip()
+        self.trace_dir = str(os.getenv("FSM_TRACE_DIR", self.debug_dir or str((_REPO_ROOT / "data" / "fsm_traces").resolve())) or "").strip()
 
     def _allow_control_meta_tools(self) -> bool:
         return _env_bool("FSM_ALLOW_CONTROL_META_TOOLS", False)
@@ -186,9 +186,7 @@ class FSMOperator:
         candidate_lines: List[str] = []
         for cand in candidates[:40]:
             label = _candidate_text(cand.text, cand.field_hint, cand.href, cand.group_label, cand.region_label)
-            candidate_lines.append(
-                f"[{cand.id}] role={cand.role} kind={cand.field_kind or cand.region_kind or cand.type} label={label[:140]} context={cand.context[:180]}"
-            )
+            candidate_lines.append(f"[{cand.id}] role={cand.role} kind={cand.field_kind or cand.region_kind or cand.type} label={label[:140]} context={cand.context[:180]}")
         user_payload = {
             "task": str(prompt or "")[:1200],
             "url": str(url or "")[:400],
@@ -261,13 +259,7 @@ class FSMOperator:
             )
         normalized["facts"] = [str(x)[:180] for x in list(payload.get("facts") or [])[:8] if str(x).strip()]
         normalized["primary_candidate_ids"] = [str(x)[:120] for x in list(payload.get("primary_candidate_ids") or [])[:12] if str(x).strip()]
-        if not (
-            normalized["summary"]
-            or normalized["regions"]
-            or normalized["forms"]
-            or normalized["facts"]
-            or normalized["primary_candidate_ids"]
-        ):
+        if not (normalized["summary"] or normalized["regions"] or normalized["forms"] or normalized["facts"] or normalized["primary_candidate_ids"]):
             return {}
         return normalized
 
@@ -368,9 +360,8 @@ class FSMOperator:
         if done:
             return "COMPLETED"
         last = history[-1] if history else {}
-        if isinstance(last, dict):
-            if not bool(last.get("exec_ok", True)) or bool(_candidate_text(last.get("error"))):
-                return "BLOCKED"
+        if isinstance(last, dict) and (not bool(last.get("exec_ok", True)) or bool(_candidate_text(last.get("error")))):
+            return "BLOCKED"
         if bool(flags.get("url_changed")):
             return "ADVANCED"
         if bool(flags.get("dom_changed")):
@@ -477,11 +468,15 @@ class FSMOperator:
         region_id = str(state.focus_region.region_id or state.form_progress.active_group_id or "")[:120]
         error = str(last.get("error") or "")[:220]
         expected_effect = str(state.progress.pending_expected_effect or "")[:40]
-        expected_effect_met = self._expected_effect_met(
-            expected_effect=expected_effect,
-            flags=flags,
-            history=history,
-        ) if expected_effect else False
+        expected_effect_met = (
+            self._expected_effect_met(
+                expected_effect=expected_effect,
+                flags=flags,
+                history=history,
+            )
+            if expected_effect
+            else False
+        )
         prev_effect = state.progress.recent_effects[-1] if state.progress.recent_effects else None
         prev_region_id = str(prev_effect.region_id or "") if isinstance(prev_effect, ProgressEffect) else ""
         prev_target_id = str(prev_effect.target_id or "") if isinstance(prev_effect, ProgressEffect) else ""
@@ -500,7 +495,7 @@ class FSMOperator:
             exec_ok=bool(last.get("exec_ok", last.get("success", True))),
             error=error,
         )
-        state.progress.recent_effects = (state.progress.recent_effects + [effect])[-16:]
+        state.progress.recent_effects = ([*state.progress.recent_effects, effect])[-16:]
         state.progress.pending_expected_effect = ""
         state.progress.pending_expected_target_id = ""
         state.progress.pending_expected_region_id = ""
@@ -515,7 +510,7 @@ class FSMOperator:
             state.progress.region_attempts[region_id] = int(state.progress.region_attempts.get(region_id) or 0) + 1
             if label in {"NO_VISIBLE_CHANGE", "BLOCKED"} and int(state.progress.region_attempts.get(region_id) or 0) >= 2:
                 state.progress.blocked_regions = _dedupe_keep_order(
-                    state.progress.blocked_regions + [region_id],
+                    [*state.progress.blocked_regions, region_id],
                     MAX_PENDING_ELEMENTS,
                 )
         pattern = ""
@@ -523,7 +518,7 @@ class FSMOperator:
         if label in {"ADVANCED", "LOCAL_PROGRESS"} and action_type in {"TypeAction", "SelectDropDownOptionAction", "ClickAction"}:
             pattern = f"{action_type.lower()}_progress"
             state.progress.successful_patterns = _dedupe_keep_order(
-                state.progress.successful_patterns + [pattern],
+                [*state.progress.successful_patterns, pattern],
                 32,
             )
         elif (label in {"NO_VISIBLE_CHANGE", "BLOCKED"} or (expected_effect and not expected_effect_met)) and action_type:
@@ -533,7 +528,7 @@ class FSMOperator:
             elif expected_effect and not expected_effect_met:
                 pattern = f"{action_type.lower()}_expected_{expected_effect}_miss"
             state.progress.failed_patterns = _dedupe_keep_order(
-                state.progress.failed_patterns + [pattern],
+                [*state.progress.failed_patterns, pattern],
                 32,
             )
 
@@ -549,20 +544,14 @@ class FSMOperator:
         state.progress.pending_expected_effect = expected_effect[:40]
         state.progress.pending_expected_action_type = str(action.get("type") or "")[:80]
         state.progress.pending_expected_target_id = str(action.get("_element_id") or action.get("element_id") or "")[:120]
-        state.progress.pending_expected_region_id = str(
-            (candidate.region_id if candidate is not None else "") or state.focus_region.region_id or ""
-        )[:120]
+        state.progress.pending_expected_region_id = str((candidate.region_id if candidate is not None else "") or state.focus_region.region_id or "")[:120]
 
     def _apply_stagnation_policy(self, *, state: AgentState, flags: Dict[str, Any]) -> None:
         no_progress_score = int(state.progress.no_progress_score or 0)
         region_id = str(state.focus_region.region_id or "").strip()
-        if region_id and (
-            no_progress_score >= 6
-            or int(state.progress.consecutive_no_effect_steps or 0) >= 2
-            or region_id in set(state.progress.blocked_regions)
-        ):
+        if region_id and (no_progress_score >= 6 or int(state.progress.consecutive_no_effect_steps or 0) >= 2 or region_id in set(state.progress.blocked_regions)):
             state.focus_region.recent_region_ids = _dedupe_keep_order(
-                state.focus_region.recent_region_ids + [region_id],
+                [*state.focus_region.recent_region_ids, region_id],
                 MAX_PENDING_ELEMENTS,
             )
             state.focus_region.region_id = ""
@@ -571,7 +560,7 @@ class FSMOperator:
             state.focus_region.region_context = ""
             state.focus_region.candidate_ids = []
             state.memory.checkpoints = _dedupe_keep_order(
-                state.memory.checkpoints + [f"release_region:{region_id}"],
+                [*state.memory.checkpoints, f"release_region:{region_id}"],
                 MAX_CHECKPOINTS,
             )
         if no_progress_score >= 7 and state.mode in {"NAV", "EXTRACT"}:
@@ -619,13 +608,9 @@ class FSMOperator:
                 "Prefer current-page controls or apply/submit actions over unrelated cards unless the target item is clearly identified."
             )
         if control_groups:
-            return (
-                "Given the screenshot and task, which visible controls or buttons best advance the task on the current page?"
-            )
+            return "Given the screenshot and task, which visible controls or buttons best advance the task on the current page?"
         if cards:
-            return (
-                "Given the screenshot and task, which visible candidate ids correspond to the most relevant item or item action?"
-            )
+            return "Given the screenshot and task, which visible candidate ids correspond to the most relevant item or item action?"
         if state.mode in {"PLAN", "STUCK"}:
             return "Describe the visible UI and identify the best visible next target from the candidate list."
         return "Which visible candidate ids best match the next useful action for this task?"
@@ -664,9 +649,7 @@ class FSMOperator:
             return True
         if str(flags.get("loop_level") or "none") == "high":
             return True
-        if int(state.counters.stall_count or 0) >= 2 or int(state.counters.repeat_action_count or 0) >= 1:
-            return True
-        return False
+        return bool(int(state.counters.stall_count or 0) >= 2 or int(state.counters.repeat_action_count or 0) >= 1)
 
     def _pre_done_verification(
         self,
@@ -947,7 +930,7 @@ class FSMOperator:
                     helper_model = str(vision_result.get("model") or "").strip()
                     if helper_model:
                         usage_payload["helper_models"] = _dedupe_keep_order(
-                            list(usage_payload.get("helper_models") or []) + [helper_model],
+                            [*list(usage_payload.get("helper_models") or []), helper_model],
                             8,
                         )
                 ranked = self.ranker.rank(
@@ -1026,11 +1009,7 @@ class FSMOperator:
                     elif not ok:
                         meta_exec_trace.append(f"BLOCK_DONE:{done_reason}")
                         best_page_evidence = _best_page_evidence(prompt, text_ir)
-                        if (
-                            _looks_like_informational_task(prompt)
-                            and best_page_evidence
-                            and _runtime_page_evidence_ready(prompt, url, text_ir, step_index=step_index)
-                        ):
+                        if _looks_like_informational_task(prompt) and best_page_evidence and _runtime_page_evidence_ready(prompt, url, text_ir, step_index=step_index):
                             ok2, reason2 = self._pre_done_verification(
                                 step_index=step_index,
                                 state=state,
@@ -1089,9 +1068,7 @@ class FSMOperator:
                     meta_name = str(decision.get("name") or "")
                     meta_args = decision.get("arguments") if isinstance(decision.get("arguments"), dict) else {}
                     if meta_name == "META.VISION_QA":
-                        vision_question = str(
-                            meta_args.get("question") or self._default_vision_question(prompt=prompt, state=state, text_ir=text_ir)
-                        )
+                        vision_question = str(meta_args.get("question") or self._default_vision_question(prompt=prompt, state=state, text_ir=text_ir))
                         if not self._should_auto_vision(
                             screenshot=screenshot,
                             state=state,
@@ -1156,7 +1133,7 @@ class FSMOperator:
                         helper_model = str(result.get("model") or "").strip()
                         if helper_model:
                             usage_payload["helper_models"] = _dedupe_keep_order(
-                                list(usage_payload.get("helper_models") or []) + [helper_model],
+                                [*list(usage_payload.get("helper_models") or []), helper_model],
                                 8,
                             )
                     if meta_name == "META.SET_MODE":
@@ -1321,7 +1298,7 @@ class FSMOperator:
         state.last_action_element_id = str(chosen_action.get("_element_id") or "")[:120]
         if state.last_action_element_id and int(state.counters.repeat_action_count or 0) >= 2:
             state.blocklist.element_ids = _dedupe_keep_order(
-                state.blocklist.element_ids + [state.last_action_element_id],
+                [*state.blocklist.element_ids, state.last_action_element_id],
                 MAX_PENDING_ELEMENTS,
             )
             state.blocklist.until_step = max(state.blocklist.until_step, int(step_index) + 2)
@@ -1370,16 +1347,14 @@ class FSMOperator:
                     current_page = final_content
                     decision_text = f"Return final answer now: {final_content}"
                 else:
-                    current_page = best_fact or _candidate_text((text_ir.get("likely_answers") or [""])[0] if isinstance(text_ir.get("likely_answers"), list) else "") or "Current page answer not clear yet."
+                    current_page = (
+                        best_fact or _candidate_text((text_ir.get("likely_answers") or [""])[0] if isinstance(text_ir.get("likely_answers"), list) else "") or "Current page answer not clear yet."
+                    )
                 if not done and chosen_action is not None:
                     decision_text = f"Take browser action sequence ending with: {browser_tool_name or str(chosen_action.get('type') or 'action')}"
                 elif not done:
                     decision_text = "No safe browser action selected."
-                reasoning = (
-                    f"Goal: {goal}. "
-                    f"Current page: {current_page}. "
-                    f"Decision: {decision_text}."
-                )[:600]
+                reasoning = (f"Goal: {goal}. Current page: {current_page}. Decision: {decision_text}.")[:600]
 
         selected_candidate = None
         if chosen_action is not None:
@@ -1659,7 +1634,7 @@ class FSMOperator:
             usage_payload["usage_breakdown"] = usage_breakdown
         if obs_extract_model:
             usage_payload["helper_models"] = _dedupe_keep_order(
-                list(usage_payload.get("helper_models") or []) + [obs_extract_model],
+                [*list(usage_payload.get("helper_models") or []), obs_extract_model],
                 8,
             )
         if obs_extract_usage or obs_extract_model:
@@ -1878,11 +1853,7 @@ class FSMOperator:
             return (not allowed) or (name in allowed)
 
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
-        recent_errors = [
-            str(item.get("error") or "").lower()
-            for item in history[-4:]
-            if isinstance(item, dict) and str(item.get("error") or "").strip()
-        ]
+        recent_errors = [str(item.get("error") or "").lower() for item in history[-4:] if isinstance(item, dict) and str(item.get("error") or "").strip()]
         if bool(flags.get("cookie_banner")) or (bool(flags.get("modal_dialog")) and not bool(flags.get("interactive_modal_form"))):
             if allow("browser.send_keys") and any("intercepts pointer events" in err for err in recent_errors):
                 return {"type": "SendKeysIWAAction", "keys": "Escape"}, False, "", "popup_escape"
@@ -1913,13 +1884,7 @@ class FSMOperator:
                 continue
             recent_wait_only = False
             break
-        if (
-            last_action_type == "waitaction"
-            and int(step_index) >= 1
-            and recent_wait_only
-            and wait_steps >= 1
-            and not _task_constraints(prompt)
-        ):
+        if last_action_type == "waitaction" and int(step_index) >= 1 and recent_wait_only and wait_steps >= 1 and not _task_constraints(prompt):
             return None, True, "Task completed.", "wait_only_complete"
 
         # Give async side effects one short cycle to land before declaring stuck.
@@ -1933,7 +1898,7 @@ class FSMOperator:
             recent = state.memory.checkpoints[-1] if state.memory.checkpoints else ""
             if recent != checkpoint:
                 state.memory.checkpoints = _dedupe_keep_order(
-                    state.memory.checkpoints + [checkpoint],
+                    [*state.memory.checkpoints, checkpoint],
                     MAX_CHECKPOINTS,
                 )
                 return {"type": "WaitAction", "time_seconds": 1.0}, False, "", "post_action_wait"
@@ -2102,9 +2067,7 @@ class FSMOperator:
         input_type = str(candidate.input_type or "").strip().lower()
         if role not in {"input", "textarea"}:
             return False
-        if input_type in {"checkbox", "radio", "submit", "button", "reset", "image", "hidden", "file"}:
-            return False
-        return True
+        return input_type not in {"checkbox", "radio", "submit", "button", "reset", "image", "hidden", "file"}
 
     def _next_password_value(self, *, prompt: str, candidate: Candidate | None, state: AgentState) -> str:
         _, passwords = self._extract_credentials(prompt)
@@ -2330,7 +2293,7 @@ class FSMOperator:
         state.focus_region.candidate_ids = _dedupe_keep_order(related_ids, MAX_PENDING_ELEMENTS)
         if focus_region_id:
             state.focus_region.recent_region_ids = _dedupe_keep_order(
-                state.focus_region.recent_region_ids + [focus_region_id],
+                [*state.focus_region.recent_region_ids, focus_region_id],
                 MAX_PENDING_ELEMENTS,
             )
 
@@ -2355,7 +2318,7 @@ class FSMOperator:
             expected = str(task_constraints.get(key) or "")
             if _constraint_value_matches(expected, action_text) or _constraint_value_matches(expected, target.text):
                 state.progress.satisfied_constraints = _dedupe_keep_order(
-                    state.progress.satisfied_constraints + [key],
+                    [*state.progress.satisfied_constraints, key],
                     32,
                 )
 
@@ -2525,10 +2488,7 @@ class FSMOperator:
         if cand.role not in {"button", "input"}:
             return False
         blob = " ".join([cand.text, cand.field_hint]).lower()
-        return any(
-            k in blob
-            for k in ("submit", "save", "apply", "find", "search", "filter", "go", "continue", "send", "sign up", "signup", "register", "login", "sign in", "create account")
-        )
+        return any(k in blob for k in ("submit", "save", "apply", "find", "search", "filter", "go", "continue", "send", "sign up", "signup", "register", "login", "sign in", "create account"))
 
     def _is_search_or_filter_input(self, cand: Candidate) -> bool:
         return str(cand.field_kind or "") in {"search", "sort"}
@@ -2544,10 +2504,7 @@ class FSMOperator:
         task_ops = self.ranker._task_operation_hints(prompt)
         if task_ops.intersection({"create", "update"}) or "delete" not in task_ops:
             return None
-        has_password_input_visible = any(
-            cand.role == "input" and cand.field_kind in {"password", "confirm_password"}
-            for cand in ranked_candidates
-        )
+        has_password_input_visible = any(cand.role == "input" and cand.field_kind in {"password", "confirm_password"} for cand in ranked_candidates)
         if has_password_input_visible:
             return None
         if target is not None and target.role not in {"input", "select"}:
@@ -2585,18 +2542,11 @@ class FSMOperator:
             return action
         if str(action.get("type") or "") not in {"TypeAction", "SelectDropDownOptionAction"}:
             return action
-        has_password_input_visible = any(
-            cand.role == "input" and cand.field_kind in {"password", "confirm_password"}
-            for cand in ranked_candidates
-        )
+        has_password_input_visible = any(cand.role == "input" and cand.field_kind in {"password", "confirm_password"} for cand in ranked_candidates)
         if has_password_input_visible:
             return action
         mutation_candidates = [
-            cand
-            for cand in ranked_candidates
-            if self.ranker._candidate_action_tags(cand).intersection({"delete"})
-            and cand.id not in state.blocklist.element_ids
-            and cand.role in {"button", "link"}
+            cand for cand in ranked_candidates if self.ranker._candidate_action_tags(cand).intersection({"delete"}) and cand.id not in state.blocklist.element_ids and cand.role in {"button", "link"}
         ]
         if mutation_candidates:
             best = mutation_candidates[0]
@@ -2638,9 +2588,7 @@ class FSMOperator:
             if self._is_search_or_filter_input(cand):
                 continue
             sig = self._selector_signature(cand.selector)
-            if (
-                cand.id in typed_candidate_ids or (sig and sig in typed_sigs)
-            ) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
+            if (cand.id in typed_candidate_ids or (sig and sig in typed_sigs)) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
                 continue
             text = self._infer_input_text(prompt=prompt, candidate=cand)
             if not text:
@@ -2654,7 +2602,7 @@ class FSMOperator:
         sel_sig = self._selector_signature(target.selector)
         if sel_sig:
             state.form_progress.submit_attempt_sigs = _dedupe_keep_order(
-                state.form_progress.submit_attempt_sigs + [sel_sig],
+                [*state.form_progress.submit_attempt_sigs, sel_sig],
                 MAX_PENDING_ELEMENTS * 2,
             )
         return action
@@ -2692,17 +2640,11 @@ class FSMOperator:
             if self._is_search_or_filter_input(cand):
                 continue
             cand_sig = self._selector_signature(cand.selector)
-            if (
-                cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)
-            ) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
+            if (cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
                 continue
             if group_id or group_context or group_candidate_ids:
                 same_group = False
-                if group_id and cand.group_id == group_id:
-                    same_group = True
-                elif group_context and _norm_ws(cand.context) == group_context:
-                    same_group = True
-                elif cand.id in group_candidate_ids:
+                if (group_id and cand.group_id == group_id) or (group_context and _norm_ws(cand.context) == group_context) or cand.id in group_candidate_ids:
                     same_group = True
                 if not same_group:
                     continue
@@ -2713,20 +2655,12 @@ class FSMOperator:
         if not missing_inputs:
             target_group_candidates: List[Candidate] = []
             for cand in ranked_candidates:
-                if group_id and cand.group_id == group_id:
-                    target_group_candidates.append(cand)
-                elif group_context and _norm_ws(cand.context) == group_context:
-                    target_group_candidates.append(cand)
-                elif group_candidate_ids and cand.id in group_candidate_ids:
+                if (group_id and cand.group_id == group_id) or (group_context and _norm_ws(cand.context) == group_context) or (group_candidate_ids and cand.id in group_candidate_ids):
                     target_group_candidates.append(cand)
             typed_kinds = {
                 cand.field_kind
                 for cand in target_group_candidates
-                if cand.field_kind
-                and (
-                    cand.id in typed_candidate_ids
-                    or (self._selector_signature(cand.selector) and self._selector_signature(cand.selector) in typed_sigs)
-                )
+                if cand.field_kind and (cand.id in typed_candidate_ids or (self._selector_signature(cand.selector) and self._selector_signature(cand.selector) in typed_sigs))
             }
             required_kinds = {kind for kind in prompt_needs if any(c.field_kind == kind for c in target_group_candidates)}
             if "password" in required_kinds and any(c.field_kind == "confirm_password" for c in target_group_candidates):
@@ -2792,9 +2726,9 @@ class FSMOperator:
         typed_sigs = self._typed_selector_signatures(history, state)
         typed_candidate_ids = self._typed_candidate_ids(history, state)
         target_sig = self._selector_signature(target.selector)
-        already_typed_target = (
-            (target.id in typed_candidate_ids) or (bool(target_sig) and target_sig in typed_sigs)
-        ) and self._candidate_has_usable_typed_value(candidate=target, history=history, state=state)
+        already_typed_target = ((target.id in typed_candidate_ids) or (bool(target_sig) and target_sig in typed_sigs)) and self._candidate_has_usable_typed_value(
+            candidate=target, history=history, state=state
+        )
         if not already_typed_target:
             return action
         same_group = self._same_group_candidates(target=target, ranked_candidates=ranked_candidates)
@@ -2820,9 +2754,7 @@ class FSMOperator:
             if self._is_search_or_filter_input(cand):
                 continue
             cand_sig = self._selector_signature(cand.selector)
-            if (
-                cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)
-            ) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
+            if (cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
                 continue
             text = self._infer_input_text(prompt=prompt, candidate=cand)
             if not text:
@@ -2995,11 +2927,7 @@ class FSMOperator:
                 action={"type": "ClickAction", "selector": selector, "_element_id": element_id},
                 ranked_candidates=ranked_candidates,
             )
-            if (
-                selected_candidate is not None
-                and selected_candidate.href
-                and ((not normalized_allowed) or ("browser.navigate" in normalized_allowed))
-            ):
+            if selected_candidate is not None and selected_candidate.href and ((not normalized_allowed) or ("browser.navigate" in normalized_allowed)):
                 normalized_href = self._normalize_url_for_session(
                     target_url=selected_candidate.href,
                     current_url=current_url,
@@ -3093,11 +3021,7 @@ class FSMOperator:
                             same_visible_link = True
                         else:
                             cand_parts = urlsplit(cand_url)
-                            if (
-                                cand_parts.scheme == target_parts.scheme
-                                and cand_parts.netloc == target_parts.netloc
-                                and ((cand_parts.path or "/") == (target_parts.path or "/"))
-                            ):
+                            if cand_parts.scheme == target_parts.scheme and cand_parts.netloc == target_parts.netloc and ((cand_parts.path or "/") == (target_parts.path or "/")):
                                 same_visible_link = True
                     if same_visible_link and isinstance(cand.selector, dict):
                         out = {"type": "ClickAction", "selector": cand.selector}
@@ -3146,11 +3070,7 @@ class FSMOperator:
                         out["_element_id"] = element_id
                     return out
                 fallback_candidate = next(
-                    (
-                        cand
-                        for cand in ranked_candidates
-                        if cand.id not in state.blocklist.element_ids and self._candidate_accepts_typed_text(candidate=cand)
-                    ),
+                    (cand for cand in ranked_candidates if cand.id not in state.blocklist.element_ids and self._candidate_accepts_typed_text(candidate=cand)),
                     None,
                 )
                 if fallback_candidate is None:
@@ -3185,7 +3105,7 @@ class FSMOperator:
             direction = str(args.get("direction") or "down").strip().lower()
             raw_amount = args.get("amount")
             amount = 650
-            if isinstance(raw_amount, (int, float)):
+            if isinstance(raw_amount, int | float):
                 amount = int(raw_amount)
             else:
                 raw_text = str(raw_amount or "").strip().lower()
@@ -3308,10 +3228,8 @@ class FSMOperator:
             if "include_html" in args:
                 out["include_html"] = bool(args.get("include_html"))
             if "max_chars" in args:
-                try:
+                with contextlib.suppress(Exception):
                     out["max_chars"] = int(args.get("max_chars") or 0)
-                except Exception:
-                    pass
             return out
         return None
 
@@ -3340,7 +3258,7 @@ class FSMOperator:
             if needle:
                 ordered = sorted(
                     ranked_candidates,
-                    key=lambda c: (0 if c.role in prefer_roles else 1),
+                    key=lambda c: 0 if c.role in prefer_roles else 1,
                 )
                 for cand in ordered:
                     if cand.id in state.blocklist.element_ids:
@@ -3445,17 +3363,13 @@ class FSMOperator:
 
         if state.last_action_element_id:
             state.blocklist.element_ids = _dedupe_keep_order(
-                state.blocklist.element_ids + [state.last_action_element_id],
+                [*state.blocklist.element_ids, state.last_action_element_id],
                 MAX_PENDING_ELEMENTS,
             )
             state.blocklist.until_step = max(state.blocklist.until_step, int(step_index) + 2)
 
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
-        if (
-            last_action_type in {"clickaction", "typeaction", "selectdropdownoptionaction"}
-            and allow("browser.wait")
-            and int(state.counters.stall_count or 0) <= 3
-        ):
+        if last_action_type in {"clickaction", "typeaction", "selectdropdownoptionaction"} and allow("browser.wait") and int(state.counters.stall_count or 0) <= 3:
             return (
                 {"type": "WaitAction", "time_seconds": 1.2},
                 False,
@@ -3503,13 +3417,12 @@ class FSMOperator:
         global_ranked: List[Candidate] = []
         for cand in ranked_candidates:
             same_region = False
-            if focus_region_id and cand.region_id and cand.region_id == focus_region_id:
-                same_region = True
-            elif focus_region_id and focus_region_id in set(cand.region_ancestor_ids or []):
-                same_region = True
-            elif focus_region_context and _norm_ws(cand.context) == focus_region_context:
-                same_region = True
-            elif focus_candidate_ids and cand.id in focus_candidate_ids:
+            if (
+                (focus_region_id and cand.region_id and cand.region_id == focus_region_id)
+                or (focus_region_id and focus_region_id in set(cand.region_ancestor_ids or []))
+                or (focus_region_context and _norm_ws(cand.context) == focus_region_context)
+                or (focus_candidate_ids and cand.id in focus_candidate_ids)
+            ):
                 same_region = True
             if same_region:
                 blob = " ".join([cand.text, cand.field_hint, cand.group_label, cand.context]).lower()
@@ -3586,14 +3499,14 @@ class FSMOperator:
             typed_value = self._normalized_field_value(action.get("text"))
             if cand_id:
                 state.form_progress.typed_candidate_ids = _dedupe_keep_order(
-                    state.form_progress.typed_candidate_ids + [cand_id],
+                    [*state.form_progress.typed_candidate_ids, cand_id],
                     MAX_PENDING_ELEMENTS * 2,
                 )
                 if typed_value:
                     state.form_progress.typed_values_by_candidate[cand_id] = typed_value
             if sel_sig:
                 state.form_progress.typed_selector_sigs = _dedupe_keep_order(
-                    state.form_progress.typed_selector_sigs + [sel_sig],
+                    [*state.form_progress.typed_selector_sigs, sel_sig],
                     MAX_PENDING_ELEMENTS * 2,
                 )
                 if typed_value:
@@ -3602,9 +3515,7 @@ class FSMOperator:
         if action_type == "ClickAction":
             cand_id = element_id
             if cand_id and cand_id in state.form_progress.typed_candidate_ids:
-                state.form_progress.typed_candidate_ids = [
-                    x for x in state.form_progress.typed_candidate_ids if x != cand_id
-                ]
+                state.form_progress.typed_candidate_ids = [x for x in state.form_progress.typed_candidate_ids if x != cand_id]
             return
         if action_type == "SelectDropDownOptionAction":
             return

@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 ROOT = Path(__file__).resolve().parents[1]
 root_str = str(ROOT)
@@ -17,42 +18,65 @@ if root_str not in sys.path:
 IWA_ROOT = ROOT.parent / "autoppia_iwa"
 iwa_root_str = str(IWA_ROOT)
 if IWA_ROOT.exists() and iwa_root_str not in sys.path:
-    sys.path.insert(0, iwa_root_str)
+    # Keep operator repo first so `src.operator` resolves here, not from sibling repos.
+    sys.path.append(iwa_root_str)
 
 # autoppia_iwa config enforces provider keys at import time.
 os.environ.setdefault("LLM_PROVIDER", "openai")
 os.environ.setdefault("OPENAI_API_KEY", "dummy")
 
-from autoppia_iwa.src.data_generation.tasks.classes import Task
-from eval import _normalize_task_url_for_project
 from src.operator.agents.fsm.trajectory import get_trajectory_replay_bundle
 from src.operator.runtime.trajectory_executor import TrajectoryExecutor
 
+if TYPE_CHECKING:
+    from autoppia_iwa.src.data_generation.tasks.classes import Task
+
+
+def _task_cls():
+    from autoppia_iwa.src.data_generation.tasks.classes import Task as TaskModel
+
+    return TaskModel
+
+
+def _load_eval_symbol(symbol_name: str):
+    """Resolve eval helpers even if eval/ package shadows eval.py."""
+    try:
+        import eval as eval_pkg  # type: ignore
+
+        symbol = getattr(eval_pkg, symbol_name, None)
+        if symbol is not None:
+            return symbol
+    except Exception:
+        pass
+
+    eval_file = ROOT / "eval.py"
+    spec = importlib.util.spec_from_file_location("operator_eval_module", str(eval_file))
+    if spec and spec.loader:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        symbol = getattr(module, symbol_name, None)
+        if symbol is not None:
+            return symbol
+
+    raise ImportError(f"Could not load {symbol_name} from eval.py")
+
+
+_normalize_task_url_for_project = _load_eval_symbol("_normalize_task_url_for_project")
+
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Run strict trajectory replay for one task or all use-cases in a project, "
-            "then print final scores."
-        )
-    )
+    parser = argparse.ArgumentParser(description=("Run strict trajectory replay for one task or all use-cases in a project, then print final scores."))
     parser.add_argument(
         "--task-cache",
         default="",
-        help=(
-            "Optional cache file path. If omitted, the script auto-detects a cache that contains "
-            "the requested project and creates one if none is found."
-        ),
+        help=("Optional cache file path. If omitted, the script auto-detects a cache that contains the requested project and creates one if none is found."),
     )
     parser.add_argument("--web-project-id", default="autocinema")
     parser.add_argument("--use-case", default=None)
     parser.add_argument(
         "--all-use-cases",
         action="store_true",
-        help=(
-            "Run strict replay for all use-cases in the selected project (one task per use-case). "
-            "If --use-case and --task-id are both omitted, this mode is enabled automatically."
-        ),
+        help=("Run strict replay for all use-cases in the selected project (one task per use-case). If --use-case and --task-id are both omitted, this mode is enabled automatically."),
     )
     parser.add_argument("--task-id", default=None)
     parser.add_argument("--web-agent-id", default="1")
@@ -60,10 +84,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--raw-placeholders",
         action="store_true",
-        help=(
-            "Run strict replay with raw trajectory values. By default placeholders are resolved "
-            "from task prompt before execution."
-        ),
+        help=("Run strict replay with raw trajectory values. By default placeholders are resolved from task prompt before execution."),
     )
     parser.add_argument("--capture-screenshot", action="store_true")
     parser.add_argument(
@@ -75,10 +96,7 @@ def _parse_args() -> argparse.Namespace:
         "--iwa-log-level",
         default="ERROR",
         choices=["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"],
-        help=(
-            "Log level for internal autoppia_iwa loguru logs. "
-            "Use INFO/DEBUG to inspect evaluator internals, ERROR to keep output focused on trajectory debugging."
-        ),
+        help=("Log level for internal autoppia_iwa loguru logs. Use INFO/DEBUG to inspect evaluator internals, ERROR to keep output focused on trajectory debugging."),
     )
     return parser.parse_args()
 
@@ -98,10 +116,7 @@ def _has_project_tasks(raw_tasks: list[dict[str, Any]], project_id: str) -> bool
     wanted = str(project_id or "").strip()
     if not wanted:
         return False
-    for task in raw_tasks:
-        if str(task.get("web_project_id") or "").strip() == wanted:
-            return True
-    return False
+    return any(str(task.get("web_project_id") or "").strip() == wanted for task in raw_tasks)
 
 
 def _try_load_cache_for_project(cache_path: Path, project_id: str) -> tuple[bool, list[dict[str, Any]]]:
@@ -127,10 +142,7 @@ def _auto_generate_cache(cache_path: Path, project_id: str) -> None:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     proc = subprocess.run(cmd, cwd=str(ROOT), check=False)
     if int(proc.returncode) != 0:
-        raise RuntimeError(
-            f"Could not auto-generate task cache for project={project_id!r} at {cache_path}. "
-            "Run scripts/eval/generate_tasks.py manually."
-        )
+        raise RuntimeError(f"Could not auto-generate task cache for project={project_id!r} at {cache_path}. Run scripts/eval/generate_tasks.py manually.")
 
 
 def _resolve_cache_and_tasks(args: argparse.Namespace) -> tuple[Path, list[dict[str, Any]]]:
@@ -145,9 +157,7 @@ def _resolve_cache_and_tasks(args: argparse.Namespace) -> tuple[Path, list[dict[
             raise RuntimeError(f"task cache not found: {cache_path}")
         ok, raw_tasks = _try_load_cache_for_project(cache_path, project_id)
         if not ok:
-            raise RuntimeError(
-                f"task cache {cache_path} does not contain tasks for web_project_id={project_id!r}"
-            )
+            raise RuntimeError(f"task cache {cache_path} does not contain tasks for web_project_id={project_id!r}")
         return cache_path, raw_tasks
 
     candidates: list[Path] = [
@@ -172,9 +182,7 @@ def _resolve_cache_and_tasks(args: argparse.Namespace) -> tuple[Path, list[dict[
     _auto_generate_cache(generated, project_id)
     ok, raw_tasks = _try_load_cache_for_project(generated, project_id)
     if not ok:
-        raise RuntimeError(
-            f"Auto-generated cache at {generated} still does not contain project={project_id!r} tasks."
-        )
+        raise RuntimeError(f"Auto-generated cache at {generated} still does not contain project={project_id!r} tasks.")
     return generated, raw_tasks
 
 
@@ -189,7 +197,7 @@ def _extract_use_case_name(task_dict: dict[str, Any]) -> str:
 
 def _materialize_task(task_dict: dict[str, Any]) -> Task:
     normalized = _normalize_task_url_for_project(task_dict)
-    task = Task(**normalized)
+    task = _task_cls()(**normalized)
     task.url = str(task.url or "")
     return task
 
@@ -213,10 +221,7 @@ def _pick_task(raw_tasks: list[dict[str, Any]], args: argparse.Namespace) -> Tas
         break
 
     if selected is None:
-        raise RuntimeError(
-            f"No task found for web_project_id={args.web_project_id!r}, "
-            f"use_case={args.use_case!r}, task_id={args.task_id!r}"
-        )
+        raise RuntimeError(f"No task found for web_project_id={args.web_project_id!r}, use_case={args.use_case!r}, task_id={args.task_id!r}")
 
     return _materialize_task(selected)
 
@@ -268,7 +273,7 @@ def _looks_like_placeholder_payload(actions: list[dict[str, Any]]) -> bool:
 
 
 def _run_single_task(args: argparse.Namespace, cache_path: Path, task: Task) -> float:
-    from eval import _ScopedAsyncStatefulEvaluator  # delayed import
+    _ScopedAsyncStatefulEvaluator = _load_eval_symbol("_ScopedAsyncStatefulEvaluator")
     import asyncio
 
     use_case_name = _extract_use_case_name(task.model_dump())
@@ -301,11 +306,11 @@ def _run_single_task(args: argparse.Namespace, cache_path: Path, task: Task) -> 
     print(f"- id: {task.id}")
     print(f"- web_project_id: {task.web_project_id}")
     print(f"- use_case: {use_case_name}")
-    print(f"- mode: strict-replay")
+    print("- mode: strict-replay")
     print(f"- task_cache: {cache_path}")
     print(f"- url: {task.url}")
     print(f"- prompt: {task.prompt}")
-    print(f"- trajectory_url: {str(selected_trajectory.get('url') or '')}")
+    print(f"- trajectory_url: {selected_trajectory.get('url') or ''!s}")
     print(f"- strict_resolve_placeholders: {resolve_placeholders}")
     print("")
     print("Task tests:")
@@ -334,11 +339,7 @@ def _run_single_task(args: argparse.Namespace, cache_path: Path, task: Task) -> 
         try:
             reset_result = await evaluator.reset()
             print("")
-            print(
-                f"After reset -> score={reset_result.score.raw_score:.3f} "
-                f"({reset_result.score.tests_passed}/{reset_result.score.total_tests}) "
-                f"url={reset_result.snapshot.url}"
-            )
+            print(f"After reset -> score={reset_result.score.raw_score:.3f} ({reset_result.score.tests_passed}/{reset_result.score.total_tests}) url={reset_result.snapshot.url}")
             last_score = float(reset_result.score.raw_score)
             step_reports: list[dict[str, Any]] = []
             for idx, action in enumerate(iwa_actions, 1):
@@ -360,43 +361,27 @@ def _run_single_task(args: argparse.Namespace, cache_path: Path, task: Task) -> 
                         "url": current_url,
                     }
                 )
-                print(
-                    f"Step {idx:02d} {action.__class__.__name__}: "
-                    f"score={result.score.raw_score:.3f} "
-                    f"({result.score.tests_passed}/{result.score.total_tests}) "
-                    f"exec_ok={exec_ok} "
-                    f"url={current_url}"
-                )
+                print(f"Step {idx:02d} {action.__class__.__name__}: score={result.score.raw_score:.3f} ({result.score.tests_passed}/{result.score.total_tests}) exec_ok={exec_ok} url={current_url}")
                 if error_text:
                     print(f"  error: {error_text}")
                 if bool(result.score.success):
                     break
             final_score = await evaluator.get_score_details()
             print("")
-            print(
-                f"Final score={final_score.raw_score:.3f} "
-                f"({final_score.tests_passed}/{final_score.total_tests}) "
-                f"success={final_score.success}"
-            )
+            print(f"Final score={final_score.raw_score:.3f} ({final_score.tests_passed}/{final_score.total_tests}) success={final_score.success}")
             first_non_zero = next((s for s in step_reports if float(s["score"]) > 0.0), None)
             failed_steps = [s for s in step_reports if not bool(s["exec_ok"])]
             print("")
             print("Trajectory debug summary:")
             print(f"- steps_executed: {len(step_reports)}/{len(iwa_actions)}")
             if first_non_zero:
-                print(
-                    f"- first_non_zero_step: {int(first_non_zero['step']):02d} "
-                    f"({first_non_zero['action']}) score={float(first_non_zero['score']):.3f}"
-                )
+                print(f"- first_non_zero_step: {int(first_non_zero['step']):02d} ({first_non_zero['action']}) score={float(first_non_zero['score']):.3f}")
             else:
                 print("- first_non_zero_step: none")
             if failed_steps:
                 print("- execution_failures:")
                 for item in failed_steps:
-                    print(
-                        f"  step {int(item['step']):02d} {item['action']} "
-                        f"error={str(item['error']) or 'unknown'}"
-                    )
+                    print(f"  step {int(item['step']):02d} {item['action']} error={str(item['error']) or 'unknown'}")
             else:
                 print("- execution_failures: none")
             return float(final_score.raw_score if final_score.total_tests else last_score)
@@ -413,10 +398,7 @@ def _run(args: argparse.Namespace) -> int:
     run_all_use_cases = bool(args.all_use_cases) or (not args.use_case and not args.task_id)
     if run_all_use_cases:
         tasks = _pick_all_use_case_tasks(raw_tasks, args)
-        print(
-            f"Batch mode: web_project_id={args.web_project_id} "
-            f"use_cases={len(tasks)} strict_replay=True"
-        )
+        print(f"Batch mode: web_project_id={args.web_project_id} use_cases={len(tasks)} strict_replay=True")
         failed_use_cases: list[str] = []
         for index, task in enumerate(tasks, 1):
             use_case_name = _extract_use_case_name(task.model_dump()) or "UNKNOWN"

@@ -53,7 +53,7 @@ if operator_env.exists():
 def _candidate_text(value: Any) -> str:
     if isinstance(value, str):
         return " ".join(value.strip().split())
-    if isinstance(value, (int, float, bool)):
+    if isinstance(value, int | float | bool):
         return str(value)
     if isinstance(value, list):
         for item in value:
@@ -178,6 +178,7 @@ def _iwa_action_type_from_browser_tool_name(tool_name: str) -> str | None:
         "extract": "ExtractAction",
     }
     return mapping.get(suffix)
+
 
 # ── Imports ──────────────────────────────────────────────────────
 import autoppia_iwa.src.execution.actions.actions  # noqa: F401
@@ -357,10 +358,7 @@ def _discover_frontend_url(project_id: str, backend_url: str) -> str | None:
         parsed_frontend = urlparse(raw_url)
         port = parsed_frontend.port
         scheme = parsed_frontend.scheme or "http"
-        if port is not None:
-            discovered = f"{scheme}://localhost:{int(port)}/"
-        else:
-            discovered = raw_url
+        discovered = f"{scheme}://localhost:{int(port)}/" if port is not None else raw_url
         _DISCOVERED_FRONTEND_URLS[pid] = discovered
         return discovered
 
@@ -385,9 +383,7 @@ def _normalize_task_url_for_project(task_dict: dict[str, Any]) -> dict[str, Any]
         return task_dict
 
     backend_url = str(getattr(project, "backend_url", "") or "").strip()
-    frontend_url = _discover_frontend_url(project_id=project_id, backend_url=backend_url) or str(
-        getattr(project, "frontend_url", "") or ""
-    ).strip()
+    frontend_url = _discover_frontend_url(project_id=project_id, backend_url=backend_url) or str(getattr(project, "frontend_url", "") or "").strip()
     if not frontend_url or not backend_url:
         return task_dict
 
@@ -471,7 +467,7 @@ def _serialize_screenshot(raw: Any | None) -> str | None:
         return None
     if isinstance(raw, str):
         return raw or None
-    if isinstance(raw, (bytes, bytearray, memoryview)):
+    if isinstance(raw, bytes | bytearray | memoryview):
         return base64.b64encode(bytes(raw)).decode("ascii")
     return None
 
@@ -623,25 +619,13 @@ def _compute_results_summary(results: dict[str, Any], elapsed: float) -> None:
     total_steps = sum(int(ep.get("steps") or 0) for ep in results["episodes"])
     total_operator_duration_ms = sum(int(ep.get("operator_duration_ms") or 0) for ep in results["episodes"])
     total_http_roundtrip_ms = sum(int(ep.get("act_http_roundtrip_ms") or 0) for ep in results["episodes"])
-    avg_task_seconds = (
-        sum(float(ep.get("task_seconds", 0.0) or 0.0) for ep in results["episodes"]) / total
-        if total > 0
-        else 0.0
-    )
-    avg_step_seconds = (
-        sum(float(ep.get("task_seconds", 0.0) or 0.0) for ep in results["episodes"]) / total_steps
-        if total_steps > 0
-        else 0.0
-    )
+    avg_task_seconds = sum(float(ep.get("task_seconds", 0.0) or 0.0) for ep in results["episodes"]) / total if total > 0 else 0.0
+    avg_step_seconds = sum(float(ep.get("task_seconds", 0.0) or 0.0) for ep in results["episodes"]) / total_steps if total_steps > 0 else 0.0
     results["timing"]["total_seconds"] = round(elapsed, 4)
     results["timing"]["avg_task_seconds"] = round(avg_task_seconds, 4)
     results["timing"]["avg_step_seconds"] = round(avg_step_seconds, 4)
     operator_cost = sum(float(ep.get("estimated_cost_usd") or 0.0) for ep in results["episodes"])
-    judge_cost = sum(
-        float(((ep.get("failure_judge") or {}).get("estimated_cost_usd")) or 0.0)
-        for ep in results["episodes"]
-        if isinstance(ep, dict)
-    )
+    judge_cost = sum(float(((ep.get("failure_judge") or {}).get("estimated_cost_usd")) or 0.0) for ep in results["episodes"] if isinstance(ep, dict))
     results["costs"] = {
         "operator_estimated_cost_usd": round(operator_cost, 6),
         "failure_judge_estimated_cost_usd": round(judge_cost, 6),
@@ -665,7 +649,7 @@ def _compute_results_summary(results: dict[str, Any], elapsed: float) -> None:
     vision_steps = sum(int(ep.get("vision_steps") or 0) for ep in results["episodes"])
     helper_model_counts: dict[str, int] = {}
     for ep in results["episodes"]:
-        for model_name in (ep.get("helper_models") or []):
+        for model_name in ep.get("helper_models") or []:
             name = str(model_name or "").strip()
             if not name:
                 continue
@@ -831,10 +815,7 @@ def _history_lines_for_judge(history: list[dict[str, Any]] | None, *, limit: int
         err = str(item.get("error") or "").strip()
         url = str(item.get("url") or "")
         text = str(item.get("text") or "").strip()
-        out.append(
-            f"{idx + 1}. action={action or '-'} done={done} exec_ok={exec_ok} "
-            f"url={url[:180]} text={text[:120]} error={err[:140]}"
-        )
+        out.append(f"{idx + 1}. action={action or '-'} done={done} exec_ok={exec_ok} url={url[:180]} text={text[:120]} error={err[:140]}")
     return "\n".join(out)
 
 
@@ -881,9 +862,7 @@ async def _run_failure_judge(
 
     system_msg = (
         "You are a strict evaluator for failed web-agent episodes.\n"
-        "Choose exactly one failure category from this closed set:\n"
-        + ", ".join(FAILURE_JUDGE_CATEGORIES)
-        + ".\n"
+        "Choose exactly one failure category from this closed set:\n" + ", ".join(FAILURE_JUDGE_CATEGORIES) + ".\n"
         "Return JSON only with keys: category, reasoning.\n"
         "reasoning must be short, concrete, and based on the evidence.\n"
         "Do not mention multiple categories. If unsure, return UNKNOWN."
@@ -944,6 +923,7 @@ async def _run_failure_judge(
 
 # ── Main evaluation loop ────────────────────────────────────────
 
+
 async def run_evaluation(
     provider: str = "openai",
     model: str = "gpt-5-mini",
@@ -975,13 +955,14 @@ async def run_evaluation(
     # Re-load .env here as a guard: some imported modules may mutate env vars.
     try:
         from dotenv import load_dotenv
+
         operator_env = Path(__file__).resolve().parent / ".env"
         if operator_env.exists():
             load_dotenv(operator_env, override=True)
     except Exception:
         pass
 
-    provider_s = str(provider or os.getenv('LLM_PROVIDER') or 'openai').strip().lower()
+    provider_s = str(provider or os.getenv("LLM_PROVIDER") or "openai").strip().lower()
     use_vision = _env_bool("USE_VISION", False) or _env_bool("AGENT_USE_VISION", False)
     # Trace bundles are primarily for visual debugging, so default to capturing
     # screenshots whenever trace persistence is enabled.
@@ -994,8 +975,8 @@ async def run_evaluation(
     run_scope = hashlib.sha1(f"{os.getpid()}-{time.time()}".encode()).hexdigest()[:10]
 
     cache_path = Path(task_cache).resolve() if task_cache else TASK_CACHE
-    if provider_s == 'anthropic':
-        api_key = os.getenv('ANTHROPIC_API_KEY')
+    if provider_s == "anthropic":
+        api_key = os.getenv("ANTHROPIC_API_KEY")
         api_key_fpr = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:12] if api_key else "missing"
         logger.info(f"Eval env: ANTHROPIC_API_KEY={'set' if api_key else 'missing'} fpr={api_key_fpr}")
         if not api_key:
@@ -1006,8 +987,8 @@ async def run_evaluation(
         api_key_fpr = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:12] if api_key else "missing"
         logger.info(f"Eval env: OPENAI_API_KEY={'set' if api_key else 'missing'} fpr={api_key_fpr}")
         # For sandbox-gateway routing, OPENAI_API_KEY may be intentionally absent.
-        base_url = (os.getenv('OPENAI_BASE_URL') or 'https://api.openai.com/v1').rstrip('/')
-        if not api_key and not base_url.startswith('http://sandbox-gateway') and not base_url.startswith('http://localhost') and not base_url.startswith('http://127.0.0.1'):
+        base_url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+        if not api_key and not base_url.startswith("http://sandbox-gateway") and not base_url.startswith("http://localhost") and not base_url.startswith("http://127.0.0.1"):
             logger.error("OPENAI_API_KEY not set. Check .env file.")
             sys.exit(1)
     logger.info("=" * 60)
@@ -1087,10 +1068,7 @@ async def run_evaluation(
             tasks_per_use_case=max(1, int(tasks_per_use_case)),
             seed=int(seed or 0),
         )
-        logger.info(
-            f"Selected {len(tasks)} task(s) across all use cases for project={web_project_id} "
-            f"(tasks_per_use_case={max(1, int(tasks_per_use_case))})"
-        )
+        logger.info(f"Selected {len(tasks)} task(s) across all use cases for project={web_project_id} (tasks_per_use_case={max(1, int(tasks_per_use_case))})")
     else:
         # If we want distinct use cases, load more upfront then filter down.
         load_limit = num_tasks
@@ -1139,6 +1117,7 @@ async def run_evaluation(
     start_server = os.getenv("START_AGENT_SERVER", "1") in {"1", "true", "yes"}
     base_web_agent_id = os.getenv("WEB_AGENT_ID", "1").strip() or "1"
     base_validator_id = os.getenv("VALIDATOR_ID", IWA_VALIDATOR_ID or "validator_001").strip() or "validator_001"
+
     def _port_available(port: int) -> bool:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -1207,6 +1186,7 @@ async def run_evaluation(
             stderr=subprocess.STDOUT,
             env=server_env,
         )
+
         async def _wait_for_server_health(url: str, *, timeout_s: float = 15.0) -> None:
             deadline = time.time() + float(timeout_s)
             last_error: str | None = None
@@ -1227,9 +1207,6 @@ async def run_evaluation(
         if not agent_base_url:
             agent_base_url = "http://127.0.0.1:5000"
         server_proc = None
-
-
-
 
     async def call_agent_act(
         session: aiohttp.ClientSession,
@@ -1273,9 +1250,7 @@ async def run_evaluation(
                     if int(resp.status) >= 500 and attempt < 3:
                         body_preview = (await resp.text())[:400]
                         logger.warning(
-                            f"/act server_error attempt={attempt}/3 task={episode_task_id} step={step_index} "
-                            f"status={int(resp.status)} duration_ms={request_duration_ms} "
-                            f"body={body_preview}"
+                            f"/act server_error attempt={attempt}/3 task={episode_task_id} step={step_index} status={int(resp.status)} duration_ms={request_duration_ms} body={body_preview}"
                         )
                         await asyncio.sleep(0.35 * attempt)
                         continue
@@ -1291,9 +1266,7 @@ async def run_evaluation(
             except (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientOSError, aiohttp.ServerDisconnectedError) as exc:
                 last_exc = exc
                 if server_proc is not None and server_proc.poll() is not None:
-                    raise RuntimeError(
-                        f"agent_server_exited code={server_proc.poll()} task={episode_task_id} step={step_index}"
-                    ) from exc
+                    raise RuntimeError(f"agent_server_exited code={server_proc.poll()} task={episode_task_id} step={step_index}") from exc
                 if attempt >= 3:
                     raise
                 logger.warning(
@@ -1309,17 +1282,14 @@ async def run_evaluation(
                 body_preview = ""
                 if exc.status >= 500 and attempt < 3:
                     logger.warning(
-                        f"/act response_error attempt={attempt}/3 task={episode_task_id} step={step_index} "
-                        f"status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s}"
+                        f"/act response_error attempt={attempt}/3 task={episode_task_id} step={step_index} status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s}"
                     )
                     with contextlib.suppress(Exception):
                         await _wait_for_server_health(agent_base_url, timeout_s=5.0)
                     await asyncio.sleep(min(0.5 * attempt, 1.5))
                     continue
                 logger.error(
-                    f"/act response_error task={episode_task_id} step={step_index} "
-                    f"status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} "
-                    f"err={exc!s} body={body_preview}"
+                    f"/act response_error task={episode_task_id} step={step_index} status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s} body={body_preview}"
                 )
                 raise
         if data is None:
@@ -1588,9 +1558,7 @@ async def run_evaluation(
                         model_name = llm_meta.get("model") or model
                         episode_model = str(model_name)
                         if bool(strict_model) and not _model_names_compatible(str(requested_model), str(episode_model)):
-                            raise RuntimeError(
-                                f"model_mismatch requested={requested_model} effective={episode_model} task={episode_task_id} step={step_idx}"
-                            )
+                            raise RuntimeError(f"model_mismatch requested={requested_model} effective={episode_model} task={episode_task_id} step={step_idx}")
                         if isinstance(usages, list):
                             for u in usages:
                                 if not isinstance(u, dict):
@@ -1655,8 +1623,15 @@ async def run_evaluation(
                                 "error": None,
                                 "agent_decision": (metrics.get("decision") if isinstance(metrics, dict) else None),
                                 "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
-                                "prompt_tokens": int(sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
-                                "completion_tokens": int(sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
+                                "prompt_tokens": int(
+                                    sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))
+                                ),
+                                "completion_tokens": int(
+                                    sum(
+                                        int(u.get("completion_tokens") or 0)
+                                        for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else [])
+                                    )
+                                ),
                                 "done": True,
                                 "content": final_content,
                                 "reasoning": reasoning if isinstance(reasoning, str) else None,
@@ -1693,13 +1668,17 @@ async def run_evaluation(
                                 },
                                 "action": None,
                                 "execution": {"executed": False, "done_break": True},
-                                "act_request": act_request_payload if bool(trace_full_payloads) else {
+                                "act_request": act_request_payload
+                                if bool(trace_full_payloads)
+                                else {
                                     "task_id": act_request_payload.get("task_id") if isinstance(act_request_payload, dict) else None,
                                     "url": act_request_payload.get("url") if isinstance(act_request_payload, dict) else None,
                                     "step_index": act_request_payload.get("step_index") if isinstance(act_request_payload, dict) else None,
                                     "history_count": len(act_request_payload.get("history") or []) if isinstance(act_request_payload, dict) else 0,
                                 },
-                                "act_response": act_raw_response if bool(trace_full_payloads) else {
+                                "act_response": act_raw_response
+                                if bool(trace_full_payloads)
+                                else {
                                     "done": bool(done),
                                     "content": content if isinstance(content, str) else None,
                                     "reasoning": reasoning if isinstance(reasoning, str) else None,
@@ -1714,7 +1693,7 @@ async def run_evaluation(
 
                     if os.getenv("EVAL_SAVE_TRACES", "0").lower() in {"1", "true", "yes"}:
                         try:
-                            trace_dir = (SCRIPT_DIR / "data" / "traces" / str(episode_task_id))
+                            trace_dir = SCRIPT_DIR / "data" / "traces" / str(episode_task_id)
                             trace_dir.mkdir(parents=True, exist_ok=True)
                             (trace_dir / f"{step_idx:02d}.url.txt").write_text(str(step_result.snapshot.url), encoding="utf-8")
                             (trace_dir / f"{step_idx:02d}.html").write_text(str(step_result.snapshot.html), encoding="utf-8", errors="replace")
@@ -1753,8 +1732,18 @@ async def run_evaluation(
                                     "operator_duration_ms": int(operator_meta.get("duration_ms") or 0),
                                     "act_http_roundtrip_ms": int(operator_meta.get("http_roundtrip_ms") or 0),
                                     "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
-                                    "prompt_tokens": int(sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
-                                    "completion_tokens": int(sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
+                                    "prompt_tokens": int(
+                                        sum(
+                                            int(u.get("prompt_tokens") or 0)
+                                            for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else [])
+                                        )
+                                    ),
+                                    "completion_tokens": int(
+                                        sum(
+                                            int(u.get("completion_tokens") or 0)
+                                            for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else [])
+                                        )
+                                    ),
                                 }
                             )
                     else:
@@ -1776,8 +1765,15 @@ async def run_evaluation(
                                 "operator_duration_ms": int(operator_meta.get("duration_ms") or 0),
                                 "act_http_roundtrip_ms": int(operator_meta.get("http_roundtrip_ms") or 0),
                                 "llm_calls": int((llm_meta.get("llm_calls") if isinstance(llm_meta, dict) else 0) or 0),
-                                "prompt_tokens": int(sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
-                                "completion_tokens": int(sum(int(u.get("completion_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))),
+                                "prompt_tokens": int(
+                                    sum(int(u.get("prompt_tokens") or 0) for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else []))
+                                ),
+                                "completion_tokens": int(
+                                    sum(
+                                        int(u.get("completion_tokens") or 0)
+                                        for u in (llm_meta.get("llm_usages") if isinstance(llm_meta, dict) and isinstance(llm_meta.get("llm_usages"), list) else [])
+                                    )
+                                ),
                             }
                         )
 
@@ -1808,10 +1804,7 @@ async def run_evaluation(
                             "state_in": act_request_payload.get("state_in") if isinstance(act_request_payload, dict) else {},
                             "state_out": state_out if isinstance(state_out, dict) else {},
                         },
-                        "actions": [
-                            {"type": act.type, "raw": act.model_dump(mode="json", exclude_none=False)}
-                            for act in executed_actions
-                        ],
+                        "actions": [{"type": act.type, "raw": act.model_dump(mode="json", exclude_none=False)} for act in executed_actions],
                         "execution": {"executed": bool(executed_actions or action is not None), "exec_ok": bool(exec_ok), "error": exec_err},
                     }
                     if bool(trace_full_payloads):
@@ -2012,7 +2005,7 @@ async def run_evaluation(
     semaphore = asyncio.Semaphore(concurrency)
     out_dir = SCRIPT_DIR / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = Path(out_path).resolve() if out_path else (out_dir / 'eval_results.json')
+    out_path = Path(out_path).resolve() if out_path else (out_dir / "eval_results.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as agent_session:
@@ -2045,21 +2038,11 @@ async def run_evaluation(
     total = results["num_tasks"]
     succ = results["successes"]
     rate = succ / total if total > 0 else 0
-    avg_score = (
-        sum(ep["score"] for ep in results["episodes"]) / total if total > 0 else 0
-    )
-    avg_steps = (
-        sum(ep["steps"] for ep in results["episodes"]) / total if total > 0 else 0
-    )
-    avg_task_seconds = (
-        sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total if total > 0 else 0
-    )
+    avg_score = sum(ep["score"] for ep in results["episodes"]) / total if total > 0 else 0
+    avg_steps = sum(ep["steps"] for ep in results["episodes"]) / total if total > 0 else 0
+    avg_task_seconds = sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total if total > 0 else 0
     total_steps = sum(ep["steps"] for ep in results["episodes"])
-    avg_step_seconds = (
-        sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total_steps
-        if total_steps > 0
-        else 0
-    )
+    avg_step_seconds = sum(ep.get("task_seconds", 0.0) for ep in results["episodes"]) / total_steps if total_steps > 0 else 0
 
     _compute_results_summary(results, elapsed)
     results["partial"] = False
@@ -2162,11 +2145,12 @@ async def run_evaluation(
 
 # ── CLI ──────────────────────────────────────────────────────────
 
+
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Autoppia Operator - LLM Agent Evaluation")
-    parser.add_argument('--provider', default='openai', help='LLM provider: openai|chutes|anthropic')
+    parser.add_argument("--provider", default="openai", help="LLM provider: openai|chutes|anthropic")
     parser.add_argument("--model", default="gpt-5-mini", help="Model name")
     parser.add_argument("--num-tasks", type=int, default=20, help="Number of tasks to evaluate")
     parser.add_argument("--max-steps", type=int, default=15, help="Max steps per episode")
@@ -2176,8 +2160,8 @@ def main():
     parser.add_argument("--seed", type=int, default=None, help="Fixed seed (otherwise random)")
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each selected task N times")
     parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
-    parser.add_argument('--out', default=None, help='Output JSON path (default: data/eval_results.json)')
-    parser.add_argument('--task-cache', default=None, help='Task cache JSON path')
+    parser.add_argument("--out", default=None, help="Output JSON path (default: data/eval_results.json)")
+    parser.add_argument("--task-cache", default=None, help="Task cache JSON path")
     parser.add_argument("--strict-model", action=argparse.BooleanOptionalAction, default=True, help="Fail episodes when effective model != requested model")
     parser.add_argument("--distinct-use-cases", action="store_true", help="Pick tasks with distinct use cases")
     parser.add_argument("--all-use-cases", action="store_true", help="Select all use cases for the given --web-project-id")

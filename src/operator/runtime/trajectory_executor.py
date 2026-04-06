@@ -1,12 +1,10 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Any
 
-import inspect
-
 from src.operator.support.utils import normalize_selector_payload
-
 
 SUPPORTED_TRAJECTORY_ACTIONS = {
     "ClickAction",
@@ -55,11 +53,7 @@ class TrajectoryExecutionError(RuntimeError):
         super().__init__(self._build_message())
 
     def _build_message(self) -> str:
-        return (
-            f"step={self.step_index} type={self.mapped_action.get('type')} "
-            f"command={self.playwright_command} "
-            f"error={self.cause.__class__.__name__}: {self.cause}"
-        )
+        return f"step={self.step_index} type={self.mapped_action.get('type')} command={self.playwright_command} error={self.cause.__class__.__name__}: {self.cause}"
 
 
 @dataclass(slots=True)
@@ -187,8 +181,8 @@ class TrajectoryExecutor:
         Build concrete autoppia_iwa BaseAction objects when autoppia_iwa is available.
         """
         try:
-            from autoppia_iwa.src.execution.actions.base import BaseAction
             import autoppia_iwa.src.execution.actions.actions  # noqa: F401
+            from autoppia_iwa.src.execution.actions.base import BaseAction
         except Exception as exc:
             raise RuntimeError(f"Failed to import autoppia_iwa action classes: {exc}") from exc
 
@@ -265,9 +259,7 @@ class TrajectoryExecutor:
                 raise TrajectoryMapperError("Mapped SelectAction has empty 'value'.")
             playwright_selector = str(mapped_action.get("playwright_selector") or "")
             await self._ensure_selector_exists(page, playwright_selector)
-            await _await_if_needed(
-                page.select_option(playwright_selector, value=value, timeout=self.timeout_ms)
-            )
+            await _await_if_needed(page.select_option(playwright_selector, value=value, timeout=self.timeout_ms))
             return f"page.select_option({playwright_selector!r}, value={value!r}, timeout={self.timeout_ms})"
 
         if action_type == "SendKeysAction":
@@ -305,10 +297,7 @@ class TrajectoryExecutor:
         go_back = bool(action.get("go_back", False))
         go_forward = bool(action.get("go_forward", False))
         if sum([bool(url), go_back, go_forward]) != 1:
-            raise TrajectoryMapperError(
-                "NavigateAction requires exactly one navigation target: "
-                "'url', 'go_back=True', or 'go_forward=True'."
-            )
+            raise TrajectoryMapperError("NavigateAction requires exactly one navigation target: 'url', 'go_back=True', or 'go_forward=True'.")
         out: dict[str, Any] = {}
         if url:
             out["url"] = url
@@ -349,9 +338,7 @@ class TrajectoryExecutor:
         if callable(count_fn):
             count = await _await_if_needed(count_fn())
             if int(count) <= 0:
-                raise TimeoutError(
-                    f"Selector not found in DOM (count=0): {playwright_selector}"
-                )
+                raise TimeoutError(f"Selector not found in DOM (count=0): {playwright_selector}")
             return
 
         wait_for_fn = getattr(locator, "wait_for", None)
