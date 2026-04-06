@@ -88,6 +88,37 @@ For full benchmark (`eval.py`, `/act` loop):
 - IWA services must be running.
 - Operator agent server must be running too.
 
+### 3.1 Services To Start Before Testing Trajectories
+
+Minimum runtime required for strict replay scoring:
+
+- demo webs backend (`webs_server`) on `8090`
+- demo webs frontend(s) on `8000+` (at least the project you test)
+- operator agent on `9000`
+
+If demo webs are not already up:
+
+```bash
+cd ../autoppia_webs_demo
+./scripts/setup.sh
+```
+
+Start/restart operator agent:
+
+```bash
+cd ../autoppia_operator
+pkill -f "uvicorn main:app" || true
+python -m uvicorn main:app --host 0.0.0.0 --port "${AGENT_PORT:-9000}"
+```
+
+Quick health checks:
+
+```bash
+curl -s http://127.0.0.1:9000/health
+curl -s http://127.0.0.1:8090/health
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/
+```
+
 ## 4. How to create a trajectory from a browser recording
 
 Given a recording JSON:
