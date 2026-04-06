@@ -13,22 +13,27 @@ import hashlib
 import inspect
 import json
 import os
-import re
-from datetime import datetime
 import random
-import subprocess
+import re
 import socket
+import subprocess
 import sys
 import time
-from typing import Any
-from urllib.parse import urlparse, urlunparse
 import urllib.error
 import urllib.request
-from copy import deepcopy
-from pathlib import Path
 from collections import defaultdict
+from copy import deepcopy
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse, urlunparse
+
 import aiohttp
-from playwright.async_api import async_playwright
+
+try:
+    from playwright.async_api import async_playwright
+except ModuleNotFoundError:
+    async_playwright = None
 
 # ── Ensure the operator repo is on sys.path ─────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -36,8 +41,6 @@ OPERATOR_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(OPERATOR_ROOT))
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from src.operator.support.utils import candidate_text as _shared_candidate_text
-from src.operator.support.utils import normalize_selector_payload as _shared_normalize_selector_payload
 
 # ── Load .env from autoppia_operator ────────────────────────────
 from dotenv import load_dotenv
@@ -177,20 +180,19 @@ def _iwa_action_type_from_browser_tool_name(tool_name: str) -> str | None:
     return mapping.get(suffix)
 
 # ── Imports ──────────────────────────────────────────────────────
-from loguru import logger
-
-from autoppia_iwa.src.data_generation.tasks.classes import Task
-from autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator
-from autoppia_iwa.src.execution.actions.base import BaseAction
+import autoppia_iwa.src.execution.actions.actions  # noqa: F401
 from autoppia_iwa.config.config import EVALUATOR_HEADLESS, VALIDATOR_ID as IWA_VALIDATOR_ID
-from autoppia_iwa.src.data_generation.tasks.classes import BrowserSpecification
+from autoppia_iwa.src.data_generation.tasks.classes import BrowserSpecification, Task
 from autoppia_iwa.src.demo_webs.classes import BackendEvent, WebProject
 from autoppia_iwa.src.demo_webs.config import demo_web_projects
 from autoppia_iwa.src.demo_webs.demo_webs_service import BackendDemoWebService
+from autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator
+from autoppia_iwa.src.execution.actions.base import BaseAction
 from autoppia_iwa.src.execution.browser_executor import PlaywrightBrowserExecutor
+from loguru import logger
+
 from infra.llm_gateway import openai_chat_completions
 from infra.pricing import estimate_cost_usd
-import autoppia_iwa.src.execution.actions.actions  # noqa: F401
 
 # Default task cache path
 TASK_CACHE = OPERATOR_ROOT / "autoppia_rl" / "data" / "task_cache" / "autoppia_cinema_tasks.json"
@@ -438,9 +440,8 @@ def load_tasks(
     tasks: list[Task] = []
     for td in raw_tasks:
         # Optional task id filter (exact match)
-        if task_id:
-            if str(td.get("id", "")) != str(task_id):
-                continue
+        if task_id and str(td.get("id", "")) != str(task_id):
+            continue
 
         # Optional use-case filter
         if use_case:
@@ -450,9 +451,8 @@ def load_tasks(
                 continue
 
         # Optional web project filter
-        if web_project_id is not None:
-            if str(td.get("web_project_id", "")) != str(web_project_id):
-                continue
+        if web_project_id is not None and str(td.get("web_project_id", "")) != str(web_project_id):
+            continue
 
         try:
             task = _task_from_cache_dict(td)
@@ -568,6 +568,8 @@ class _ScopedAsyncStatefulEvaluator(AsyncStatefulEvaluator):
         )
         await self._backend.reset_database()
 
+        if async_playwright is None:
+            raise RuntimeError("playwright is required to run browser evaluations")
         self._playwright = await async_playwright().start()
         specs = self.task.specifications or BrowserSpecification()
         self._browser = await self._playwright.chromium.launch(
@@ -989,7 +991,7 @@ async def run_evaluation(
     )
     send_allowed_tools = _env_bool("EVAL_SEND_ALLOWED_TOOLS", False)
     allowed_tools_payload = BaseAction.all_function_definitions() if send_allowed_tools else None
-    run_scope = hashlib.sha1(f"{os.getpid()}-{time.time()}".encode("utf-8")).hexdigest()[:10]
+    run_scope = hashlib.sha1(f"{os.getpid()}-{time.time()}".encode()).hexdigest()[:10]
 
     cache_path = Path(task_cache).resolve() if task_cache else TASK_CACHE
     if provider_s == 'anthropic':
@@ -1009,7 +1011,7 @@ async def run_evaluation(
             logger.error("OPENAI_API_KEY not set. Check .env file.")
             sys.exit(1)
     logger.info("=" * 60)
-    logger.info("  Autoppia Operator – LLM Agent Evaluation")
+    logger.info("  Autoppia Operator - LLM Agent Evaluation")
     logger.info(f"  Provider:   {provider_s}")
     logger.info(f"  Model:      {model}")
     logger.info(f"  Tasks:      {num_tasks}")
@@ -1025,10 +1027,7 @@ async def run_evaluation(
     cpu_count = max(1, int(os.cpu_count() or 1))
     env_agent_workers = os.getenv("AGENT_SERVER_WORKERS", "").strip()
     if agent_workers is None:
-        if env_agent_workers:
-            agent_workers = max(1, int(env_agent_workers))
-        else:
-            agent_workers = min(task_concurrency, cpu_count)
+        agent_workers = max(1, int(env_agent_workers)) if env_agent_workers else min(task_concurrency, cpu_count)
     agent_workers = max(1, int(agent_workers))
 
     logger.info(f"  Repeat:     {int(repeat)}")
@@ -1114,7 +1113,7 @@ async def run_evaluation(
             if isinstance(uc, dict):
                 uc_name = str(uc.get("name") or "")
             elif uc is not None and hasattr(uc, "name"):
-                uc_name = str(getattr(uc, "name") or "")
+                uc_name = str(uc.name or "")
             if not uc_name:
                 rest.append(t)
                 continue
@@ -1167,7 +1166,7 @@ async def run_evaluation(
         out_dir = SCRIPT_DIR / "data"
         out_dir.mkdir(parents=True, exist_ok=True)
         log_path = out_dir / "agent_server.log"
-        log_f = open(log_path, "a", encoding="utf-8")
+        log_f = log_path.open("a", encoding="utf-8")
         log_f.write(f"\n=== uvicorn main:app port={port} workers={agent_workers} ===\n")
         log_f.flush()
 
@@ -1289,12 +1288,7 @@ async def run_evaluation(
                         f"done={int(bool(data.get('done'))) if isinstance(data, dict) else 0}"
                     )
                     break
-            except (
-                aiohttp.ClientConnectionError,
-                aiohttp.ClientOSError,
-                aiohttp.ServerDisconnectedError,
-                asyncio.TimeoutError,
-            ) as exc:
+            except (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientOSError, aiohttp.ServerDisconnectedError) as exc:
                 last_exc = exc
                 if server_proc is not None and server_proc.poll() is not None:
                     raise RuntimeError(
@@ -1305,7 +1299,7 @@ async def run_evaluation(
                 logger.warning(
                     f"/act transient failure attempt={attempt}/3 task={episode_task_id} step={step_index} "
                     f"duration_ms={int((time.monotonic() - started_at) * 1000)} "
-                    f"err_type={type(exc).__name__} err={str(exc)}"
+                    f"err_type={type(exc).__name__} err={exc!s}"
                 )
                 with contextlib.suppress(Exception):
                     await _wait_for_server_health(agent_base_url, timeout_s=5.0)
@@ -1316,7 +1310,7 @@ async def run_evaluation(
                 if exc.status >= 500 and attempt < 3:
                     logger.warning(
                         f"/act response_error attempt={attempt}/3 task={episode_task_id} step={step_index} "
-                        f"status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={str(exc)}"
+                        f"status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} err={exc!s}"
                     )
                     with contextlib.suppress(Exception):
                         await _wait_for_server_health(agent_base_url, timeout_s=5.0)
@@ -1325,7 +1319,7 @@ async def run_evaluation(
                 logger.error(
                     f"/act response_error task={episode_task_id} step={step_index} "
                     f"status={exc.status} duration_ms={int((time.monotonic() - started_at) * 1000)} "
-                    f"err={str(exc)} body={body_preview}"
+                    f"err={exc!s} body={body_preview}"
                 )
                 raise
         if data is None:
@@ -1692,8 +1686,8 @@ async def run_evaluation(
                                     "content": content if isinstance(content, str) else None,
                                     "reasoning": reasoning if isinstance(reasoning, str) else None,
                                     "metrics": metrics if isinstance(metrics, dict) else {},
-                                    "llm_call_breakdown": _normalize_call_breakdown((llm_meta.get("call_breakdown") if isinstance(llm_meta, dict) else None)),
-                                    "llm_usage_breakdown": _normalize_usage_breakdown((llm_meta.get("usage_breakdown") if isinstance(llm_meta, dict) else None)),
+                                    "llm_call_breakdown": _normalize_call_breakdown(llm_meta.get("call_breakdown") if isinstance(llm_meta, dict) else None),
+                                    "llm_usage_breakdown": _normalize_usage_breakdown(llm_meta.get("usage_breakdown") if isinstance(llm_meta, dict) else None),
                                     "state_in": act_request_payload.get("state_in") if isinstance(act_request_payload, dict) else {},
                                     "state_out": state_out if isinstance(state_out, dict) else {},
                                 },
@@ -1703,7 +1697,7 @@ async def run_evaluation(
                                     "task_id": act_request_payload.get("task_id") if isinstance(act_request_payload, dict) else None,
                                     "url": act_request_payload.get("url") if isinstance(act_request_payload, dict) else None,
                                     "step_index": act_request_payload.get("step_index") if isinstance(act_request_payload, dict) else None,
-                                    "history_count": len((act_request_payload.get("history") or [])) if isinstance(act_request_payload, dict) else 0,
+                                    "history_count": len(act_request_payload.get("history") or []) if isinstance(act_request_payload, dict) else 0,
                                 },
                                 "act_response": act_raw_response if bool(trace_full_payloads) else {
                                     "done": bool(done),
@@ -1809,8 +1803,8 @@ async def run_evaluation(
                             "reasoning": reasoning if isinstance(reasoning, str) else None,
                             "metrics": metrics if isinstance(metrics, dict) else {},
                             "operator_metrics": operator_meta,
-                            "llm_call_breakdown": _normalize_call_breakdown((llm_meta.get("call_breakdown") if isinstance(llm_meta, dict) else None)),
-                            "llm_usage_breakdown": _normalize_usage_breakdown((llm_meta.get("usage_breakdown") if isinstance(llm_meta, dict) else None)),
+                            "llm_call_breakdown": _normalize_call_breakdown(llm_meta.get("call_breakdown") if isinstance(llm_meta, dict) else None),
+                            "llm_usage_breakdown": _normalize_usage_breakdown(llm_meta.get("usage_breakdown") if isinstance(llm_meta, dict) else None),
                             "state_in": act_request_payload.get("state_in") if isinstance(act_request_payload, dict) else {},
                             "state_out": state_out if isinstance(state_out, dict) else {},
                         },
@@ -1828,7 +1822,7 @@ async def run_evaluation(
                             "task_id": act_request_payload.get("task_id") if isinstance(act_request_payload, dict) else None,
                             "url": act_request_payload.get("url") if isinstance(act_request_payload, dict) else None,
                             "step_index": act_request_payload.get("step_index") if isinstance(act_request_payload, dict) else None,
-                            "history_count": len((act_request_payload.get("history") or [])) if isinstance(act_request_payload, dict) else 0,
+                            "history_count": len(act_request_payload.get("history") or []) if isinstance(act_request_payload, dict) else 0,
                         }
                         step_trace["act_response"] = {
                             "done": bool(done),
@@ -2172,8 +2166,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Autoppia Operator - LLM Agent Evaluation")
-    parser.add_argument('--provider', default='chutes', help='LLM provider: openai|chutes|anthropic')
-    parser.add_argument("--model", default="deepseek-ai/DeepSeek-V3-0324", help="Model name")
+    parser.add_argument('--provider', default='openai', help='LLM provider: openai|chutes|anthropic')
+    parser.add_argument("--model", default="gpt-5-mini", help="Model name")
     parser.add_argument("--num-tasks", type=int, default=20, help="Number of tasks to evaluate")
     parser.add_argument("--max-steps", type=int, default=15, help="Max steps per episode")
     parser.add_argument("--use-case", default=None, help="Filter by use case (e.g. LOGIN)")
