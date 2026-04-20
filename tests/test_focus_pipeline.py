@@ -51,6 +51,38 @@ def test_build_task_cache_override_appends_prompt_for_target_use_case(tmp_path: 
     assert tasks[1]["prompt"] == "Other prompt."
 
 
+def test_build_task_cache_override_supports_nested_project_task_cache(tmp_path: Path) -> None:
+    source = tmp_path / "nested_tasks.json"
+    source.write_text(
+        json.dumps(
+            {
+                "autocinema": {
+                    "project_id": "autocinema",
+                    "tasks": [
+                        {
+                            "id": "1",
+                            "prompt": "Base watchlist prompt.",
+                            "use_case": {"name": "ADD_TO_WATCHLIST"},
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "override_nested.json"
+    build_task_cache_override(
+        source_task_cache=source,
+        use_case="ADD_TO_WATCHLIST",
+        prompt_override="Open the target movie detail page before adding it.",
+        out_path=out,
+    )
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    tasks = payload["autocinema"]["tasks"]
+    assert "Base watchlist prompt." in tasks[0]["prompt"]
+    assert "Open the target movie detail page before adding it." in tasks[0]["prompt"]
+
+
 def test_build_focus_summary_counts_only_gold_rows() -> None:
     summary = build_focus_summary(
         use_case="LOGIN",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 
 import training.claude_guided_harvester as guided_module
 import training.deterministic_harvester.resolvers as resolver_module
@@ -240,3 +241,50 @@ def test_dataset_movie_candidates_filters_seeded_movies(monkeypatch) -> None:
     )
 
     assert candidates == ["/movies/movie-1"]
+
+
+def test_task_for_seed_supports_nested_project_task_cache(tmp_path: Path) -> None:
+    cache_path = tmp_path / "nested_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "autocinema": {
+                    "project_id": "autocinema",
+                    "tasks": [
+                        {
+                            "id": "task-1",
+                            "is_web_real": False,
+                            "web_project_id": "autocinema",
+                            "url": "http://localhost:8000/?seed=17",
+                            "prompt": "Add a movie to the watchlist.",
+                            "specifications": {},
+                            "tests": [],
+                            "use_case": {
+                                "name": "ADD_TO_WATCHLIST",
+                                "description": "Add a movie to the watchlist.",
+                                "event": "AddToWatchlistEvent",
+                                "event_source_code": True,
+                                "examples": [],
+                                "constraints": [],
+                                "additional_prompt_info": "",
+                            },
+                            "should_record": False,
+                            "original_prompt": "Add a movie to the watchlist.",
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    task = guided_module._task_for_seed(
+        use_case="ADD_TO_WATCHLIST",
+        seed=9,
+        task_cache=cache_path,
+        web_project_id="autocinema",
+    )
+
+    assert task.url.endswith("?seed=9")
+    use_case_payload = task.use_case if isinstance(task.use_case, dict) else {}
+    assert use_case_payload.get("name") == "ADD_TO_WATCHLIST"

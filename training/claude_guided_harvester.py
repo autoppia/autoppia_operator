@@ -26,7 +26,17 @@ WEB_ID_VARIANTS = REPO_ROOT.parent / "autoppia_webs_demo" / "web_1_autocinema" /
 
 def _load_raw_tasks(cache_path: Path) -> list[dict[str, Any]]:
     payload = json.loads(Path(cache_path).read_text(encoding="utf-8"))
-    rows = payload["tasks"] if isinstance(payload, dict) and isinstance(payload.get("tasks"), list) else payload
+    rows: Any
+    if isinstance(payload, dict) and isinstance(payload.get("tasks"), list):
+        rows = payload["tasks"]
+    elif isinstance(payload, dict):
+        nested_rows: list[dict[str, Any]] = []
+        for value in payload.values():
+            if isinstance(value, dict) and isinstance(value.get("tasks"), list):
+                nested_rows.extend(row for row in value["tasks"] if isinstance(row, dict))
+        rows = nested_rows if nested_rows else payload
+    else:
+        rows = payload
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 

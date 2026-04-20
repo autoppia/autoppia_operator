@@ -35,7 +35,7 @@ class HarvestConfig:
     agent_workers: int = 1
     attempt_models: tuple[str, ...] = ()
     brief_dir: Path | None = None
-    brief_model: str = "claude-sonnet-4-5"
+    brief_model: str = "gpt-5.4-mini"
     execution_mode: str = "operator"
     max_claude_attempts: int = 3
     claude_workers: int = 1
@@ -342,6 +342,8 @@ def _generate_candidate_attempt(
         model=config.brief_model,
         previous_attempts=prior_attempts,
         timeout_seconds=config.claude_timeout_seconds,
+        task_cache_path=Path(config.task_cache_arg).resolve(),
+        web_project_id=config.web_project_id,
     )
     brief_path = _brief_path(output_root=config.output_root, seed=seed, attempt_idx=attempt_idx)
     brief_path.write_text(json.dumps(brief_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

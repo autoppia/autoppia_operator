@@ -150,3 +150,72 @@ def test_file_snippets_focus_on_use_case_keywords(tmp_path: Path) -> None:
     assert "message" in by_path["ContactSection.tsx"].lower()
     assert "contact-email" in by_path["id-variants.json"]
     assert "search-input" not in by_path["id-variants.json"]
+
+
+def test_generate_claude_brief_uses_gateway_for_gpt_models(monkeypatch, tmp_path: Path) -> None:
+    task_cache = tmp_path / "tasks.json"
+    task_cache.write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "prompt": "Send a support message.",
+                        "use_case": {"name": "CONTACT", "constraints": {"required": ["name", "email"]}},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+
+    def fake_openai_chat_completions(*, task_id, messages, model, temperature=0.2, max_tokens=300):
+        seen["task_id"] = task_id
+        seen["messages"] = messages
+        seen["model"] = model
+        seen["temperature"] = temperature
+        seen["max_tokens"] = max_tokens
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "use_case": "CONTACT",
+                                "seed": 7,
+                                "route": ["/contact"],
+                                "prompt_lines": ["Open the contact page."],
+                                "fields": [],
+                                "submit": {"ids": ["send-message-button"], "text": ["Send"], "action": "click once"},
+                                "success_signals": {"texts": ["Message Sent!"], "ids": [], "url_contains": []},
+                                "steps": [{"type": "NavigateAction", "url": "http://example.test/contact?seed=7"}],
+                                "pitfalls": ["Do not leave the page before submitting."],
+                                "action_sketch": ["Navigate", "Submit"],
+                                "confidence": 0.75,
+                            }
+                        )
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 40, "total_tokens": 140},
+            "model": "gpt-5.4-mini",
+        }
+
+    monkeypatch.setattr(module, "_candidate_web_files", lambda use_case: [])
+    monkeypatch.setattr(module, "_load_existing_examples", lambda use_case: [])
+    monkeypatch.setattr(module, "_file_snippets", lambda paths, use_case: [])
+    monkeypatch.setattr(module, "openai_chat_completions", fake_openai_chat_completions)
+
+    payload = module.generate_claude_brief(
+        use_case="CONTACT",
+        seed=7,
+        model="gpt-5.4-mini",
+        task_cache_path=task_cache,
+        web_project_id="autocinema",
+    )
+
+    assert seen["model"] == "gpt-5.4-mini"
+    assert str(seen["task_id"]).startswith("harvester-brief-contact-7")
+    assert payload["brief"]["route"] == ["/contact"]
+    assert payload["brief"]["steps"][0]["type"] == "NavigateAction"
+    assert payload["meta"]["model"] == "gpt-5.4-mini"

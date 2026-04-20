@@ -144,7 +144,14 @@ def build_task_cache_override(
     out_path: Path,
 ) -> Path:
     payload = _load_json(source_task_cache)
-    tasks = payload["tasks"] if isinstance(payload, dict) and isinstance(payload.get("tasks"), list) else payload
+    tasks: list[dict[str, Any]] | None = None
+    if isinstance(payload, dict) and isinstance(payload.get("tasks"), list):
+        tasks = payload["tasks"]
+    elif isinstance(payload, dict):
+        for value in payload.values():
+            if isinstance(value, dict) and isinstance(value.get("tasks"), list):
+                tasks = value["tasks"]
+                break
     if not isinstance(tasks, list):
         raise ValueError(f"Unexpected task cache format: {source_task_cache}")
     updated = False

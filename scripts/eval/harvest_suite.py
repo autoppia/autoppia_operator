@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent-workers", type=int, default=1)
     parser.add_argument("--collect-workers", type=int, default=1)
     parser.add_argument("--brief-dir", default="")
-    parser.add_argument("--brief-model", default="claude-sonnet-4-5")
+    parser.add_argument("--brief-model", default="gpt-5.4-mini")
     parser.add_argument("--execution-mode", choices=["direct", "operator"], default="operator")
     parser.add_argument("--max-claude-attempts", type=int, default=3)
     parser.add_argument("--max-seeds-per-use-case", type=int, default=0)

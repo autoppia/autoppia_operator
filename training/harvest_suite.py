@@ -57,7 +57,7 @@ class HarvestSuiteConfig:
     task_concurrency: int = 1
     agent_workers: int = 1
     collect_workers: int = 1
-    brief_model: str = "claude-sonnet-4-5"
+    brief_model: str = "gpt-5.4-mini"
     execution_mode: str = "operator"
     max_claude_attempts: int = 3
     brief_dir: Path | None = None

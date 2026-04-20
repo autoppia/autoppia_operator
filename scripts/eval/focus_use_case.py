@@ -222,7 +222,13 @@ def cmd_claude_brief(args: argparse.Namespace) -> int:
     use_case = str(args.use_case).upper()
     seed = int(args.seed)
     output_root = focus_root(use_case=use_case)
-    payload = generate_claude_brief(use_case=use_case, seed=seed, model=str(args.model).strip() or "claude-sonnet-4-5")
+    payload = generate_claude_brief(
+        use_case=use_case,
+        seed=seed,
+        model=str(args.model).strip() or "gpt-5.4-mini",
+        task_cache_path=Path(args.task_cache).resolve() if str(args.task_cache).strip() else None,
+        web_project_id="autocinema",
+    )
     out_path = save_claude_brief(use_case=use_case, seed=seed, payload=payload, output_root=output_root)
     print(json.dumps({"brief_path": str(out_path), "payload": payload}, indent=2))
     return 0
@@ -426,18 +432,18 @@ def main(argv: list[str] | None = None) -> int:
     cost_report.add_argument("--use-case", default="LOGIN")
     cost_report.set_defaults(func=cmd_cost_report)
 
-    claude_brief = sub.add_parser("claude-brief")
+    claude_brief = sub.add_parser("teacher-brief", aliases=["claude-brief"])
     claude_brief.add_argument("--use-case", default="CONTACT")
     claude_brief.add_argument("--seed", type=int, required=True)
-    claude_brief.add_argument("--model", default="claude-sonnet-4-5")
+    claude_brief.add_argument("--model", default="gpt-5.4-mini")
     claude_brief.set_defaults(func=cmd_claude_brief)
 
-    claude_harvest = sub.add_parser("claude-harvest")
+    claude_harvest = sub.add_parser("teacher-harvest", aliases=["claude-harvest", "gpt-harvest"])
     claude_harvest.add_argument("--use-case", default="CONTACT")
     claude_harvest.add_argument("--seeds", default="1")
     claude_harvest.add_argument("--provider", default="openai")
     claude_harvest.add_argument("--model", default="gpt-5.4-mini")
-    claude_harvest.add_argument("--brief-model", default="claude-sonnet-4-5")
+    claude_harvest.add_argument("--brief-model", default="gpt-5.4-mini")
     claude_harvest.add_argument("--max-steps", type=int, default=12)
     claude_harvest.add_argument("--task-concurrency", type=int, default=1)
     claude_harvest.add_argument("--agent-workers", type=int, default=1)
@@ -456,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
     generate_candidates.add_argument("--seeds", default="1")
     generate_candidates.add_argument("--provider", default="openai")
     generate_candidates.add_argument("--model", default="gpt-5.4-mini")
-    generate_candidates.add_argument("--brief-model", default="claude-sonnet-4-5")
+    generate_candidates.add_argument("--brief-model", default="gpt-5.4-mini")
     generate_candidates.add_argument("--max-steps", type=int, default=12)
     generate_candidates.add_argument("--task-concurrency", type=int, default=1)
     generate_candidates.add_argument("--agent-workers", type=int, default=1)
@@ -474,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     replay_candidates_cmd.add_argument("--candidate-path", action="append", default=[])
     replay_candidates_cmd.add_argument("--provider", default="openai")
     replay_candidates_cmd.add_argument("--model", default="gpt-5.4-mini")
-    replay_candidates_cmd.add_argument("--brief-model", default="claude-sonnet-4-5")
+    replay_candidates_cmd.add_argument("--brief-model", default="gpt-5.4-mini")
     replay_candidates_cmd.add_argument("--max-steps", type=int, default=12)
     replay_candidates_cmd.add_argument("--task-concurrency", type=int, default=1)
     replay_candidates_cmd.add_argument("--agent-workers", type=int, default=1)

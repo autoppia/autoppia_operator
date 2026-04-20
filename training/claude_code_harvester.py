@@ -1,27 +1,43 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import os
 from pathlib import Path
 from typing import Any
 
+from infra.llm_gateway import openai_chat_completions
+from infra.pricing import estimate_cost_usd
 from training.harvester_support import brief_prompt_lines, summarize_attempt_for_claude
 from training.layout import use_case_layout
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TASK_CACHE_PATH = REPO_ROOT.parent / "autoppia_rl" / "data" / "tasks" / "cache" / "autoppia_cinema_tasks.json"
 WEB_REPO_ROOT = REPO_ROOT.parent / "autoppia_webs_demo" / "web_1_autocinema"
+DEFAULT_BRIEF_MODEL = "gpt-5.4-mini"
 
 
 def focus_root(*, use_case: str) -> Path:
     return use_case_layout(repo_root=REPO_ROOT, web_project="autocinema", use_case=use_case).root
 
 
-def _load_task_row(use_case: str) -> dict[str, Any]:
-    payload = json.loads(TASK_CACHE_PATH.read_text(encoding="utf-8"))
-    rows = payload["tasks"] if isinstance(payload, dict) and isinstance(payload.get("tasks"), list) else payload
+def _load_task_row(use_case: str, task_cache_path: Path | None = None, web_project_id: str | None = None) -> dict[str, Any]:
+    cache_path = Path(task_cache_path).resolve() if task_cache_path else TASK_CACHE_PATH
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    rows: Any
+    if isinstance(payload, dict) and isinstance(payload.get("tasks"), list):
+        rows = payload["tasks"]
+    elif isinstance(payload, dict):
+        nested_rows: list[dict[str, Any]] = []
+        target_project = str(web_project_id or "").strip()
+        values = [payload.get(target_project)] if target_project and target_project in payload else payload.values()
+        for value in values:
+            if isinstance(value, dict) and isinstance(value.get("tasks"), list):
+                nested_rows.extend(item for item in value["tasks"] if isinstance(item, dict))
+        rows = nested_rows if nested_rows else payload
+    else:
+        rows = payload
     if not isinstance(rows, list):
-        raise ValueError(f"unexpected task cache format: {TASK_CACHE_PATH}")
+        raise ValueError(f"unexpected task cache format: {cache_path}")
     normalized = str(use_case).strip().upper()
     for row in rows:
         if not isinstance(row, dict):
@@ -435,15 +451,77 @@ def _brief_schema() -> dict[str, Any]:
     }
 
 
+def _brief_messages(*, prompt: str, schema: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": ("You generate structured browser-harvesting briefs. Return exactly one JSON object that matches the requested schema. Do not wrap it in markdown or prose."),
+        },
+        {
+            "role": "user",
+            "content": f"{prompt}\n\nJSON schema:\n{json.dumps(schema, ensure_ascii=False, indent=2)}",
+        },
+    ]
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    raw = str(text or "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            payload = json.loads(raw[start : end + 1])
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _normalize_brief_result(*, result: dict[str, Any], use_case: str, seed: int) -> dict[str, Any]:
+    submit = result.get("submit") if isinstance(result.get("submit"), dict) else {}
+    success_signals = result.get("success_signals") if isinstance(result.get("success_signals"), dict) else {}
+    normalized: dict[str, Any] = {
+        "use_case": str(result.get("use_case") or use_case),
+        "seed": int(result.get("seed") or seed),
+        "route": [str(item) for item in result.get("route", []) if str(item).strip()] if isinstance(result.get("route"), list) else [],
+        "prompt_lines": [str(item) for item in result.get("prompt_lines", []) if str(item).strip()] if isinstance(result.get("prompt_lines"), list) else [],
+        "fields": [item for item in result.get("fields", []) if isinstance(item, dict)] if isinstance(result.get("fields"), list) else [],
+        "submit": {
+            "ids": [str(item) for item in submit.get("ids", []) if str(item).strip()] if isinstance(submit.get("ids"), list) else [],
+            "text": [str(item) for item in submit.get("text", []) if str(item).strip()] if isinstance(submit.get("text"), list) else [],
+            "action": str(submit.get("action") or ""),
+        },
+        "success_signals": {
+            "texts": [str(item) for item in success_signals.get("texts", []) if str(item).strip()] if isinstance(success_signals.get("texts"), list) else [],
+            "ids": [str(item) for item in success_signals.get("ids", []) if str(item).strip()] if isinstance(success_signals.get("ids"), list) else [],
+            "url_contains": [str(item) for item in success_signals.get("url_contains", []) if str(item).strip()] if isinstance(success_signals.get("url_contains"), list) else [],
+        },
+        "steps": [item for item in result.get("steps", []) if isinstance(item, dict)] if isinstance(result.get("steps"), list) else [],
+        "pitfalls": [str(item) for item in result.get("pitfalls", []) if str(item).strip()] if isinstance(result.get("pitfalls"), list) else [],
+        "action_sketch": [str(item) for item in result.get("action_sketch", []) if str(item).strip()] if isinstance(result.get("action_sketch"), list) else [],
+        "confidence": float(result.get("confidence") or 0.0),
+    }
+    return normalized
+
+
 def generate_claude_brief(
     *,
     use_case: str,
     seed: int,
-    model: str = "claude-sonnet-4-5",
+    model: str = DEFAULT_BRIEF_MODEL,
     previous_attempts: list[dict[str, Any]] | None = None,
     timeout_seconds: int = 120,
+    task_cache_path: Path | None = None,
+    web_project_id: str | None = None,
 ) -> dict[str, Any]:
-    task_row = _load_task_row(use_case)
+    task_row = _load_task_row(use_case, task_cache_path=task_cache_path, web_project_id=web_project_id)
     web_files = _candidate_web_files(use_case)
     examples = _load_existing_examples(use_case)
     snippets = _file_snippets(web_files, use_case=use_case)
@@ -457,33 +535,36 @@ def generate_claude_brief(
         previous_attempts=previous_attempts,
     )
     schema = _brief_schema()
-    cmd = [
-        "claude",
-        "-p",
-        "--output-format",
-        "json",
-        "--permission-mode",
-        "bypassPermissions",
-        "--model",
-        model,
-        "--max-budget-usd",
-        "1",
-        "--json-schema",
-        json.dumps(schema, ensure_ascii=False),
-        prompt,
-    ]
-    raw = subprocess.check_output(cmd, cwd=str(REPO_ROOT), text=True, timeout=max(1, int(timeout_seconds)))
-    payload = json.loads(raw)
-    structured = payload.get("structured_output")
-    result = structured if isinstance(structured, dict) else json.loads(str(payload.get("result") or "{}"))
+    response = openai_chat_completions(
+        task_id=f"harvester-brief-{str(use_case).strip().lower()}-{int(seed)}",
+        messages=_brief_messages(prompt=prompt, schema=schema),
+        model=str(model).strip() or DEFAULT_BRIEF_MODEL,
+        temperature=0.1,
+        max_tokens=max(800, min(4000, int(timeout_seconds) * 12)),
+    )
+    raw_content = ""
+    if isinstance(response, dict):
+        choices = response.get("choices")
+        if isinstance(choices, list) and choices:
+            message = choices[0].get("message") if isinstance(choices[0], dict) else {}
+            raw_content = str(message.get("content") or "")
+    result = _normalize_brief_result(
+        result=_extract_json_object(raw_content),
+        use_case=use_case,
+        seed=seed,
+    )
+    usage = response.get("usage") if isinstance(response, dict) and isinstance(response.get("usage"), dict) else {}
+    total_cost_usd, _ = estimate_cost_usd(str(model), usage)
     return {
         "brief": result,
         "meta": {
             "model": model,
-            "total_cost_usd": float(payload.get("total_cost_usd") or 0.0),
-            "usage": payload.get("usage") if isinstance(payload.get("usage"), dict) else {},
-            "session_id": payload.get("session_id"),
+            "provider": str(response.get("_provider_fallback") or os.getenv("LLM_PROVIDER") or "openai"),
+            "total_cost_usd": float(total_cost_usd),
+            "usage": usage,
+            "session_id": None,
         },
+        "task_cache_path": str(Path(task_cache_path).resolve() if task_cache_path else TASK_CACHE_PATH),
         "web_files": [str(p) for p in web_files],
         "snippets": snippets,
         "examples": examples,
