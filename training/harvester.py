@@ -9,6 +9,8 @@ from typing import Any
 
 from training.claude_code_harvester import generate_claude_brief
 from training.claude_guided_harvester import _guided_actions_from_brief, run_guided_brief
+from training.deterministic_harvester import build_deterministic_plan, load_task_objective, load_task_row
+from training.deterministic_harvester.projects import normalized_origin, resolve_project_id
 from training.focus_pipeline import (
     build_prompt_override,
     build_task_cache_override,
@@ -27,6 +29,7 @@ class HarvestConfig:
     provider: str
     model: str
     task_cache_arg: str
+    web_project_id: str | None = None
     max_steps: int = 12
     task_concurrency: int = 1
     agent_workers: int = 1
@@ -129,6 +132,7 @@ def build_guided_row(
     attempt_name: str,
     report: dict[str, Any],
     out_path: Path,
+    web_project_id: str = "autocinema",
     teacher_model: str = "",
     teacher_brief_path: str = "",
 ) -> dict[str, Any] | None:
@@ -150,7 +154,7 @@ def build_guided_row(
     }
     trace_file.write_text(json.dumps(trace_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     row = {
-        "web_project_id": "autocinema",
+        "web_project_id": str(web_project_id or "autocinema"),
         "task_id": str(episode.get("task_id") or ""),
         "episode_task_id": episode_task_id,
         "use_case": use_case,
@@ -187,9 +191,14 @@ def build_candidate_from_brief(
     brief_payload: dict[str, Any],
     brief_path: Path,
     task_url: str,
+    web_project_id: str = "autocinema",
 ) -> TrajectoryCandidate:
     brief = brief_payload.get("brief") if isinstance(brief_payload, dict) else {}
-    actions = _guided_actions_from_brief(task_url=task_url, brief=brief if isinstance(brief, dict) else {})
+    actions = _guided_actions_from_brief(
+        task_url=task_url,
+        brief=brief if isinstance(brief, dict) else {},
+        web_project_id=web_project_id,
+    )
     return TrajectoryCandidate(
         use_case=str(use_case).strip().upper(),
         seed=int(seed),
@@ -202,8 +211,113 @@ def build_candidate_from_brief(
         metadata={
             "brief_meta": dict(brief_payload.get("meta") or {}) if isinstance(brief_payload.get("meta"), dict) else {},
             "web_files": list(brief_payload.get("web_files") or []) if isinstance(brief_payload.get("web_files"), list) else [],
+            "web_project_id": str(web_project_id or "autocinema"),
         },
     )
+
+
+def _deterministic_plan_path(*, output_root: Path, seed: int, attempt_name: str) -> Path:
+    base = output_root / "harvester" / "deterministic_runs" / f"seed_{int(seed):04d}"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / f"{attempt_name}.json"
+
+
+def build_candidate_from_plan(
+    *,
+    use_case: str,
+    seed: int,
+    attempt_name: str,
+    prompt_lines: list[str] | tuple[str, ...],
+    actions: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    metadata: dict[str, Any],
+    plan_path: Path,
+) -> TrajectoryCandidate:
+    return TrajectoryCandidate(
+        use_case=str(use_case).strip().upper(),
+        seed=int(seed),
+        attempt_name=str(attempt_name).strip(),
+        teacher_model="",
+        generation_mode="deterministic_plan",
+        brief_path=str(plan_path),
+        prompt_lines=tuple(str(item).strip() for item in prompt_lines if str(item).strip()),
+        actions=tuple(dict(action) for action in actions if isinstance(action, dict)),
+        metadata=dict(metadata or {}),
+    )
+
+
+def _generate_deterministic_candidate_attempt(
+    *,
+    config: HarvestConfig,
+    seed: int,
+    attempt_idx: int,
+) -> dict[str, Any]:
+    objective = load_task_objective(
+        cache_path=Path(config.task_cache_arg).resolve(),
+        use_case=config.use_case,
+        seed=seed,
+        web_project_id=config.web_project_id,
+    )
+    plan = build_deterministic_plan(objective)
+    attempt_name = f"deterministic_{attempt_idx:02d}"
+    plan_path = _deterministic_plan_path(output_root=config.output_root, seed=seed, attempt_name=attempt_name)
+    plan_payload = {
+        "use_case": objective.use_case,
+        "web_project_id": objective.web_project_id,
+        "seed": int(seed),
+        "task_url": objective.task_url,
+        "prompt": objective.prompt,
+        "route_target": objective.route_target,
+        "field_values": dict(objective.field_values),
+        "entity_filters": dict(objective.entity_filters),
+        "auth_required": bool(objective.auth_required),
+        "success_expectations": dict(objective.success_expectations),
+        "constraints": [
+            {
+                "field": hint.field,
+                "operator": hint.operator,
+                "value": hint.value,
+                "source": hint.source,
+            }
+            for hint in objective.constraints
+        ],
+        "actions": [dict(action) for action in plan.actions],
+        "metadata": dict(plan.metadata),
+    }
+    plan_path.write_text(json.dumps(plan_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    prompt_override = build_prompt_override(use_case=config.use_case, extra_lines=list(plan.prompt_lines))
+    task_cache_path = _build_task_cache_for_seed(
+        config=config,
+        seed=seed,
+        prompt_override=prompt_override,
+        suffix=f"_deterministic_{attempt_idx:02d}",
+    )
+    candidate = build_candidate_from_plan(
+        use_case=config.use_case,
+        seed=seed,
+        attempt_name=attempt_name,
+        prompt_lines=list(plan.prompt_lines),
+        actions=list(plan.actions),
+        metadata={
+            "web_project_id": objective.web_project_id,
+            "plan": plan.metadata,
+            "objective": {k: v for k, v in plan_payload.items() if k != "actions"},
+        },
+        plan_path=plan_path,
+    )
+    stored_candidate_path = candidate_path(output_root=config.output_root, seed=seed, attempt_name=attempt_name)
+    write_candidate(stored_candidate_path, candidate)
+    return {
+        "seed": int(seed),
+        "attempt_idx": int(attempt_idx),
+        "attempt_name": attempt_name,
+        "brief_payload": {"brief": {}, "meta": {"model": ""}},
+        "brief_path": plan_path,
+        "extra_lines": list(plan.prompt_lines),
+        "prompt_override": prompt_override,
+        "task_cache_path": task_cache_path,
+        "candidate": candidate,
+        "stored_candidate_path": stored_candidate_path,
+    }
 
 
 def _generate_candidate_attempt(
@@ -213,6 +327,15 @@ def _generate_candidate_attempt(
     attempt_idx: int,
     prior_attempts: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    if int(attempt_idx) == 1:
+        try:
+            return _generate_deterministic_candidate_attempt(
+                config=config,
+                seed=seed,
+                attempt_idx=attempt_idx,
+            )
+        except Exception:
+            pass
     brief_payload = generate_claude_brief(
         use_case=config.use_case,
         seed=seed,
@@ -232,7 +355,18 @@ def _generate_candidate_attempt(
         suffix=f"_claude_{attempt_idx:02d}",
     )
     attempt_name = f"claude_{attempt_idx:02d}"
-    task_url = f"http://84.247.180.192:8000/?seed={int(seed)}"
+    try:
+        task_objective = load_task_objective(
+            cache_path=Path(config.task_cache_arg).resolve(),
+            use_case=config.use_case,
+            seed=seed,
+            web_project_id=config.web_project_id,
+        )
+        task_url = task_objective.task_url
+        resolved_project_id = task_objective.web_project_id
+    except Exception:
+        resolved_project_id = resolve_project_id(explicit_project_id=config.web_project_id)
+        task_url = f"{normalized_origin(project_id=resolved_project_id)}/?seed={int(seed)}"
     candidate = build_candidate_from_brief(
         use_case=config.use_case,
         seed=seed,
@@ -240,6 +374,7 @@ def _generate_candidate_attempt(
         brief_payload=brief_payload,
         brief_path=brief_path,
         task_url=task_url,
+        web_project_id=resolved_project_id,
     )
     stored_candidate_path = candidate_path(output_root=config.output_root, seed=seed, attempt_name=attempt_name)
     write_candidate(stored_candidate_path, candidate)
@@ -267,12 +402,14 @@ def _execute_candidate_attempt(
     candidate = bundle["candidate"]
     brief_path = bundle["brief_path"]
     task_cache_path = bundle["task_cache_path"]
+    generation_mode = str(getattr(candidate, "generation_mode", "") or "")
     if str(config.execution_mode).strip().lower() == "direct":
         report = run_guided_brief(
             use_case=config.use_case,
             seed=seed,
             brief_payload=bundle["brief_payload"],
             task_cache=task_cache_path,
+            web_project_id=str(candidate.metadata.get("web_project_id") or config.web_project_id or "autocinema"),
             max_steps=config.max_steps,
             planned_actions_override=[dict(action) for action in candidate.actions],
         )
@@ -286,6 +423,7 @@ def _execute_candidate_attempt(
             attempt_name=attempt_name,
             report=report,
             out_path=out_path,
+            web_project_id=str(candidate.metadata.get("web_project_id") or config.web_project_id or "autocinema"),
             teacher_model=config.brief_model,
             teacher_brief_path=str(brief_path),
         )
@@ -299,8 +437,12 @@ def _execute_candidate_attempt(
         )
     is_gold = bool(row and bool(row.get("success")) and float(row.get("score") or 0.0) >= 1.0)
     if row:
-        row["harvest_mode"] = "claude_code_direct" if str(config.execution_mode).strip().lower() == "direct" else "claude_code_replay"
-        row["teacher_model"] = config.brief_model
+        if generation_mode == "deterministic_plan":
+            row["harvest_mode"] = "deterministic_direct" if str(config.execution_mode).strip().lower() == "direct" else "deterministic_replay"
+            row["teacher_model"] = str(candidate.teacher_model or "")
+        else:
+            row["harvest_mode"] = "claude_code_direct" if str(config.execution_mode).strip().lower() == "direct" else "claude_code_replay"
+            row["teacher_model"] = config.brief_model
         row["teacher_brief_path"] = str(brief_path)
         row["candidate_path"] = str(bundle["stored_candidate_path"])
         row = (
@@ -478,6 +620,7 @@ def replay_candidate(
         seed=int(candidate.seed),
         brief_payload={"brief": {}, "meta": {"model": candidate.teacher_model}},
         task_cache=task_cache,
+        web_project_id=str(candidate.metadata.get("web_project_id") or "autocinema"),
         max_steps=int(max_steps),
         planned_actions_override=[dict(action) for action in candidate.actions],
     )
@@ -616,6 +759,7 @@ def _rows_from_run_reports(*, gold_root: Path, use_case: str) -> list[dict[str, 
             attempt_name=attempt_name,
             report=report,
             out_path=run_path,
+            web_project_id="autocinema",
         )
         if isinstance(row, dict):
             rows.append(row)
@@ -759,9 +903,57 @@ def collect_seed_rows_code_aware(*, config: HarvestConfig, seed: int) -> list[di
     return _collect_rows_for_seeds_code_aware(config=config, seeds=[seed])
 
 
+def _collect_seed_rows_deterministic_first(*, config: HarvestConfig, seed: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    prior_attempts: list[dict[str, Any]] = []
+
+    deterministic_bundle = _generate_candidate_attempt(
+        config=config,
+        seed=seed,
+        attempt_idx=1,
+        prior_attempts=prior_attempts,
+    )
+    deterministic_result = _execute_candidate_attempt(config=config, bundle=deterministic_bundle)
+    deterministic_row = deterministic_result.get("row")
+    if isinstance(deterministic_row, dict):
+        rows.append(deterministic_row)
+    deterministic_feedback = deterministic_result.get("feedback")
+    if isinstance(deterministic_feedback, dict):
+        prior_attempts.append(dict(deterministic_feedback))
+    if deterministic_result.get("is_gold"):
+        return rows
+
+    for attempt_idx in range(1, max(1, int(config.max_claude_attempts)) + 1):
+        bundle = _generate_candidate_attempt(
+            config=config,
+            seed=seed,
+            attempt_idx=attempt_idx + 1,
+            prior_attempts=list(prior_attempts),
+        )
+        result = _execute_candidate_attempt(config=config, bundle=bundle)
+        row = result.get("row")
+        if isinstance(row, dict):
+            rows.append(row)
+        feedback = result.get("feedback")
+        if isinstance(feedback, dict):
+            prior_attempts.append(dict(feedback))
+        if result.get("is_gold"):
+            break
+    return rows
+
+
 def _collect_rows_for_seeds_code_aware(*, config: HarvestConfig, seeds: list[int]) -> list[dict[str, Any]]:
-    candidate_paths = generate_candidates_for_seeds(config=config, seeds=seeds)
-    return replay_candidates(config=config, candidate_paths=candidate_paths)
+    rows: list[dict[str, Any]] = []
+    max_workers = max(1, int(config.replay_workers or config.claude_workers or 1))
+    if max_workers <= 1 or len(seeds) <= 1:
+        for seed in seeds:
+            rows.extend(_collect_seed_rows_deterministic_first(config=config, seed=int(seed)))
+        return rows
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_collect_seed_rows_deterministic_first, config=config, seed=int(seed)): int(seed) for seed in seeds}
+        for future in as_completed(futures):
+            rows.extend(future.result())
+    return rows
 
 
 def collect_rows_from_guided_brief(
@@ -776,7 +968,17 @@ def collect_rows_from_guided_brief(
     collect_workers: int = 1,
     success_texts: list[str] | None = None,
     teacher_brief_path: str = "",
+    web_project_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    guided_project_id = resolve_project_id(explicit_project_id=web_project_id)
+    try:
+        if Path(task_cache).exists():
+            guided_project_id = resolve_project_id(
+                load_task_row(cache_path=task_cache, use_case=use_case, web_project_id=guided_project_id),
+                explicit_project_id=guided_project_id,
+            )
+    except Exception:
+        guided_project_id = resolve_project_id(explicit_project_id=web_project_id)
     if success_texts:
         brief = brief_payload.get("brief") if isinstance(brief_payload, dict) else None
         if isinstance(brief, dict):
@@ -799,6 +1001,7 @@ def collect_rows_from_guided_brief(
             seed=seed,
             brief_payload=brief_payload,
             task_cache=task_cache,
+            web_project_id=guided_project_id,
             max_steps=int(max_steps),
         )
         out_path = runs_dir / f"seed_{seed:04d}_{attempt_name}.json"
@@ -809,6 +1012,7 @@ def collect_rows_from_guided_brief(
             attempt_name=attempt_name,
             report=report,
             out_path=out_path,
+            web_project_id=guided_project_id,
             teacher_model=teacher_model,
             teacher_brief_path=teacher_brief_path,
         )

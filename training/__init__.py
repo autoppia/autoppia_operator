@@ -22,17 +22,28 @@ from .pipeline import (
     ingest_from_iwap_api,
     ingest_from_s3,
 )
-from .ppo_loop import (
-    IWAStatefulPPOCollector,
-    OperatorLLMPolicy,
-    PolicyDecision,
-    PPOEpisode,
-    PPOLoopConfig,
-    PPOStepTransition,
-    export_ppo_collection,
-    load_tasks,
-)
 from .s3_source import S3ObjectRef, S3TrajectorySource, decode_json_blob, parse_s3_uri
+
+try:
+    from .ppo_loop import (
+        IWAStatefulPPOCollector,
+        OperatorLLMPolicy,
+        PolicyDecision,
+        PPOEpisode,
+        PPOLoopConfig,
+        PPOStepTransition,
+        export_ppo_collection,
+        load_tasks,
+    )
+except ModuleNotFoundError:  # pragma: no cover - optional legacy export
+    IWAStatefulPPOCollector = None
+    OperatorLLMPolicy = None
+    PolicyDecision = None
+    PPOEpisode = None
+    PPOLoopConfig = None
+    PPOStepTransition = None
+    export_ppo_collection = None
+    load_tasks = None
 
 __all__ = [
     "ActionRecord",

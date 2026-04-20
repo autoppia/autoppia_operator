@@ -83,10 +83,10 @@ def test_collect_rows_for_seeds_code_aware_uses_code_aware_worker(monkeypatch, t
         max_claude_attempts=1,
     )
     rows = collect_rows_for_seeds(config=config, seeds=[7], strategy="code-aware", collect_workers=1)
-    assert len(rows) == 1
-    assert rows[0]["attempt_name"] == "claude_01"
-    assert generated == [7]
-    assert replayed == [7]
+    assert len(rows) == 2
+    assert [row["attempt_name"] for row in rows] == ["claude_01", "claude_01"]
+    assert generated == [7, 7]
+    assert replayed == [7, 7]
 
 
 def test_collect_rows_for_seeds_code_aware_uses_separate_phase_workers(monkeypatch, tmp_path: Path) -> None:
@@ -147,8 +147,8 @@ def test_collect_rows_for_seeds_code_aware_uses_separate_phase_workers(monkeypat
     )
     rows = collect_rows_for_seeds(config=config, seeds=[1, 2], strategy="code-aware", collect_workers=5)
     assert len(rows) == 4
-    assert sorted(generated) == [1, 1, 2, 2]
-    assert sorted(replayed) == [1, 1, 2, 2]
+    assert sorted(generated) == [1, 2, 2, 2]
+    assert sorted(replayed) == [1, 2, 2, 2]
 
 
 def test_generate_candidates_for_seeds_writes_candidate_files(monkeypatch, tmp_path: Path) -> None:
@@ -300,7 +300,7 @@ def test_write_harvest_artifacts_merges_existing_attempts(tmp_path: Path) -> Non
 
 
 def test_collect_rows_from_guided_brief_uses_shared_guided_row_builder(monkeypatch, tmp_path: Path) -> None:
-    def fake_run_guided_brief(*, use_case, seed, brief_payload, task_cache, max_steps):
+    def fake_run_guided_brief(*, use_case, seed, brief_payload, task_cache, web_project_id=None, max_steps):
         return {
             "model": "claude-sonnet-4-5",
             "episodes": [
@@ -335,7 +335,7 @@ def test_build_candidate_from_brief_uses_guided_actions(monkeypatch, tmp_path: P
     monkeypatch.setattr(
         harvester_module,
         "_guided_actions_from_brief",
-        lambda *, task_url, brief: [{"type": "NavigateAction", "url": task_url.replace("/?seed=", "/contact?seed=")}],
+        lambda *, task_url, brief, web_project_id="autocinema": [{"type": "NavigateAction", "url": task_url.replace("/?seed=", "/contact?seed=")}],
     )
     candidate = harvester_module.build_candidate_from_brief(
         use_case="CONTACT",
@@ -363,7 +363,7 @@ def test_replay_candidate_uses_guided_runner(monkeypatch, tmp_path: Path) -> Non
         metadata={},
     )
 
-    def fake_run_guided_brief(*, use_case, seed, brief_payload, task_cache, max_steps, planned_actions_override):
+    def fake_run_guided_brief(*, use_case, seed, brief_payload, task_cache, web_project_id=None, max_steps, planned_actions_override):
         assert planned_actions_override[0]["type"] == "NavigateAction"
         return {
             "model": "claude-sonnet-4-5",

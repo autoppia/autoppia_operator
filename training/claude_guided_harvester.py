@@ -4,9 +4,7 @@ import asyncio
 import importlib.util
 import json
 import random
-import re
 import time
-import urllib.request
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -18,6 +16,8 @@ from autoppia_iwa.src.execution.actions.base import BaseAction
 from autoppia_iwa.src.web_agents.classes import replace_credential_placeholders_in_string
 
 import training.harvester_support as harvester_support
+from training.deterministic_harvester.projects import resolve_project_id
+from training.deterministic_harvester.resolvers import dataset_movie_candidates, resolve_movie_detail_url
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TASK_CACHE = REPO_ROOT.parent / "autoppia_rl" / "data" / "tasks" / "cache" / "autoppia_cinema_tasks.json"
@@ -56,31 +56,18 @@ def _inject_seed(task: Task, seed: int) -> tuple[Task, int]:
     return cloned, seed_i
 
 
-def _task_for_seed(*, use_case: str, seed: int, task_cache: Path | None = None):
+def _task_for_seed(*, use_case: str, seed: int, task_cache: Path | None = None, web_project_id: str | None = None):
     cache_path = Path(task_cache).resolve() if task_cache else Path(DEFAULT_TASK_CACHE).resolve()
-    tasks = _load_tasks(cache_path=cache_path, use_case=use_case, web_project_id="autocinema", limit=1)
+    tasks = _load_tasks(
+        cache_path=cache_path,
+        use_case=use_case,
+        web_project_id=resolve_project_id(explicit_project_id=web_project_id),
+        limit=1,
+    )
     if not tasks:
         raise ValueError(f"No task found for use_case={use_case} in {cache_path}")
     task, _ = _inject_seed(tasks[0], seed=seed)
     return task
-
-
-def _base_origin(task_url: str) -> str:
-    parsed = urlparse(str(task_url))
-    return f"{parsed.scheme}://{parsed.netloc}"
-
-
-def _seed_from_task_url(task_url: str) -> int:
-    parsed = urlparse(str(task_url))
-    query = parsed.query or ""
-    for part in query.split("&"):
-        if not part.startswith("seed="):
-            continue
-        try:
-            return int(part.split("=", 1)[1])
-        except Exception:
-            return 1
-    return 1
 
 
 def _normalize_action_url(*, task_url: str, target_url: str) -> str:
@@ -106,47 +93,8 @@ def _normalize_action_url(*, task_url: str, target_url: str) -> str:
     )
 
 
-def _dataset_movie_candidates(*, task_url: str, filters: dict[str, Any]) -> list[str]:
-    origin = _base_origin(task_url)
-    seed = _seed_from_task_url(task_url)
-    params = f"project_key=web_1_autocinema&entity_type=movies&seed_value={seed}&limit=50&method=distribute&filter_key=category"
-    url = f"{origin}/api/datasets/load?{params}"
-    try:
-        with urllib.request.urlopen(url, timeout=20) as response:
-            payload = json.load(response)
-    except Exception:
-        return []
-    movies = payload.get("data") if isinstance(payload, dict) else []
-    if not isinstance(movies, list):
-        return []
-    name_contains = str(filters.get("name_contains") or "").strip().lower()
-    duration_gte = int(filters.get("duration_gte") or 0) if str(filters.get("duration_gte") or "").strip() else 0
-    rating_gte = float(filters.get("rating_gte") or 0) if str(filters.get("rating_gte") or "").strip() else 0.0
-    candidates: list[str] = []
-    for movie in movies:
-        if not isinstance(movie, dict):
-            continue
-        movie_id = str(movie.get("id") or "").strip()
-        if not movie_id:
-            continue
-        title = str(movie.get("title") or "").strip().lower()
-        duration = 0
-        try:
-            duration = int(float(movie.get("duration") or 0))
-        except Exception:
-            duration = 0
-        try:
-            rating = float(movie.get("rating") or 0)
-        except Exception:
-            rating = 0.0
-        if name_contains and name_contains not in title:
-            continue
-        if duration_gte and duration < duration_gte:
-            continue
-        if rating_gte and rating < rating_gte:
-            continue
-        candidates.append(f"/movies/{movie_id}")
-    return candidates
+def _dataset_movie_candidates(*, task_url: str, filters: dict[str, Any], web_project_id: str = "autocinema") -> list[str]:
+    return dataset_movie_candidates(task_url=task_url, filters=filters, web_project_id=web_project_id)
 
 
 def _sanitize_type_ids(ids: list[str] | None) -> list[str]:
@@ -167,7 +115,7 @@ def _sanitize_type_ids(ids: list[str] | None) -> list[str]:
     return out
 
 
-def _guided_actions_from_brief(*, task_url: str, brief: dict[str, Any]) -> list[dict[str, Any]]:
+def _guided_actions_from_brief(*, task_url: str, brief: dict[str, Any], web_project_id: str = "autocinema") -> list[dict[str, Any]]:
     explicit_steps = brief.get("steps")
     if isinstance(explicit_steps, list) and explicit_steps:
         actions: list[dict[str, Any]] = []
@@ -195,16 +143,33 @@ def _guided_actions_from_brief(*, task_url: str, brief: dict[str, Any]) -> list[
     discover = brief.get("discover_target")
     if isinstance(discover, dict):
         kind = str(discover.get("kind") or "").strip().lower()
-        strategy = str(discover.get("strategy") or "").strip().lower()
         if kind == "movie_detail":
-            actions.append(
-                {
-                    "type": "OpenMovieDetailAction",
-                    "strategy": strategy or "first_visible_link",
-                    "filters": discover.get("filters") if isinstance(discover.get("filters"), dict) else {},
-                    "field_name": "movie_detail",
-                }
+            filters = discover.get("filters") if isinstance(discover.get("filters"), dict) else {}
+            resolved_url = resolve_movie_detail_url(
+                task_url=task_url,
+                filters=filters,
+                web_project_id=web_project_id,
             )
+            if resolved_url:
+                actions.append(
+                    {
+                        "type": "NavigateAction",
+                        "url": resolved_url,
+                        "go_back": False,
+                        "go_forward": False,
+                    }
+                )
+            else:
+                actions.append(
+                    {
+                        "type": "ClickAction",
+                        "selector_candidates": harvester_support._selector_candidates(
+                            ids=harvester_support._expand_id_variants(["view-details-button"]),
+                            texts=["View Details"],
+                        ),
+                        "field_name": "movie_detail",
+                    }
+                )
     for field in brief.get("fields") or []:
         if not isinstance(field, dict):
             continue
@@ -294,159 +259,6 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
             "attempts": [{"action": normalized_action, "success": bool(result.action_result.successfully_executed), "error": str(result.action_result.error or "") if result.action_result else ""}],
         }
         return result, execution
-    if action_type == "OpenMovieDetailAction":
-        attempts: list[dict[str, Any]] = []
-        page = getattr(session, "page", None)
-        if page is None:
-            raise RuntimeError("Session has no page available for movie detail discovery")
-        filters = planned_action.get("filters") if isinstance(planned_action.get("filters"), dict) else {}
-        href = None
-        href_candidates: list[str] = []
-        for _ in range(8):
-            try:
-                payload = await page.evaluate(
-                    """
- (payload) => {
-  const filters = payload && typeof payload === "object" ? payload.filters || {} : {};
-  const nameContains = String(filters.name_contains || "").toLowerCase();
-  const durationGte = Number(filters.duration_gte || 0);
-  const links = [...document.querySelectorAll('a[href*="/movies/"]')];
-  const visibleLinks = links.filter((link) => {
-    const rect = link.getBoundingClientRect();
-    const style = window.getComputedStyle(link);
-    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-  });
-
-  const extractContextText = (link) => {
-    let node = link;
-    for (let depth = 0; depth < 6 && node; depth += 1) {
-      const text = String((node.textContent || "")).replace(/\\s+/g, " ").trim();
-      if (text.length >= 40) return text;
-      node = node.parentElement;
-    }
-    return String((link.textContent || "")).replace(/\\s+/g, " ").trim();
-  };
-
-  const matchByFilters = visibleLinks.find((link) => {
-    const text = extractContextText(link);
-    const textLower = text.toLowerCase();
-    if (nameContains && !textLower.includes(nameContains)) return false;
-    if (durationGte) {
-      const match = text.match(/(\\d{2,3})m\\b/i) || text.match(/\\b(\\d{2,3})\\s*min\\b/i) || text.match(/\\b(\\d{2,3})\\s*minutes\\b/i);
-      if (!match) return false;
-      const duration = Number(match[1] || 0);
-      if (!(duration >= durationGte)) return false;
-    }
-    return true;
-  });
-
-  const uniqueHrefs = [];
-  for (const link of visibleLinks) {
-    const href = String(link.getAttribute("href") || "");
-    if (href && !uniqueHrefs.includes(href)) uniqueHrefs.push(href);
-  }
-  const chosen = matchByFilters || visibleLinks[0] || null;
-  return {
-    chosenHref: chosen ? String(chosen.getAttribute("href") || "") : "",
-    hrefCandidates: uniqueHrefs
-  };
-}
-                    """,
-                    {"filters": filters},
-                )
-            except Exception:
-                payload = {}
-            if isinstance(payload, dict):
-                href = str(payload.get("chosenHref") or "")
-                href_candidates = [str(item).strip() for item in (payload.get("hrefCandidates") or []) if str(item).strip()]
-            if href or href_candidates:
-                break
-            wait_action = BaseAction.create_action({"type": "WaitAction", "time_seconds": 0.5})
-            await session.step(wait_action)
-        if not href and not href_candidates:
-            raise RuntimeError("Could not discover a visible movie detail link on the page")
-        dom_candidates = href_candidates or ([href] if href else [])
-        seeded_candidates = _dataset_movie_candidates(task_url=str(session.task.url), filters=filters)
-        candidate_pool: list[str] = []
-        for candidate in seeded_candidates + dom_candidates:
-            if candidate and candidate not in candidate_pool:
-                candidate_pool.append(candidate)
-        result = None
-        selected_payload = None
-        home_url = str(page.url)
-        name_contains = str(filters.get("name_contains") or "").strip().lower()
-        duration_gte = int(filters.get("duration_gte") or 0) if str(filters.get("duration_gte") or "").strip() else 0
-        rating_gte = float(filters.get("rating_gte") or 0) if str(filters.get("rating_gte") or "").strip() else 0.0
-        for candidate in candidate_pool:
-            navigate_payload = {
-                "type": "NavigateAction",
-                "url": harvester_support._seeded_url(str(session.task.url), candidate),
-                "go_back": False,
-                "go_forward": False,
-            }
-            action = BaseAction.create_action(navigate_payload)
-            candidate_result = await session.step(action)
-            success = bool(candidate_result.action_result.successfully_executed) if candidate_result.action_result is not None else True
-            error = str(candidate_result.action_result.error or "") if candidate_result.action_result else ""
-            attempts.append({"action": navigate_payload, "success": success, "error": error})
-            if not success:
-                continue
-            body_text = ""
-            title_text = ""
-            try:
-                body_text = await page.evaluate("() => String(document.body.innerText || '').replace(/\\s+/g, ' ').trim()")
-            except Exception:
-                body_text = str(candidate_result.snapshot.html or "")
-            try:
-                title_text = await page.evaluate("() => { const el = document.querySelector('main h1, h1'); return String(el?.textContent || '').replace(/\\s+/g, ' ').trim(); }")
-            except Exception:
-                title_text = ""
-            body_lower = body_text.lower()
-            title_lower = str(title_text).lower()
-            duration_ok = True
-            if duration_gte:
-                match = re.search(r"\b(\d{2,3})\s*(?:min|minutes|m)\b", body_lower, re.I)
-                duration_ok = bool(match and int(match.group(1)) >= duration_gte)
-            rating_ok = True
-            if rating_gte:
-                rating_match = re.search(r"⭐\s*([0-9]+(?:\.[0-9]+)?)", body_text)
-                if not rating_match:
-                    rating_match = re.search(r"\b([0-9]+(?:\.[0-9]+)?)\b", title_text)
-                rating_value = 0.0
-                try:
-                    if rating_match:
-                        rating_value = float(rating_match.group(1))
-                except Exception:
-                    rating_value = 0.0
-                rating_ok = rating_value >= rating_gte
-            name_ok = not name_contains or (name_contains in title_lower)
-            if name_ok and duration_ok and rating_ok:
-                result = candidate_result
-                selected_payload = navigate_payload
-                break
-            back_payload = {"type": "NavigateAction", "url": home_url, "go_back": False, "go_forward": False}
-            back_action = BaseAction.create_action(back_payload)
-            await session.step(back_action)
-        if result is None:
-            fallback_href = href or (candidate_pool[0] if candidate_pool else "")
-            navigate_payload = {
-                "type": "NavigateAction",
-                "url": harvester_support._seeded_url(str(session.task.url), fallback_href),
-                "go_back": False,
-                "go_forward": False,
-            }
-            action = BaseAction.create_action(navigate_payload)
-            result = await session.step(action)
-            selected_payload = navigate_payload
-            attempts.append(
-                {
-                    "action": navigate_payload,
-                    "success": bool(result.action_result.successfully_executed),
-                    "error": str(result.action_result.error or "") if result.action_result else "",
-                }
-            )
-        return result, {"planned_action": planned_action, "attempts": attempts, "selected_action": selected_payload}
-
     attempts: list[dict[str, Any]] = []
     resolved_candidates: list[dict[str, Any]] = []
     existing_exact_candidates: list[dict[str, Any]] = []
@@ -654,6 +466,7 @@ async def _run_guided_brief_async(
     seed: int,
     brief_payload: dict[str, Any],
     task_cache: Path | None = None,
+    web_project_id: str | None = None,
     max_steps: int = 12,
     allow_signal_success: bool = False,
     planned_actions_override: list[dict[str, Any]] | None = None,
@@ -672,11 +485,17 @@ async def _run_guided_brief_async(
     brief = brief_payload.get("brief") if isinstance(brief_payload, dict) else {}
     if not isinstance(brief, dict):
         raise ValueError("brief payload missing brief object")
-    task = _task_for_seed(use_case=use_case, seed=seed, task_cache=task_cache)
+    task = _task_for_seed(use_case=use_case, seed=seed, task_cache=task_cache, web_project_id=web_project_id)
     web_agent_id = f"claude-guided-{seed}-{random.randint(1000, 9999)}"
     validator_id = f"claude-guided-validator-{seed}-{random.randint(1000, 9999)}"
     planned_actions_source = (
-        list(planned_actions_override) if isinstance(planned_actions_override, list) and planned_actions_override else _guided_actions_from_brief(task_url=str(task.url), brief=brief)
+        list(planned_actions_override)
+        if isinstance(planned_actions_override, list) and planned_actions_override
+        else _guided_actions_from_brief(
+            task_url=str(task.url),
+            brief=brief,
+            web_project_id=str(getattr(task, "web_project_id", "") or web_project_id or "autocinema"),
+        )
     )
     planned_actions = _render_placeholders(
         planned_actions_source[: max(1, int(max_steps))],
@@ -754,6 +573,7 @@ def run_guided_brief(
     seed: int,
     brief_payload: dict[str, Any],
     task_cache: Path | None = None,
+    web_project_id: str | None = None,
     max_steps: int = 12,
     allow_signal_success: bool = False,
     planned_actions_override: list[dict[str, Any]] | None = None,
@@ -764,6 +584,7 @@ def run_guided_brief(
             seed=seed,
             brief_payload=brief_payload,
             task_cache=task_cache,
+            web_project_id=web_project_id,
             max_steps=max_steps,
             allow_signal_success=allow_signal_success,
             planned_actions_override=planned_actions_override,

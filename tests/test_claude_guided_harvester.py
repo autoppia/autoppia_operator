@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import io
+import json
+
+import training.claude_guided_harvester as guided_module
+import training.deterministic_harvester.resolvers as resolver_module
 from training.claude_guided_harvester import (
+    _dataset_movie_candidates,
     _expand_id_variants,
     _guided_actions_from_brief,
     _ordered_selector_candidates,
@@ -69,6 +75,29 @@ def test_guided_actions_from_brief_normalizes_explicit_step_navigation_with_seed
     actions = _guided_actions_from_brief(task_url="http://84.247.180.192:8000/?seed=9", brief=brief)
     assert actions[0]["type"] == "NavigateAction"
     assert actions[0]["url"] == "http://84.247.180.192:8000/contact?seed=9"
+
+
+def test_guided_actions_from_brief_does_not_emit_custom_movie_detail_action(monkeypatch) -> None:
+    monkeypatch.setattr(
+        guided_module,
+        "resolve_movie_detail_url",
+        lambda **kwargs: "http://localhost:3000/movies/movie-7?seed=9",
+    )
+    brief = {
+        "discover_target": {
+            "kind": "movie_detail",
+            "filters": {"name_exact": "Dune"},
+        }
+    }
+    actions = _guided_actions_from_brief(task_url="http://localhost:3000/?seed=9", brief=brief, web_project_id="autocinema")
+    assert actions == [
+        {
+            "type": "NavigateAction",
+            "url": "http://localhost:3000/movies/movie-7?seed=9",
+            "go_back": False,
+            "go_forward": False,
+        }
+    ]
 
 
 def test_ordered_selector_candidates_prefers_explicit_candidate_ids() -> None:
@@ -163,3 +192,51 @@ def test_ordered_selector_candidates_uses_only_existing_exact_and_dom_resolved_c
     )
 
     assert [item["value"] for item in ordered] == ["send-button"]
+
+
+def test_dataset_movie_candidates_filters_seeded_movies(monkeypatch) -> None:
+    payload = {
+        "data": [
+            {
+                "id": "movie-1",
+                "title": "Dune",
+                "director": "Denis Villeneuve",
+                "genres": ["Sci-Fi", "Drama"],
+                "duration": 155,
+                "rating": 8.2,
+                "year": 2021,
+            },
+            {
+                "id": "movie-2",
+                "title": "Old Comedy",
+                "director": "Someone Else",
+                "genres": ["Comedy"],
+                "duration": 90,
+                "rating": 6.0,
+                "year": 2001,
+            },
+        ]
+    }
+
+    class _FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.close()
+            return False
+
+    def fake_urlopen(url, timeout):
+        assert "seed_value=77" in url
+        assert "project_key=web_2_autobooks" in url
+        return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr(resolver_module.urllib.request, "urlopen", fake_urlopen)
+
+    candidates = _dataset_movie_candidates(
+        task_url="http://example.test/search?seed=77",
+        filters={"name_exact": "dune", "genre_contains": "sci", "rating_gte": 8.0, "year_gte": 2020},
+        web_project_id="autobooks",
+    )
+
+    assert candidates == ["/movies/movie-1"]
