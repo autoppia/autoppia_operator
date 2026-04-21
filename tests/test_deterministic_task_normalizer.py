@@ -166,3 +166,23 @@ def test_task_seeds_for_use_case_reads_seeds_from_task_urls(tmp_path: Path) -> N
     )
 
     assert task_seeds_for_use_case(cache_path=cache_path, use_case="CONTACT") == [12, 44]
+
+
+def test_normalize_task_row_maps_film_detail_name_year_and_genre_list_into_entity_filters() -> None:
+    task_row = _task_row(
+        use_case="FILM_DETAIL",
+        prompt="Navigate to a movie page where the genres is one of [Music, Mystery, Animation] and the year equals '1958' and the name contains 'go'",
+        url="http://localhost:8000/?seed=277",
+        event_criteria={
+            "genres": {"operator": "in_list", "value": ["Music", "Mystery", "Animation"]},
+            "year": 1958,
+            "name": {"operator": "contains", "value": "go"},
+        },
+    )
+
+    objective = normalize_task_row(task_row)
+
+    assert objective.entity_filters["name_contains"] == "go"
+    assert objective.entity_filters["genre_any_of"] == ["Music", "Mystery", "Animation"]
+    assert objective.entity_filters["year_gte"] == 1958
+    assert objective.entity_filters["year_lte"] == 1958

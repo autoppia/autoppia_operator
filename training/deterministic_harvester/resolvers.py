@@ -49,6 +49,8 @@ def dataset_movie_candidates(*, task_url: str, filters: dict[str, Any], web_proj
     genre_exact = str(filters.get("genre_exact") or "").strip().lower()
     genre_contains = str(filters.get("genre_contains") or "").strip().lower()
     genre_not_contains = str(filters.get("genre_not_contains") or "").strip().lower()
+    genre_any_of = [str(item).strip().lower() for item in (filters.get("genre_any_of") or []) if str(item).strip()]
+    genre_none_of = [str(item).strip().lower() for item in (filters.get("genre_none_of") or []) if str(item).strip()]
     duration_gte = int(filters.get("duration_gte") or 0) if str(filters.get("duration_gte") or "").strip() else 0
     duration_lte = int(filters.get("duration_lte") or 0) if str(filters.get("duration_lte") or "").strip() else 0
     rating_gte = float(filters.get("rating_gte") or 0) if str(filters.get("rating_gte") or "").strip() else 0.0
@@ -93,6 +95,10 @@ def dataset_movie_candidates(*, task_url: str, filters: dict[str, Any], web_proj
         if genre_contains and not any(genre_contains in genre for genre in genres):
             continue
         if genre_not_contains and any(genre_not_contains in genre for genre in genres):
+            continue
+        if genre_any_of and not any(any(expected in genre for expected in genre_any_of) for genre in genres):
+            continue
+        if genre_none_of and any(any(blocked in genre for blocked in genre_none_of) for genre in genres):
             continue
         if duration_gte and duration < duration_gte:
             continue

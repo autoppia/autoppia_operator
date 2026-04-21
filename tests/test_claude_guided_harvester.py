@@ -247,6 +247,58 @@ def test_dataset_movie_candidates_filters_seeded_movies(monkeypatch) -> None:
     assert candidates == ["/movies/movie-1"]
 
 
+def test_dataset_movie_candidates_supports_name_contains_genre_list_and_year_equals(monkeypatch) -> None:
+    payload = {
+        "data": [
+            {
+                "id": "real-movie-033",
+                "title": "Go Go Melody",
+                "director": "Vincente Minnelli",
+                "genres": ["Music"],
+                "duration": 115,
+                "rating": 6.6,
+                "year": 1958,
+            },
+            {
+                "id": "real-movie-097",
+                "title": "The Bridge on the River Kwai",
+                "director": "David Lean",
+                "genres": ["Adventure", "Drama", "War"],
+                "duration": 161,
+                "rating": 8.1,
+                "year": 1957,
+            },
+        ]
+    }
+
+    class _FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.close()
+            return False
+
+    monkeypatch.setattr(
+        resolver_module.urllib.request,
+        "urlopen",
+        lambda url, timeout: _FakeResponse(json.dumps(payload).encode("utf-8")),
+    )
+
+    candidates = _dataset_movie_candidates(
+        task_url="http://localhost:8000/?seed=277",
+        filters={
+            "name_contains": "go",
+            "genre_any_of": ["Music", "Mystery", "Animation"],
+            "year_gte": 1958,
+            "year_lte": 1958,
+        },
+        web_project_id="autocinema",
+    )
+
+    assert candidates == ["/movies/real-movie-033"]
+
+
 def test_task_for_seed_supports_nested_project_task_cache(tmp_path: Path) -> None:
     cache_path = tmp_path / "nested_cache.json"
     cache_path.write_text(

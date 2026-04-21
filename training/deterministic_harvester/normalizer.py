@@ -343,7 +343,7 @@ def _update_entity_filters(filters: dict[str, Any], hint: ConstraintHint) -> Non
     raw = _coerce_scalar(hint.value)
     if not raw:
         return
-    if hint.field in {"movie_name", "title"}:
+    if hint.field in {"movie_name", "title", "name"}:
         if hint.operator == "equals":
             filters["name_exact"] = raw
         elif hint.operator == "contains":
@@ -360,17 +360,39 @@ def _update_entity_filters(filters: dict[str, Any], hint: ConstraintHint) -> Non
             filters["genre_exact"] = raw
         elif hint.operator in {"contains", "not_contains"}:
             filters["genre_contains" if hint.operator == "contains" else "genre_not_contains"] = raw
+        elif hint.operator == "in_list":
+            values = [str(item).strip() for item in hint.value] if isinstance(hint.value, list) else [raw]
+            normalized = [value for value in values if value]
+            if normalized:
+                filters["genre_any_of"] = normalized
+        elif hint.operator == "not_in_list":
+            values = [str(item).strip() for item in hint.value] if isinstance(hint.value, list) else [raw]
+            normalized = [value for value in values if value]
+            if normalized:
+                filters["genre_none_of"] = normalized
     elif hint.field == "duration":
+        if hint.operator == "equals":
+            value = int(float(raw))
+            filters["duration_gte"] = value
+            filters["duration_lte"] = value
         if hint.operator in {"greater_than", "greater_equal"}:
             filters["duration_gte"] = int(float(raw))
         elif hint.operator in {"less_than", "less_equal"}:
             filters["duration_lte"] = int(float(raw))
     elif hint.field == "rating":
+        if hint.operator == "equals":
+            value = float(raw)
+            filters["rating_gte"] = value
+            filters["rating_lte"] = value
         if hint.operator in {"greater_than", "greater_equal"}:
             filters["rating_gte"] = float(raw)
         elif hint.operator in {"less_than", "less_equal"}:
             filters["rating_lte"] = float(raw)
     elif hint.field == "year":
+        if hint.operator == "equals":
+            value = int(float(raw))
+            filters["year_gte"] = value
+            filters["year_lte"] = value
         if hint.operator in {"greater_than", "greater_equal"}:
             filters["year_gte"] = int(float(raw))
         elif hint.operator in {"less_than", "less_equal"}:
