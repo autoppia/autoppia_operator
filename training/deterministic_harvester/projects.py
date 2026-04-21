@@ -17,6 +17,8 @@ class DeterministicProjectConfig:
     project_key: str
     web_folder: str
     id_variants_path: Path
+    class_variants_path: Path
+    text_variants_path: Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -68,6 +70,8 @@ def _project_map() -> dict[str, DeterministicProjectConfig]:
             project_key=web_folder,
             web_folder=web_folder,
             id_variants_path=WEBS_DEMO_ROOT / web_folder / "src" / "dynamic" / "v3" / "data" / "id-variants.json",
+            class_variants_path=WEBS_DEMO_ROOT / web_folder / "src" / "dynamic" / "v3" / "data" / "class-variants.json",
+            text_variants_path=WEBS_DEMO_ROOT / web_folder / "src" / "dynamic" / "v3" / "data" / "text-variants.json",
         )
     return out
 
@@ -94,6 +98,8 @@ def project_config(project_id: str | None) -> DeterministicProjectConfig:
             project_key=web_folder,
             web_folder=web_folder,
             id_variants_path=WEBS_DEMO_ROOT / web_folder / "src" / "dynamic" / "v3" / "data" / "id-variants.json",
+            class_variants_path=WEBS_DEMO_ROOT / web_folder / "src" / "dynamic" / "v3" / "data" / "class-variants.json",
+            text_variants_path=WEBS_DEMO_ROOT / web_folder / "src" / "dynamic" / "v3" / "data" / "text-variants.json",
         )
     return config
 

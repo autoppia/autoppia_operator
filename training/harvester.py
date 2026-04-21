@@ -41,6 +41,8 @@ class HarvestConfig:
     claude_workers: int = 1
     replay_workers: int = 1
     claude_timeout_seconds: int = 120
+    deterministic_only: bool = False
+    headed: bool = False
 
 
 def _brief_path(*, output_root: Path, seed: int, attempt_idx: int | None = None) -> Path:
@@ -328,6 +330,12 @@ def _generate_candidate_attempt(
     prior_attempts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     if int(attempt_idx) == 1:
+        if bool(config.deterministic_only):
+            return _generate_deterministic_candidate_attempt(
+                config=config,
+                seed=seed,
+                attempt_idx=attempt_idx,
+            )
         try:
             return _generate_deterministic_candidate_attempt(
                 config=config,
@@ -336,6 +344,8 @@ def _generate_candidate_attempt(
             )
         except Exception:
             pass
+    if bool(config.deterministic_only):
+        raise RuntimeError(f"deterministic-only mode: no teacher fallback for seed={int(seed)}")
     brief_payload = generate_claude_brief(
         use_case=config.use_case,
         seed=seed,
@@ -414,6 +424,7 @@ def _execute_candidate_attempt(
             web_project_id=str(candidate.metadata.get("web_project_id") or config.web_project_id or "autocinema"),
             max_steps=config.max_steps,
             planned_actions_override=[dict(action) for action in candidate.actions],
+            headless=not bool(config.headed),
         )
         runs_dir = config.output_root / "gold" / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
@@ -436,6 +447,7 @@ def _execute_candidate_attempt(
             output_root=config.output_root,
             task_cache=task_cache_path,
             max_steps=config.max_steps,
+            headed=bool(config.headed),
         )
     is_gold = bool(row and bool(row.get("success")) and float(row.get("score") or 0.0) >= 1.0)
     if row:
@@ -509,7 +521,8 @@ def generate_candidates_for_seeds(*, config: HarvestConfig, seeds: list[int]) ->
     generated_paths: list[Path] = []
     claude_workers = max(1, int(config.claude_workers or 1))
 
-    for attempt_idx in range(1, max(1, int(config.max_claude_attempts)) + 1):
+    max_attempts = 1 if bool(config.deterministic_only) else max(1, int(config.max_claude_attempts))
+    for attempt_idx in range(1, max_attempts + 1):
         if not pending_seeds:
             break
         generation_failures: list[dict[str, Any]] = []
@@ -615,6 +628,7 @@ def replay_candidate(
     output_root: Path,
     task_cache: Path,
     max_steps: int = 12,
+    headed: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, Path]:
     result_path, _ = replay_output_paths(output_root=output_root, seed=candidate.seed, attempt_name=candidate.attempt_name)
     report = run_guided_brief(
@@ -625,6 +639,7 @@ def replay_candidate(
         web_project_id=str(candidate.metadata.get("web_project_id") or "autocinema"),
         max_steps=int(max_steps),
         planned_actions_override=[dict(action) for action in candidate.actions],
+        headless=not bool(headed),
     )
     write_replay_report(result_path, report)
     row = candidate_row_from_replay(candidate=candidate, report=report, result_path=result_path)
@@ -874,6 +889,7 @@ def collect_seed_rows(*, config: HarvestConfig, seed: int) -> list[dict[str, Any
         agent_workers=config.agent_workers,
         task_cache=task_cache_path,
         env_overrides={},
+        headed=bool(config.headed),
     )
     if baseline.row:
         rows.append(_apply_row_provenance(baseline.row, task_cache_path=task_cache_path, prompt_override=prompt_override, policy_mode="direct") or baseline.row)
@@ -893,6 +909,7 @@ def collect_seed_rows(*, config: HarvestConfig, seed: int) -> list[dict[str, Any
             agent_workers=config.agent_workers,
             task_cache=task_cache_path,
             env_overrides={},
+            headed=bool(config.headed),
         )
         if corrected.row:
             rows.append(_apply_row_provenance(corrected.row, task_cache_path=task_cache_path, prompt_override=prompt_override, policy_mode="direct") or corrected.row)
@@ -923,6 +940,8 @@ def _collect_seed_rows_deterministic_first(*, config: HarvestConfig, seed: int) 
     if isinstance(deterministic_feedback, dict):
         prior_attempts.append(dict(deterministic_feedback))
     if deterministic_result.get("is_gold"):
+        return rows
+    if bool(config.deterministic_only):
         return rows
 
     for attempt_idx in range(1, max(1, int(config.max_claude_attempts)) + 1):

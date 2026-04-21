@@ -22,6 +22,7 @@ For focused use-case work, the intended flow is:
 
 Key entrypoints:
 - `scripts/eval/focus_use_case.py`: single-use-case wrapper over the unified harvester `collect -> consolidate-gold -> export-sft -> validate-dataset -> train -> eval`
+- `scripts/eval/run_deterministic_harvest.py`: convenience wrapper for deterministic-only focused harvest runs with local defaults
 - `scripts/eval/harvest_suite.py`: multi-use-case runner over the same unified harvester, useful for bootstrap coverage scans and first-pass gold collection
 - `scripts/eval/run_login_dagger.py`: DAgger loop wrapper, now generic via `--use-case` and still defaulting to `LOGIN`
 - `scripts/eval/build_login_rule_corrections.py`: deterministic correction builder for repeated `LOGIN` failures

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import training.claude_guided_harvester as guided_module
 import training.deterministic_harvester.resolvers as resolver_module
 from training.claude_guided_harvester import (
     _dataset_movie_candidates,
+    _execute_action_candidates,
     _expand_id_variants,
     _guided_actions_from_brief,
+    _guided_web_agent_id,
     _ordered_selector_candidates,
     _success_signal_hit,
 )
@@ -288,3 +292,129 @@ def test_task_for_seed_supports_nested_project_task_cache(tmp_path: Path) -> Non
     assert task.url.endswith("?seed=9")
     use_case_payload = task.use_case if isinstance(task.use_case, dict) else {}
     assert use_case_payload.get("name") == "ADD_TO_WATCHLIST"
+
+
+def test_task_for_seed_prefers_matching_task_url_seed(tmp_path: Path) -> None:
+    cache_path = tmp_path / "tasks.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "id": "task-1",
+                        "is_web_real": False,
+                        "web_project_id": "autocinema",
+                        "url": "http://localhost:8000/?seed=17",
+                        "prompt": "First prompt",
+                        "specifications": {},
+                        "tests": [],
+                        "use_case": {
+                            "name": "ADD_TO_WATCHLIST",
+                            "description": "Add a movie to the watchlist.",
+                            "event": "AddToWatchlistEvent",
+                            "event_source_code": True,
+                            "examples": [],
+                            "constraints": [],
+                            "additional_prompt_info": "",
+                        },
+                        "should_record": False,
+                        "original_prompt": "First prompt",
+                    },
+                    {
+                        "id": "task-2",
+                        "is_web_real": False,
+                        "web_project_id": "autocinema",
+                        "url": "http://localhost:8000/?seed=29",
+                        "prompt": "Second prompt",
+                        "specifications": {},
+                        "tests": [],
+                        "use_case": {
+                            "name": "ADD_TO_WATCHLIST",
+                            "description": "Add a movie to the watchlist.",
+                            "event": "AddToWatchlistEvent",
+                            "event_source_code": True,
+                            "examples": [],
+                            "constraints": [],
+                            "additional_prompt_info": "",
+                        },
+                        "should_record": False,
+                        "original_prompt": "Second prompt",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    task = guided_module._task_for_seed(
+        use_case="ADD_TO_WATCHLIST",
+        seed=29,
+        task_cache=cache_path,
+        web_project_id="autocinema",
+    )
+
+    assert task.url.endswith("?seed=29")
+    assert task.prompt == "Second prompt"
+
+
+def test_guided_web_agent_id_stays_in_expected_user_range() -> None:
+    assert _guided_web_agent_id(1) == "1"
+    assert _guided_web_agent_id(255) == "255"
+    assert _guided_web_agent_id(256) == "1"
+    assert _guided_web_agent_id(31000).isdigit()
+    assert 1 <= int(_guided_web_agent_id(31000)) <= 255
+
+
+def test_execute_action_candidates_uses_dom_custom_selector_when_no_explicit_selector_candidates(monkeypatch) -> None:
+    class FakePage:
+        async def evaluate(self, script, payload):
+            assert payload["type"] == "TypeAction"
+            assert payload["field_name"] == "genres"
+            return {
+                "existing_exact": [],
+                "heuristic": {
+                    "type": "attributeValueSelector",
+                    "attribute": "custom",
+                    "value": "div:nth-of-type(3) > input:nth-of-type(1)",
+                    "case_sensitive": False,
+                },
+            }
+
+    class FakeSession:
+        def __init__(self):
+            self.page = FakePage()
+            self.actions = []
+
+        async def step(self, action):
+            self.actions.append(action)
+            return SimpleNamespace(
+                action_result=SimpleNamespace(successfully_executed=True, error=""),
+            )
+
+    created_payloads = []
+
+    def fake_create_action(payload):
+        created_payloads.append(dict(payload))
+        return payload
+
+    monkeypatch.setattr(guided_module.BaseAction, "create_action", staticmethod(fake_create_action))
+
+    session = FakeSession()
+    planned_action = {"type": "TypeAction", "text": "Crime", "field_name": "genres"}
+
+    result, execution = asyncio.run(_execute_action_candidates(session, planned_action))
+
+    assert result.action_result.successfully_executed is True
+    assert created_payloads == [
+        {
+            "type": "TypeAction",
+            "selector": {
+                "type": "attributeValueSelector",
+                "attribute": "custom",
+                "value": "div:nth-of-type(3) > input:nth-of-type(1)",
+                "case_sensitive": False,
+            },
+            "text": "Crime",
+        }
+    ]
+    assert execution["attempts"][0]["success"] is True

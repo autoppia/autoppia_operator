@@ -151,6 +151,66 @@ def test_collect_rows_for_seeds_code_aware_uses_separate_phase_workers(monkeypat
     assert sorted(replayed) == [1, 2, 2, 2]
 
 
+def test_collect_rows_for_seeds_code_aware_deterministic_only_skips_teacher_fallback(monkeypatch, tmp_path: Path) -> None:
+    generated_attempts: list[int] = []
+    replayed_attempts: list[int] = []
+    (tmp_path / "tasks.json").write_text(json.dumps({"tasks": []}), encoding="utf-8")
+
+    def fake_generate_candidate_attempt(*, config, seed, attempt_idx, prior_attempts):
+        generated_attempts.append(int(attempt_idx))
+        candidate = TrajectoryCandidate(
+            use_case="CONTACT",
+            seed=int(seed),
+            attempt_name="deterministic_01",
+            teacher_model="",
+            generation_mode="deterministic_plan",
+            brief_path=str(tmp_path / f"brief_{seed}.json"),
+            prompt_lines=(),
+            actions=({"type": "NavigateAction", "url": f"http://example.test/contact?seed={seed}"},),
+            metadata={},
+        )
+        candidate_file = tmp_path / f"candidate_{seed}.json"
+        write_candidate(candidate_file, candidate)
+        return {
+            "seed": seed,
+            "attempt_idx": attempt_idx,
+            "attempt_name": "deterministic_01",
+            "brief_path": tmp_path / f"brief_{seed}.json",
+            "stored_candidate_path": candidate_file,
+            "prompt_override": "",
+            "extra_lines": [],
+            "task_cache_path": tmp_path / "tasks.json",
+            "candidate": candidate,
+            "brief_payload": {},
+        }
+
+    def fake_execute_candidate_attempt(*, config, bundle):
+        replayed_attempts.append(int(bundle["attempt_idx"]))
+        return {
+            "seed": int(bundle["seed"]),
+            "row": {"seed": int(bundle["seed"]), "attempt_name": "deterministic_01", "success": False, "score": 0.0},
+            "feedback": {"attempt_name": "deterministic_01"},
+            "is_gold": False,
+            "report_payload": {},
+        }
+
+    monkeypatch.setattr(harvester_module, "_generate_candidate_attempt", fake_generate_candidate_attempt)
+    monkeypatch.setattr(harvester_module, "_execute_candidate_attempt", fake_execute_candidate_attempt)
+    config = HarvestConfig(
+        use_case="CONTACT",
+        output_root=tmp_path,
+        provider="openai",
+        model="gpt-5.4-mini",
+        task_cache_arg=str(tmp_path / "tasks.json"),
+        deterministic_only=True,
+        max_claude_attempts=3,
+    )
+    rows = collect_rows_for_seeds(config=config, seeds=[7], strategy="code-aware", collect_workers=1)
+    assert len(rows) == 1
+    assert generated_attempts == [1]
+    assert replayed_attempts == [1]
+
+
 def test_generate_candidates_for_seeds_writes_candidate_files(monkeypatch, tmp_path: Path) -> None:
     def fake_generate_candidate_attempt(*, config, seed, attempt_idx, prior_attempts):
         candidate = TrajectoryCandidate(
@@ -300,7 +360,7 @@ def test_write_harvest_artifacts_merges_existing_attempts(tmp_path: Path) -> Non
 
 
 def test_collect_rows_from_guided_brief_uses_shared_guided_row_builder(monkeypatch, tmp_path: Path) -> None:
-    def fake_run_guided_brief(*, use_case, seed, brief_payload, task_cache, web_project_id=None, max_steps):
+    def fake_run_guided_brief(*, use_case, seed, brief_payload, task_cache, web_project_id=None, max_steps, headless=None):
         return {
             "model": "claude-sonnet-4-5",
             "episodes": [
@@ -363,8 +423,9 @@ def test_replay_candidate_uses_guided_runner(monkeypatch, tmp_path: Path) -> Non
         metadata={},
     )
 
-    def fake_run_guided_brief(*, use_case, seed, brief_payload, task_cache, web_project_id=None, max_steps, planned_actions_override):
+    def fake_run_guided_brief(*, use_case, seed, brief_payload, task_cache, web_project_id=None, max_steps, planned_actions_override, headless=None):
         assert planned_actions_override[0]["type"] == "NavigateAction"
+        assert headless is True
         return {
             "model": "claude-sonnet-4-5",
             "episodes": [
@@ -390,3 +451,45 @@ def test_replay_candidate_uses_guided_runner(monkeypatch, tmp_path: Path) -> Non
     assert report["episodes"][0]["success"] is True
     assert row is not None
     assert row["harvest_mode"] == "candidate_replay"
+
+
+def test_replay_candidate_supports_headed_browser(monkeypatch, tmp_path: Path) -> None:
+    candidate = harvester_module.TrajectoryCandidate(
+        use_case="CONTACT",
+        seed=5,
+        attempt_name="deterministic_01",
+        teacher_model="",
+        generation_mode="deterministic_plan",
+        brief_path=str(tmp_path / "brief.json"),
+        prompt_lines=(),
+        actions=({"type": "NavigateAction", "url": "http://example.test/contact?seed=5"},),
+        metadata={},
+    )
+
+    seen: dict[str, object] = {}
+
+    def fake_run_guided_brief(*, use_case, seed, brief_payload, task_cache, web_project_id=None, max_steps, planned_actions_override, headless=None):
+        seen["headless"] = headless
+        return {
+            "model": "deterministic",
+            "episodes": [
+                {
+                    "task_id": "task-5",
+                    "episode_task_id": "ep-5",
+                    "success": True,
+                    "score": 1.0,
+                    "steps": 1,
+                    "final_url": "http://example.test/contact?done=1",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(harvester_module, "run_guided_brief", fake_run_guided_brief)
+    harvester_module.replay_candidate(
+        candidate=candidate,
+        output_root=tmp_path,
+        task_cache=tmp_path / "tasks.json",
+        max_steps=12,
+        headed=True,
+    )
+    assert seen["headless"] is False

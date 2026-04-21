@@ -156,7 +156,7 @@ def _normalize_field(raw: str) -> str:
     return _FIELD_ALIASES.get(key, key)
 
 
-def _extract_seed(task_url: str) -> int:
+def extract_seed_from_task_url(task_url: str) -> int:
     try:
         parsed = urlparse(str(task_url))
         query = parse_qs(parsed.query or "")
@@ -168,23 +168,64 @@ def _extract_seed(task_url: str) -> int:
     return 1
 
 
+def _extract_seed(task_url: str) -> int:
+    return extract_seed_from_task_url(task_url)
+
+
 def _load_raw_task_rows(cache_path: Path) -> list[dict[str, Any]]:
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    rows = payload["tasks"] if isinstance(payload, dict) and isinstance(payload.get("tasks"), list) else payload
+    rows: Any
+    if isinstance(payload, dict) and isinstance(payload.get("tasks"), list):
+        rows = payload["tasks"]
+    elif isinstance(payload, dict):
+        nested_rows: list[dict[str, Any]] = []
+        for value in payload.values():
+            if isinstance(value, dict) and isinstance(value.get("tasks"), list):
+                nested_rows.extend(row for row in value["tasks"] if isinstance(row, dict))
+        rows = nested_rows if nested_rows else payload
+    else:
+        rows = payload
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
-def load_task_row(*, cache_path: Path, use_case: str, web_project_id: str | None = None) -> dict[str, Any]:
+def load_task_rows(*, cache_path: Path, use_case: str, web_project_id: str | None = None) -> list[dict[str, Any]]:
     normalized = str(use_case or "").strip().upper()
     normalized_project = str(web_project_id or "").strip()
+    matched: list[dict[str, Any]] = []
     for row in _load_raw_task_rows(cache_path):
-        if normalized_project and str(row.get("web_project_id") or "").strip() != normalized_project:
+        row_project = str(row.get("web_project_id") or "").strip()
+        if normalized_project and row_project and row_project != normalized_project:
             continue
         use_case_payload = row.get("use_case")
         name = str(use_case_payload.get("name") or "") if isinstance(use_case_payload, dict) else ""
         if name.strip().upper() == normalized:
+            matched.append(row)
+    return matched
+
+
+def load_task_row(*, cache_path: Path, use_case: str, seed: int | None = None, web_project_id: str | None = None) -> dict[str, Any]:
+    matched = load_task_rows(cache_path=cache_path, use_case=use_case, web_project_id=web_project_id)
+    if not matched:
+        raise ValueError(f"No task found for use_case={use_case} in {cache_path}")
+    if seed is None:
+        return matched[0]
+    target_seed = int(seed)
+    for row in matched:
+        if extract_seed_from_task_url(str(row.get("url") or "")) == target_seed:
             return row
-    raise ValueError(f"No task found for use_case={use_case} in {cache_path}")
+    return matched[0]
+
+
+def task_seeds_for_use_case(*, cache_path: Path, use_case: str, web_project_id: str | None = None) -> list[int]:
+    seeds: list[int] = []
+    seen: set[int] = set()
+    for row in load_task_rows(cache_path=cache_path, use_case=use_case, web_project_id=web_project_id):
+        seed = extract_seed_from_task_url(str(row.get("url") or ""))
+        if seed in seen:
+            continue
+        seen.add(seed)
+        seeds.append(seed)
+    return seeds
 
 
 def _flatten_criteria(prefix: str, payload: Any) -> list[tuple[str, Any]]:
@@ -426,8 +467,13 @@ def normalize_task_row(task_row: dict[str, Any], *, seed: int | None = None) -> 
     )
 
 
-def load_task_objective(*, cache_path: Path, use_case: str, seed: int, web_project_id: str | None = None) -> DeterministicTaskObjective:
-    row = load_task_row(cache_path=cache_path, use_case=use_case, web_project_id=web_project_id)
+def load_task_objective(*, cache_path: Path, use_case: str, seed: int | None = None, web_project_id: str | None = None) -> DeterministicTaskObjective:
+    row = load_task_row(cache_path=cache_path, use_case=use_case, seed=seed, web_project_id=web_project_id)
+    if seed is None:
+        return normalize_task_row(dict(row))
+    row_seed = extract_seed_from_task_url(str(row.get("url") or ""))
+    if row_seed == int(seed):
+        return normalize_task_row(dict(row), seed=int(seed))
     normalized = dict(row)
     normalized["url"] = str(row.get("url") or "").split("?")[0] + f"?seed={int(seed)}"
     return normalize_task_row(normalized, seed=seed)
@@ -436,7 +482,10 @@ def load_task_objective(*, cache_path: Path, use_case: str, seed: int, web_proje
 __all__ = [
     "ConstraintHint",
     "DeterministicTaskObjective",
+    "extract_seed_from_task_url",
     "load_task_objective",
     "load_task_row",
+    "load_task_rows",
     "normalize_task_row",
+    "task_seeds_for_use_case",
 ]

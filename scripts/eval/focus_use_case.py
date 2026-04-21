@@ -33,6 +33,7 @@ def _load_operator_env(operator_dir: Path) -> None:
 _load_operator_env(REPO_ROOT)
 
 from training.claude_code_harvester import generate_claude_brief, save_claude_brief
+from training.deterministic_harvester.normalizer import task_seeds_for_use_case
 from training.focus_cost_analytics import build_focus_cost_report
 from training.focus_dataset_validation import validate_focus_dataset
 from training.focus_pipeline import (
@@ -59,6 +60,8 @@ from training.use_case_registry import get_use_case_spec
 
 def _parse_seed_spec(value: str) -> list[int]:
     value = str(value).strip()
+    if not value:
+        return []
     if ".." in value:
         left, right = value.split("..", 1)
         start = int(left)
@@ -66,6 +69,29 @@ def _parse_seed_spec(value: str) -> list[int]:
         step = 1 if end >= start else -1
         return list(range(start, end + step, step))
     return [int(part) for part in value.split(",") if part.strip()]
+
+
+def _resolve_seed_list(*, use_case: str, seed_spec: str, task_cache: str) -> list[int]:
+    explicit = _parse_seed_spec(seed_spec)
+    if explicit:
+        return explicit
+    seeds = task_seeds_for_use_case(
+        cache_path=Path(task_cache).resolve(),
+        use_case=use_case,
+        web_project_id="autocinema",
+    )
+    if seeds:
+        return seeds
+    raise ValueError(f"No URL seeds found for use_case={use_case} in {Path(task_cache).resolve()}")
+
+
+def _resolve_single_seed(*, use_case: str, seed: int | None, task_cache: str) -> int:
+    if seed is not None:
+        return int(seed)
+    seeds = _resolve_seed_list(use_case=use_case, seed_spec="", task_cache=task_cache)
+    if len(seeds) != 1:
+        raise ValueError(f"Multiple URL seeds found for use_case={use_case}; pass --seed explicitly")
+    return int(seeds[0])
 
 
 def _parse_model_ladder(value: str, default_model: str) -> list[str]:
@@ -80,7 +106,7 @@ def _rows_estimated_cost_usd(rows: list[dict[str, object]]) -> float:
 def cmd_collect(args: argparse.Namespace) -> int:
     use_case = str(args.use_case).upper()
     output_root = focus_root(use_case=use_case)
-    seeds = _parse_seed_spec(args.seeds)
+    seeds = _resolve_seed_list(use_case=use_case, seed_spec=args.seeds, task_cache=args.task_cache)
     spec = get_use_case_spec(use_case)
     if str(args.attempt_models).strip():
         attempt_models = _parse_model_ladder(args.attempt_models, str(args.model).strip() or "gpt-5.4")
@@ -99,6 +125,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         agent_workers=args.agent_workers,
         attempt_models=tuple(attempt_models),
         brief_dir=(Path(args.brief_dir).resolve() if str(args.brief_dir).strip() else None),
+        headed=bool(getattr(args, "headed", False)),
     )
     max_usd = float(args.max_usd) if args.max_usd is not None else 0.0
     max_attempts = int(args.max_attempts) if args.max_attempts is not None else 0
@@ -220,7 +247,7 @@ def cmd_cost_report(args: argparse.Namespace) -> int:
 
 def cmd_claude_brief(args: argparse.Namespace) -> int:
     use_case = str(args.use_case).upper()
-    seed = int(args.seed)
+    seed = _resolve_single_seed(use_case=use_case, seed=args.seed, task_cache=args.task_cache)
     output_root = focus_root(use_case=use_case)
     payload = generate_claude_brief(
         use_case=use_case,
@@ -237,7 +264,7 @@ def cmd_claude_brief(args: argparse.Namespace) -> int:
 def cmd_claude_harvest(args: argparse.Namespace) -> int:
     use_case = str(args.use_case).upper()
     output_root = focus_root(use_case=use_case)
-    seeds = _parse_seed_spec(args.seeds)
+    seeds = _resolve_seed_list(use_case=use_case, seed_spec=args.seeds, task_cache=args.task_cache)
     collect_workers = max(1, int(args.collect_workers))
     config = HarvestConfig(
         use_case=use_case,
@@ -254,6 +281,8 @@ def cmd_claude_harvest(args: argparse.Namespace) -> int:
         claude_workers=int(args.claude_workers),
         replay_workers=int(args.replay_workers),
         claude_timeout_seconds=int(args.claude_timeout_seconds),
+        deterministic_only=bool(getattr(args, "deterministic_only", False)),
+        headed=bool(getattr(args, "headed", False)),
     )
     rows = collect_rows_for_seeds(config=config, seeds=seeds, strategy="code-aware", collect_workers=collect_workers)
 
@@ -271,7 +300,7 @@ def cmd_claude_harvest(args: argparse.Namespace) -> int:
 def cmd_generate_candidates(args: argparse.Namespace) -> int:
     use_case = str(args.use_case).upper()
     output_root = focus_root(use_case=use_case)
-    seeds = _parse_seed_spec(args.seeds)
+    seeds = _resolve_seed_list(use_case=use_case, seed_spec=args.seeds, task_cache=args.task_cache)
     config = HarvestConfig(
         use_case=use_case,
         output_root=output_root,
@@ -287,6 +316,8 @@ def cmd_generate_candidates(args: argparse.Namespace) -> int:
         claude_workers=int(args.claude_workers),
         replay_workers=int(args.replay_workers),
         claude_timeout_seconds=int(args.claude_timeout_seconds),
+        deterministic_only=bool(getattr(args, "deterministic_only", False)),
+        headed=bool(getattr(args, "headed", False)),
     )
     candidate_paths = generate_candidates_for_seeds(config=config, seeds=seeds)
     print(json.dumps({"candidate_paths": [str(path) for path in candidate_paths], "count": len(candidate_paths)}, indent=2))
@@ -312,6 +343,8 @@ def cmd_replay_candidates(args: argparse.Namespace) -> int:
         claude_workers=int(args.claude_workers),
         replay_workers=int(args.replay_workers),
         claude_timeout_seconds=int(args.claude_timeout_seconds),
+        deterministic_only=bool(getattr(args, "deterministic_only", False)),
+        headed=bool(getattr(args, "headed", False)),
     )
     candidate_paths = [Path(value).resolve() for value in (args.candidate_path or []) if str(value).strip()]
     if not candidate_paths:
@@ -342,7 +375,7 @@ def cmd_replay_candidates(args: argparse.Namespace) -> int:
 def cmd_run_guided_brief(args: argparse.Namespace) -> int:
     use_case = str(args.use_case).upper()
     output_root = focus_root(use_case=use_case)
-    seeds = _parse_seed_spec(args.seeds)
+    seeds = _resolve_seed_list(use_case=use_case, seed_spec=args.seeds, task_cache=args.task_cache)
     collect_workers = max(1, int(getattr(args, "collect_workers", 1) or 1))
     brief_payload = json.loads(Path(args.brief_path).resolve().read_text(encoding="utf-8"))
     attempt_name = str(args.attempt_name).strip() or "guided"
@@ -375,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
 
     collect = sub.add_parser("collect")
     collect.add_argument("--use-case", default="LOGIN")
-    collect.add_argument("--seeds", default="1..25")
+    collect.add_argument("--seeds", default="", help="Explicit seed spec like 1..10 or 1,2,3. Leave empty to use task URL seeds.")
     collect.add_argument("--provider", default="openai")
     collect.add_argument("--model", default="gpt-5.4")
     collect.add_argument("--attempt-models", default="")
@@ -387,6 +420,7 @@ def main(argv: list[str] | None = None) -> int:
     collect.add_argument("--brief-dir", default="")
     collect.add_argument("--max-usd", type=float, default=0.0)
     collect.add_argument("--max-attempts", type=int, default=0)
+    collect.add_argument("--headed", action="store_true")
     collect.add_argument("--no-merge-existing", action="store_true")
     collect.set_defaults(func=cmd_collect)
 
@@ -434,13 +468,13 @@ def main(argv: list[str] | None = None) -> int:
 
     claude_brief = sub.add_parser("teacher-brief", aliases=["claude-brief"])
     claude_brief.add_argument("--use-case", default="CONTACT")
-    claude_brief.add_argument("--seed", type=int, required=True)
+    claude_brief.add_argument("--seed", type=int, default=None, help="Optional explicit seed override. Defaults to the task URL seed.")
     claude_brief.add_argument("--model", default="gpt-5.4-mini")
     claude_brief.set_defaults(func=cmd_claude_brief)
 
     claude_harvest = sub.add_parser("teacher-harvest", aliases=["claude-harvest", "gpt-harvest"])
     claude_harvest.add_argument("--use-case", default="CONTACT")
-    claude_harvest.add_argument("--seeds", default="1")
+    claude_harvest.add_argument("--seeds", default="", help="Explicit seed spec like 1..10 or 1,2,3. Leave empty to use task URL seeds.")
     claude_harvest.add_argument("--provider", default="openai")
     claude_harvest.add_argument("--model", default="gpt-5.4-mini")
     claude_harvest.add_argument("--brief-model", default="gpt-5.4-mini")
@@ -454,12 +488,14 @@ def main(argv: list[str] | None = None) -> int:
     claude_harvest.add_argument("--max-claude-attempts", type=int, default=3)
     claude_harvest.add_argument("--claude-timeout-seconds", type=int, default=120)
     claude_harvest.add_argument("--execution-mode", choices=["direct", "operator"], default="direct")
+    claude_harvest.add_argument("--deterministic-only", action="store_true")
+    claude_harvest.add_argument("--headed", action="store_true")
     claude_harvest.add_argument("--no-merge-existing", action="store_true")
     claude_harvest.set_defaults(func=cmd_claude_harvest)
 
     generate_candidates = sub.add_parser("generate-candidates")
     generate_candidates.add_argument("--use-case", default="CONTACT")
-    generate_candidates.add_argument("--seeds", default="1")
+    generate_candidates.add_argument("--seeds", default="", help="Explicit seed spec like 1..10 or 1,2,3. Leave empty to use task URL seeds.")
     generate_candidates.add_argument("--provider", default="openai")
     generate_candidates.add_argument("--model", default="gpt-5.4-mini")
     generate_candidates.add_argument("--brief-model", default="gpt-5.4-mini")
@@ -472,6 +508,8 @@ def main(argv: list[str] | None = None) -> int:
     generate_candidates.add_argument("--max-claude-attempts", type=int, default=3)
     generate_candidates.add_argument("--claude-timeout-seconds", type=int, default=120)
     generate_candidates.add_argument("--execution-mode", choices=["direct", "operator"], default="operator")
+    generate_candidates.add_argument("--deterministic-only", action="store_true")
+    generate_candidates.add_argument("--headed", action="store_true")
     generate_candidates.set_defaults(func=cmd_generate_candidates)
 
     replay_candidates_cmd = sub.add_parser("replay-candidates")
@@ -490,12 +528,14 @@ def main(argv: list[str] | None = None) -> int:
     replay_candidates_cmd.add_argument("--max-claude-attempts", type=int, default=3)
     replay_candidates_cmd.add_argument("--claude-timeout-seconds", type=int, default=120)
     replay_candidates_cmd.add_argument("--execution-mode", choices=["direct", "operator"], default="operator")
+    replay_candidates_cmd.add_argument("--deterministic-only", action="store_true")
+    replay_candidates_cmd.add_argument("--headed", action="store_true")
     replay_candidates_cmd.add_argument("--no-merge-existing", action="store_true")
     replay_candidates_cmd.set_defaults(func=cmd_replay_candidates)
 
     run_guided = sub.add_parser("run-guided-brief")
     run_guided.add_argument("--use-case", default="CONTACT")
-    run_guided.add_argument("--seeds", default="1")
+    run_guided.add_argument("--seeds", default="", help="Explicit seed spec like 1..10 or 1,2,3. Leave empty to use task URL seeds.")
     run_guided.add_argument("--brief-path", required=True)
     run_guided.add_argument("--success-text", action="append", default=[])
     run_guided.add_argument("--attempt-name", default="guided")

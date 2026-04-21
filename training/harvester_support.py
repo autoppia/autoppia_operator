@@ -215,7 +215,13 @@ def _value_from_rule(field: dict[str, Any]) -> str:
     return ""
 
 
-def _selector_candidates(*, ids: list[str] | None = None, texts: list[str] | None = None) -> list[dict[str, Any]]:
+def _selector_candidates(
+    *,
+    ids: list[str] | None = None,
+    classes: list[str] | None = None,
+    placeholders: list[str] | None = None,
+    texts: list[str] | None = None,
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for value in ids or []:
@@ -224,6 +230,18 @@ def _selector_candidates(*, ids: list[str] | None = None, texts: list[str] | Non
         if value and key not in seen:
             seen.add(key)
             out.append({"type": "attributeValueSelector", "attribute": "id", "value": value, "case_sensitive": False})
+    for value in classes or []:
+        value = str(value).strip()
+        key = f"class:{value.lower()}"
+        if value and key not in seen:
+            seen.add(key)
+            out.append({"type": "attributeValueSelector", "attribute": "class", "value": value, "case_sensitive": False})
+    for value in placeholders or []:
+        value = str(value).strip()
+        key = f"placeholder:{value.lower()}"
+        if value and key not in seen:
+            seen.add(key)
+            out.append({"type": "attributeValueSelector", "attribute": "placeholder", "value": value, "case_sensitive": False})
     for value in texts or []:
         value = str(value).strip()
         key = f"text:{value.lower()}"

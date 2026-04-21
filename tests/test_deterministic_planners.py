@@ -40,6 +40,9 @@ def test_build_deterministic_plan_for_add_to_watchlist_uses_login_and_movie_reso
     assert "OpenMovieDetailAction" not in action_types
     assert action_types[-2:] == ["ClickAction", "ClickAction"]
     assert action_types[-1] == "ClickAction"
+    watchlist_selectors = plan.actions[-1].get("selector_candidates") or []
+    assert watchlist_selectors
+    assert watchlist_selectors[0]["type"] == "attributeValueSelector"
 
 
 def test_build_deterministic_plan_for_edit_user_targets_profile_form() -> None:
@@ -53,7 +56,9 @@ def test_build_deterministic_plan_for_edit_user_targets_profile_form() -> None:
     objective = normalize_task_row(task_row)
     plan = build_deterministic_plan(objective)
     assert plan.actions[0]["type"] == "NavigateAction"
-    assert any(action.get("field_name") == "first name" for action in plan.actions if action["type"] == "TypeAction")
+    first_name_actions = [action for action in plan.actions if action["type"] == "TypeAction" and action.get("field_name") == "first name"]
+    assert first_name_actions
+    assert first_name_actions[0]["selector_candidates"][0]["type"] == "attributeValueSelector"
     assert plan.actions[-1]["selector_candidates"][0]["type"] in {
         "attributeValueSelector",
         "idSelector",

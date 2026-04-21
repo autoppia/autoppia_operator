@@ -20,8 +20,15 @@ from .selectors import (
     login_submit_selectors,
     login_username_selectors,
     logout_selectors,
+    profile_bio_selectors,
+    profile_email_selectors,
+    profile_favorite_genres_selectors,
+    profile_first_name_selectors,
+    profile_last_name_selectors,
+    profile_location_selectors,
     profile_save_selectors,
     profile_tab_selectors,
+    profile_website_selectors,
     register_confirm_password_selectors,
     register_email_selectors,
     register_password_selectors,
@@ -91,7 +98,7 @@ def _movie_detail_action(objective: DeterministicTaskObjective) -> dict[str, Any
         }
     if resolved_url:
         return _navigate(route, objective=objective)
-    return _click(selectors=view_detail_selectors(objective.web_project_id), field_name="movie detail")
+    return _click(selectors=view_detail_selectors(objective.web_project_id, objective.seed), field_name="movie detail")
 
 
 def _login_actions(objective: DeterministicTaskObjective) -> list[dict[str, Any]]:
@@ -99,9 +106,9 @@ def _login_actions(objective: DeterministicTaskObjective) -> list[dict[str, Any]
     password = str(objective.field_values.get("password") or "Passw0rd!")
     return [
         _navigate("/login", objective=objective),
-        _type(username, selectors=login_username_selectors(objective.web_project_id), field_name="username"),
-        _type(password, selectors=login_password_selectors(objective.web_project_id), field_name="password"),
-        _click(selectors=login_submit_selectors(objective.web_project_id), field_name="submit"),
+        _type(username, selectors=login_username_selectors(objective.web_project_id, objective.seed), field_name="username"),
+        _type(password, selectors=login_password_selectors(objective.web_project_id, objective.seed), field_name="password"),
+        _click(selectors=login_submit_selectors(objective.web_project_id, objective.seed), field_name="submit"),
     ]
 
 
@@ -112,11 +119,11 @@ def _registration_actions(objective: DeterministicTaskObjective) -> list[dict[st
     confirm_password = str(objective.field_values.get("confirm_password") or password)
     return [
         _navigate("/register", objective=objective),
-        _type(username, selectors=register_username_selectors(objective.web_project_id), field_name="username"),
-        _type(email, selectors=register_email_selectors(objective.web_project_id), field_name="email"),
-        _type(password, selectors=register_password_selectors(objective.web_project_id), field_name="password"),
-        _type(confirm_password, selectors=register_confirm_password_selectors(objective.web_project_id), field_name="confirm password"),
-        _click(selectors=register_submit_selectors(objective.web_project_id), field_name="submit"),
+        _type(username, selectors=register_username_selectors(objective.web_project_id, objective.seed), field_name="username"),
+        _type(email, selectors=register_email_selectors(objective.web_project_id, objective.seed), field_name="email"),
+        _type(password, selectors=register_password_selectors(objective.web_project_id, objective.seed), field_name="password"),
+        _type(confirm_password, selectors=register_confirm_password_selectors(objective.web_project_id, objective.seed), field_name="confirm password"),
+        _click(selectors=register_submit_selectors(objective.web_project_id, objective.seed), field_name="submit"),
     ]
 
 
@@ -127,11 +134,11 @@ def _contact_actions(objective: DeterministicTaskObjective) -> list[dict[str, An
     message = str(objective.field_values.get("message") or "Please help with my movie request.")
     return [
         _navigate("/contact", objective=objective),
-        _type(name, selectors=contact_name_selectors(objective.web_project_id), field_name="name"),
-        _type(email, selectors=contact_email_selectors(objective.web_project_id), field_name="email"),
-        _type(subject, selectors=contact_subject_selectors(objective.web_project_id), field_name="subject"),
-        _type(message, selectors=contact_message_selectors(objective.web_project_id), field_name="message"),
-        _click(selectors=contact_submit_selectors(objective.web_project_id), field_name="submit"),
+        _type(name, selectors=contact_name_selectors(objective.web_project_id, objective.seed), field_name="name"),
+        _type(email, selectors=contact_email_selectors(objective.web_project_id, objective.seed), field_name="email"),
+        _type(subject, selectors=contact_subject_selectors(objective.web_project_id, objective.seed), field_name="subject"),
+        _type(message, selectors=contact_message_selectors(objective.web_project_id, objective.seed), field_name="message"),
+        _click(selectors=contact_submit_selectors(objective.web_project_id, objective.seed), field_name="submit"),
     ]
 
 
@@ -140,7 +147,7 @@ def _search_actions(objective: DeterministicTaskObjective) -> list[dict[str, Any
     return [
         _navigate("/search", objective=objective),
         _type(query, field_name="search"),
-        _click(selectors=search_submit_selectors(objective.web_project_id), field_name="submit"),
+        _click(selectors=search_submit_selectors(objective.web_project_id, objective.seed), field_name="submit"),
     ]
 
 
@@ -156,6 +163,15 @@ def _movie_target_actions(objective: DeterministicTaskObjective, *, include_sear
 
 def _profile_fill_actions(objective: DeterministicTaskObjective) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
+    selectors_by_key = {
+        "first_name": profile_first_name_selectors(objective.web_project_id, objective.seed),
+        "last_name": profile_last_name_selectors(objective.web_project_id, objective.seed),
+        "email": profile_email_selectors(objective.web_project_id, objective.seed),
+        "favorite_genres": profile_favorite_genres_selectors(objective.web_project_id, objective.seed),
+        "location": profile_location_selectors(objective.web_project_id, objective.seed),
+        "website": profile_website_selectors(objective.web_project_id, objective.seed),
+        "bio": profile_bio_selectors(objective.web_project_id, objective.seed),
+    }
     for objective_key, field_name in (
         ("first_name", "first name"),
         ("last_name", "last name"),
@@ -167,8 +183,8 @@ def _profile_fill_actions(objective: DeterministicTaskObjective) -> list[dict[st
     ):
         value = objective.field_values.get(objective_key)
         if value:
-            actions.append(_type(value, field_name=field_name))
-    actions.append(_click(selectors=profile_save_selectors(objective.web_project_id), field_name="submit"))
+            actions.append(_type(value, selectors=selectors_by_key.get(objective_key), field_name=field_name))
+    actions.append(_click(selectors=profile_save_selectors(objective.web_project_id, objective.seed), field_name="submit"))
     return actions
 
 
@@ -188,7 +204,7 @@ def _movie_editor_fill_actions(objective: DeterministicTaskObjective) -> list[di
         value = str(objective.field_values.get(objective_key) or "").strip()
         if value:
             actions.append(_type(value, field_name=field_name))
-    actions.append(_click(selectors=save_changes_selectors(objective.web_project_id), field_name="submit"))
+    actions.append(_click(selectors=save_changes_selectors(objective.web_project_id, objective.seed), field_name="submit"))
     return actions
 
 
@@ -219,30 +235,30 @@ def build_deterministic_plan(objective: DeterministicTaskObjective) -> Determini
         actions = _movie_target_actions(objective)
         actions.extend(
             [
-                _type(str(objective.field_values.get("name") or "Agent"), selectors=comment_name_selectors(objective.web_project_id), field_name="name"),
+                _type(str(objective.field_values.get("name") or "Agent"), selectors=comment_name_selectors(objective.web_project_id, objective.seed), field_name="name"),
                 _type(
                     str(objective.field_values.get("content") or "Great movie"),
-                    selectors=comment_message_selectors(objective.web_project_id),
+                    selectors=comment_message_selectors(objective.web_project_id, objective.seed),
                     field_name="comment",
                 ),
-                _click(selectors=comment_submit_selectors(objective.web_project_id), field_name="submit"),
+                _click(selectors=comment_submit_selectors(objective.web_project_id, objective.seed), field_name="submit"),
             ]
         )
     elif use_case == "SHARE_MOVIE":
         actions = _movie_target_actions(objective)
-        actions.append(_click(selectors=share_button_selectors(objective.web_project_id), field_name="share"))
+        actions.append(_click(selectors=share_button_selectors(objective.web_project_id, objective.seed), field_name="share"))
     elif use_case == "WATCH_TRAILER":
         actions = _movie_target_actions(objective, include_search=False)
-        actions.append(_click(selectors=trailer_button_selectors(objective.web_project_id), field_name="watch trailer"))
+        actions.append(_click(selectors=trailer_button_selectors(objective.web_project_id, objective.seed), field_name="watch trailer"))
     elif use_case == "ADD_TO_WATCHLIST":
         actions = _login_actions(objective)
         actions.extend(_movie_target_actions(objective, include_search=False))
-        actions.append(_click(selectors=watchlist_button_selectors(objective.web_project_id), field_name="watchlist"))
+        actions.append(_click(selectors=watchlist_button_selectors(objective.web_project_id, objective.seed), field_name="watchlist"))
     elif use_case == "REMOVE_FROM_WATCHLIST":
         actions = _login_actions(objective)
         actions.extend(_movie_target_actions(objective, include_search=False))
-        actions.append(_click(selectors=watchlist_button_selectors(objective.web_project_id), field_name="watchlist"))
-        actions.append(_click(selectors=watchlist_button_selectors(objective.web_project_id), field_name="watchlist"))
+        actions.append(_click(selectors=watchlist_button_selectors(objective.web_project_id, objective.seed), field_name="watchlist"))
+        actions.append(_click(selectors=watchlist_button_selectors(objective.web_project_id, objective.seed), field_name="watchlist"))
     elif use_case == "EDIT_USER":
         actions = _login_actions(objective)
         actions.append(_navigate("/profile", objective=objective))
@@ -274,7 +290,7 @@ def build_deterministic_plan(objective: DeterministicTaskObjective) -> Determini
             [
                 _navigate("/profile", objective=objective),
                 _click(selectors=profile_tab_selectors("movies", objective.web_project_id), field_name="edit movies"),
-                _click(selectors=delete_movie_selectors(objective.web_project_id), field_name="delete movie"),
+                _click(selectors=delete_movie_selectors(objective.web_project_id, objective.seed), field_name="delete movie"),
             ]
         )
     else:

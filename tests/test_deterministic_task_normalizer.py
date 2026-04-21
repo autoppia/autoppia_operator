@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from training.deterministic_harvester.normalizer import load_task_objective, normalize_task_row
+from training.deterministic_harvester.normalizer import load_task_objective, normalize_task_row, task_seeds_for_use_case
 
 
 def _task_row(*, use_case: str, prompt: str, url: str, event_criteria: dict, relevant_data: dict | None = None) -> dict:
@@ -60,6 +60,30 @@ def test_load_task_objective_overrides_seed_in_url(tmp_path: Path) -> None:
     assert objective.route_target == "/contact"
 
 
+def test_load_task_objective_prefers_matching_task_row_seed_from_url(tmp_path: Path) -> None:
+    task_row_seed_5 = _task_row(
+        use_case="CONTACT",
+        prompt="subject equals 'Seed five'",
+        url="http://example.test/contact?seed=5",
+        event_criteria={"subject": "Seed five"},
+    )
+    task_row_seed_88 = _task_row(
+        use_case="CONTACT",
+        prompt="subject equals 'Seed eighty eight'",
+        url="http://example.test/contact?seed=88",
+        event_criteria={"subject": "Seed eighty eight"},
+    )
+    cache_path = tmp_path / "tasks.json"
+    cache_path.write_text(json.dumps({"tasks": [task_row_seed_5, task_row_seed_88]}), encoding="utf-8")
+
+    objective = load_task_objective(cache_path=cache_path, use_case="CONTACT", seed=88)
+
+    assert objective.seed == 88
+    assert objective.task_url.endswith("seed=88")
+    assert objective.prompt == "subject equals 'Seed eighty eight'"
+    assert objective.field_values["subject"] == "Seed eighty eight"
+
+
 def test_load_task_objective_filters_by_project_id(tmp_path: Path) -> None:
     contact_autocinema = _task_row(
         use_case="CONTACT",
@@ -82,3 +106,63 @@ def test_load_task_objective_filters_by_project_id(tmp_path: Path) -> None:
 
     assert objective.web_project_id == "autobooks"
     assert objective.task_url.startswith("http://localhost:3001")
+
+
+def test_load_task_objective_supports_nested_project_task_cache(tmp_path: Path) -> None:
+    task_row = _task_row(
+        use_case="ADD_TO_WATCHLIST",
+        prompt="movie_name equals 'Dune'",
+        url="http://localhost:3000/movies?seed=1",
+        event_criteria={"movie": {"name": "Dune"}},
+    )
+    task_row["web_project_id"] = "autocinema"
+    cache_path = tmp_path / "nested_tasks.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "autocinema": {
+                    "project_id": "autocinema",
+                    "tasks": [task_row],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    objective = load_task_objective(
+        cache_path=cache_path,
+        use_case="ADD_TO_WATCHLIST",
+        seed=23,
+        web_project_id="autocinema",
+    )
+
+    assert objective.use_case == "ADD_TO_WATCHLIST"
+    assert objective.seed == 23
+    assert objective.task_url.endswith("seed=23")
+
+
+def test_task_seeds_for_use_case_reads_seeds_from_task_urls(tmp_path: Path) -> None:
+    cache_path = tmp_path / "tasks.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    _task_row(
+                        use_case="CONTACT",
+                        prompt="subject equals 'First'",
+                        url="http://example.test/contact?seed=12",
+                        event_criteria={"subject": "First"},
+                    ),
+                    _task_row(
+                        use_case="CONTACT",
+                        prompt="subject equals 'Second'",
+                        url="http://example.test/contact?seed=44",
+                        event_criteria={"subject": "Second"},
+                    ),
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert task_seeds_for_use_case(cache_path=cache_path, use_case="CONTACT") == [12, 44]

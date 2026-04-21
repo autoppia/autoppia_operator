@@ -218,6 +218,7 @@ def run_eval_attempt(
     agent_workers: int = 1,
     task_cache: Path | None = None,
     env_overrides: dict[str, str] | None = None,
+    headed: bool = False,
 ) -> AttemptResult:
     gold_root = output_root / "gold"
     runs_dir = gold_root / "runs"
@@ -259,6 +260,7 @@ def run_eval_attempt(
     env = {
         "FSM_DIRECT_LOOP": "1",
         "EVAL_CAPTURE_SCREENSHOT": "0",
+        "EVALUATOR_HEADLESS": "0" if bool(headed) else "1",
         **{k: v for k, v in dict(env_overrides or {}).items() if v is not None},
     }
     subprocess.run(cmd, cwd=REPO_ROOT, env={**os.environ, **env}, check=True)

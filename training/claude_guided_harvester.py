@@ -16,6 +16,7 @@ from autoppia_iwa.src.execution.actions.base import BaseAction
 from autoppia_iwa.src.web_agents.classes import replace_credential_placeholders_in_string
 
 import training.harvester_support as harvester_support
+from training.deterministic_harvester.normalizer import extract_seed_from_task_url
 from training.deterministic_harvester.projects import resolve_project_id
 from training.deterministic_harvester.resolvers import dataset_movie_candidates, resolve_movie_detail_url
 
@@ -40,7 +41,7 @@ def _load_raw_tasks(cache_path: Path) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
-def _load_tasks(*, cache_path: Path, use_case: str, web_project_id: str, limit: int = 1) -> list[Task]:
+def _load_tasks(*, cache_path: Path, use_case: str, web_project_id: str, limit: int | None = 1) -> list[Task]:
     tasks: list[Task] = []
     for row in _load_raw_tasks(cache_path):
         uc_payload = row.get("use_case")
@@ -53,7 +54,7 @@ def _load_tasks(*, cache_path: Path, use_case: str, web_project_id: str, limit: 
             tasks.append(Task(**row))
         except Exception:
             continue
-        if len(tasks) >= limit:
+        if limit is not None and int(limit) > 0 and len(tasks) >= int(limit):
             break
     return tasks
 
@@ -66,18 +67,32 @@ def _inject_seed(task: Task, seed: int) -> tuple[Task, int]:
     return cloned, seed_i
 
 
-def _task_for_seed(*, use_case: str, seed: int, task_cache: Path | None = None, web_project_id: str | None = None):
+def _task_for_seed(*, use_case: str, seed: int | None = None, task_cache: Path | None = None, web_project_id: str | None = None):
     cache_path = Path(task_cache).resolve() if task_cache else Path(DEFAULT_TASK_CACHE).resolve()
     tasks = _load_tasks(
         cache_path=cache_path,
         use_case=use_case,
         web_project_id=resolve_project_id(explicit_project_id=web_project_id),
-        limit=1,
+        limit=None,
     )
     if not tasks:
         raise ValueError(f"No task found for use_case={use_case} in {cache_path}")
-    task, _ = _inject_seed(tasks[0], seed=seed)
+    if seed is None:
+        return tasks[0]
+    seed_i = int(seed)
+    for task in tasks:
+        if extract_seed_from_task_url(str(task.url)) == seed_i:
+            return task
+    task, _ = _inject_seed(tasks[0], seed=seed_i)
     return task
+
+
+def _guided_web_agent_id(seed: int) -> str:
+    seed_i = int(seed)
+    if 1 <= seed_i <= 255:
+        return str(seed_i)
+    normalized = ((seed_i - 1) % 255) + 1
+    return str(normalized)
 
 
 def _normalize_action_url(*, task_url: str, target_url: str) -> str:
@@ -284,20 +299,72 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
 (payload) => {
   const type = String(payload.type || "");
   const fieldName = String(payload.field_name || "").toLowerCase();
-  const selector = (id) => id ? ({type: "attributeValueSelector", attribute: "id", value: id, case_sensitive: false}) : null;
-
-  const textMatch = (value, target) => String(value || "").toLowerCase().includes(String(target || "").toLowerCase());
+  const idSelector = (id) => id ? ({type: "attributeValueSelector", attribute: "id", value: id, case_sensitive: false}) : null;
+  const customSelector = (value) => value ? ({type: "attributeValueSelector", attribute: "custom", value, case_sensitive: false}) : null;
+  const normalize = (value) => String(value || "").trim().toLowerCase();
+  const textMatch = (value, target) => normalize(value).includes(normalize(target));
+  const expandHints = (values) => {
+    const seen = new Set();
+    const out = [];
+    for (const raw of Array.isArray(values) ? values : []) {
+      const normalized = normalize(raw);
+      if (!normalized) continue;
+      const variants = [normalized];
+      if (normalized.endsWith("s") && normalized.length > 1) variants.push(normalized.slice(0, -1));
+      if (!normalized.endsWith("s")) variants.push(`${normalized}s`);
+      for (const item of variants) {
+        if (!item || seen.has(item)) continue;
+        seen.add(item);
+        out.push(item);
+      }
+    }
+    return out;
+  };
+  const escapeCss = (value) => {
+    if (typeof CSS !== "undefined" && CSS && typeof CSS.escape === "function") return CSS.escape(value);
+    return String(value || "").replace(/[^a-zA-Z0-9_-]/g, (char) => `\\\\${char}`);
+  };
+  const selectorForElement = (element) => {
+    if (!element || !element.tagName) return null;
+    const id = String(element.id || "").trim();
+    if (id) {
+      const idPath = `#${escapeCss(id)}`;
+      try {
+        if (document.querySelectorAll(idPath).length === 1) return customSelector(idPath);
+      } catch (_) {}
+    }
+    const parts = [];
+    let node = element;
+    while (node && node.nodeType === Node.ELEMENT_NODE && node !== document.documentElement) {
+      const tag = String(node.tagName || "").toLowerCase();
+      if (!tag) break;
+      let index = 1;
+      let sibling = node.previousElementSibling;
+      while (sibling) {
+        if (String(sibling.tagName || "").toLowerCase() === tag) index += 1;
+        sibling = sibling.previousElementSibling;
+      }
+      parts.unshift(`${tag}:nth-of-type(${index})`);
+      const path = parts.join(" > ");
+      try {
+        if (path && document.querySelectorAll(path).length === 1) return customSelector(path);
+      } catch (_) {}
+      node = node.parentElement;
+    }
+    return null;
+  };
   const controls = [...document.querySelectorAll("input, textarea, button")];
   const exactIds = Array.isArray(payload.exact_ids) ? payload.exact_ids.map((value) => String(value || "").trim()).filter(Boolean) : [];
   const labelHints = Array.isArray(payload.label_hints) ? payload.label_hints.map((value) => String(value || "").trim()).filter(Boolean) : [];
+  const fieldHints = expandHints([fieldName, ...labelHints]);
   const existingExact = [];
 
   for (const exactId of exactIds) {
     const element = document.getElementById(exactId);
     if (!element) continue;
     const tag = element.tagName.toLowerCase();
-    if (type === "TypeAction" && (tag === "input" || tag === "textarea")) existingExact.push(selector(exactId));
-    if (type === "ClickAction" && (tag === "button" || tag === "a" || tag === "input")) existingExact.push(selector(exactId));
+    if (type === "TypeAction" && (tag === "input" || tag === "textarea")) existingExact.push(idSelector(exactId));
+    if (type === "ClickAction" && (tag === "button" || tag === "a" || tag === "input")) existingExact.push(idSelector(exactId));
   }
 
   let heuristic = null;
@@ -305,16 +372,31 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
     const labels = [...document.querySelectorAll("label")];
     for (const label of labels) {
       const labelText = (label.textContent || "").trim().toLowerCase();
-      if (!labelText || !fieldName || !labelText.includes(fieldName)) continue;
+      if (!labelText || !fieldHints.some((hint) => hint && labelText.includes(hint))) continue;
       const htmlFor = String(label.getAttribute("for") || "");
       const explicit = htmlFor ? document.getElementById(htmlFor) : null;
       const nested = label.querySelector("input, textarea");
       const parent = label.parentElement;
       const sibling = parent ? [...parent.querySelectorAll("input, textarea")].find((el) => !label.contains(el)) : null;
       const control = explicit || nested || sibling || null;
-      if (control && control.id) {
-        heuristic = selector(control.id);
+      if (control) {
+        heuristic = selectorForElement(control);
         break;
+      }
+    }
+    if (!heuristic) {
+      const textNodes = [...document.querySelectorAll("p, span, div, legend")];
+      for (const node of textNodes) {
+        const text = normalize(node.textContent || "");
+        if (!text || !fieldHints.some((hint) => hint && text.includes(hint))) continue;
+        const localControl = node.querySelector("input, textarea");
+        const parent = node.parentElement;
+        const sibling = parent ? [...parent.querySelectorAll("input, textarea")][0] : null;
+        const control = localControl || sibling || null;
+        if (control) {
+          heuristic = selectorForElement(control);
+          break;
+        }
       }
     }
     if (!heuristic) {
@@ -323,20 +405,20 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
         const placeholder = String(control.getAttribute("placeholder") || "");
         const typeAttr = String(control.getAttribute("type") || "");
         if (fieldName === "email" && typeAttr === "email" && id) {
-          heuristic = selector(id);
+          heuristic = selectorForElement(control);
           break;
         }
         const tag = control.tagName.toLowerCase();
         if ((fieldName === "message" || fieldName === "comment" || fieldName === "content") && tag === "textarea" && id) {
-          heuristic = selector(id);
+          heuristic = selectorForElement(control);
           break;
         }
         if ((fieldName === "name" || fieldName === "author" || fieldName === "commenter_name") && tag === "input" && id) {
-          heuristic = selector(id);
+          heuristic = selectorForElement(control);
           break;
         }
-        if ((textMatch(id, fieldName) || textMatch(placeholder, fieldName)) && id) {
-          heuristic = selector(id);
+        if ((fieldHints.some((hint) => textMatch(id, hint)) || fieldHints.some((hint) => textMatch(placeholder, hint))) && (id || placeholder)) {
+          heuristic = selectorForElement(control);
           break;
         }
       }
@@ -348,7 +430,7 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
       const id = String(control.id || "");
       const text = (control.textContent || "").trim();
       if ((labelHints.some((hint) => hint && textMatch(text, hint)) || labelHints.some((hint) => hint && textMatch(id, hint))) && id) {
-        heuristic = selector(id);
+        heuristic = selectorForElement(control);
         break;
       }
     }
@@ -358,7 +440,7 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
         const typeAttr = String(control.getAttribute("type") || "");
         const id = String(control.id || "");
         if (tag === "button" && typeAttr === "submit" && id) {
-          heuristic = selector(id);
+          heuristic = selectorForElement(control);
           break;
         }
       }
@@ -480,6 +562,7 @@ async def _run_guided_brief_async(
     max_steps: int = 12,
     allow_signal_success: bool = False,
     planned_actions_override: list[dict[str, Any]] | None = None,
+    headless: bool | None = None,
 ) -> dict[str, Any]:
     try:
         from src.operator.eval.session import build_task_execution_session
@@ -496,7 +579,7 @@ async def _run_guided_brief_async(
     if not isinstance(brief, dict):
         raise ValueError("brief payload missing brief object")
     task = _task_for_seed(use_case=use_case, seed=seed, task_cache=task_cache, web_project_id=web_project_id)
-    web_agent_id = f"claude-guided-{seed}-{random.randint(1000, 9999)}"
+    web_agent_id = _guided_web_agent_id(seed)
     validator_id = f"claude-guided-validator-{seed}-{random.randint(1000, 9999)}"
     planned_actions_source = (
         list(planned_actions_override)
@@ -517,7 +600,7 @@ async def _run_guided_brief_async(
         validator_id=validator_id,
         enable_score_cheating=False,
         capture_screenshot=False,
-        headless=None,
+        headless=headless,
     )
     started = time.time()
     step_result = await session.reset()
@@ -587,6 +670,7 @@ def run_guided_brief(
     max_steps: int = 12,
     allow_signal_success: bool = False,
     planned_actions_override: list[dict[str, Any]] | None = None,
+    headless: bool | None = None,
 ) -> dict[str, Any]:
     return asyncio.run(
         _run_guided_brief_async(
@@ -598,5 +682,6 @@ def run_guided_brief(
             max_steps=max_steps,
             allow_signal_success=allow_signal_success,
             planned_actions_override=planned_actions_override,
+            headless=headless,
         )
     )

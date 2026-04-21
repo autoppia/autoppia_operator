@@ -196,4 +196,33 @@ def test_run_eval_attempt_keeps_direct_loop_enabled(tmp_path: Path, monkeypatch)
     assert isinstance(env, dict)
     assert env["FSM_DIRECT_LOOP"] == "1"
     assert env["EVAL_CAPTURE_SCREENSHOT"] == "0"
+    assert env["EVALUATOR_HEADLESS"] == "1"
     assert "--trace-full-payloads" not in captured["cmd"]
+
+
+def test_run_eval_attempt_supports_headed_browser(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, cwd, env, check):
+        captured["env"] = env
+        out_idx = cmd.index("--out") + 1
+        Path(cmd[out_idx]).parent.mkdir(parents=True, exist_ok=True)
+        Path(cmd[out_idx]).write_text(json.dumps({"episodes": []}), encoding="utf-8")
+
+    monkeypatch.setattr(focus_pipeline_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(focus_pipeline_module, "_episode_row_from_report", lambda **_: None)
+
+    focus_pipeline_module.run_eval_attempt(
+        use_case="LOGIN",
+        seed=7,
+        attempt_name="baseline",
+        output_root=tmp_path,
+        provider="openai",
+        model="gpt-5.4",
+        max_steps=12,
+        headed=True,
+    )
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["EVALUATOR_HEADLESS"] == "0"

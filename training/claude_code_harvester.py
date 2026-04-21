@@ -7,6 +7,7 @@ from typing import Any
 
 from infra.llm_gateway import openai_chat_completions
 from infra.pricing import estimate_cost_usd
+from training.deterministic_harvester.normalizer import load_task_row as load_normalized_task_row
 from training.harvester_support import brief_prompt_lines, summarize_attempt_for_claude
 from training.layout import use_case_layout
 
@@ -20,32 +21,9 @@ def focus_root(*, use_case: str) -> Path:
     return use_case_layout(repo_root=REPO_ROOT, web_project="autocinema", use_case=use_case).root
 
 
-def _load_task_row(use_case: str, task_cache_path: Path | None = None, web_project_id: str | None = None) -> dict[str, Any]:
+def _load_task_row(use_case: str, task_cache_path: Path | None = None, web_project_id: str | None = None, seed: int | None = None) -> dict[str, Any]:
     cache_path = Path(task_cache_path).resolve() if task_cache_path else TASK_CACHE_PATH
-    payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    rows: Any
-    if isinstance(payload, dict) and isinstance(payload.get("tasks"), list):
-        rows = payload["tasks"]
-    elif isinstance(payload, dict):
-        nested_rows: list[dict[str, Any]] = []
-        target_project = str(web_project_id or "").strip()
-        values = [payload.get(target_project)] if target_project and target_project in payload else payload.values()
-        for value in values:
-            if isinstance(value, dict) and isinstance(value.get("tasks"), list):
-                nested_rows.extend(item for item in value["tasks"] if isinstance(item, dict))
-        rows = nested_rows if nested_rows else payload
-    else:
-        rows = payload
-    if not isinstance(rows, list):
-        raise ValueError(f"unexpected task cache format: {cache_path}")
-    normalized = str(use_case).strip().upper()
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        row_use_case = (row.get("use_case") or {}).get("name") if isinstance(row.get("use_case"), dict) else None
-        if str(row_use_case).strip().upper() == normalized:
-            return row
-    raise ValueError(f"use case not found in task cache: {use_case}")
+    return load_normalized_task_row(cache_path=cache_path, use_case=use_case, seed=seed, web_project_id=web_project_id)
 
 
 def _candidate_web_files(use_case: str) -> list[Path]:
@@ -521,7 +499,7 @@ def generate_claude_brief(
     task_cache_path: Path | None = None,
     web_project_id: str | None = None,
 ) -> dict[str, Any]:
-    task_row = _load_task_row(use_case, task_cache_path=task_cache_path, web_project_id=web_project_id)
+    task_row = _load_task_row(use_case, task_cache_path=task_cache_path, web_project_id=web_project_id, seed=seed)
     web_files = _candidate_web_files(use_case)
     examples = _load_existing_examples(use_case)
     snippets = _file_snippets(web_files, use_case=use_case)
