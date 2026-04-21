@@ -148,6 +148,34 @@ def test_write_focus_artifacts_merges_existing_attempts(tmp_path: Path) -> None:
     assert [int(row["seed"]) for row in episode_rows] == [1, 2]
 
 
+def test_episode_row_from_report_prefers_episode_seed(tmp_path: Path) -> None:
+    row = focus_pipeline_module._episode_row_from_report(
+        report={
+            "model": "gpt-5.4",
+            "episodes": [
+                {
+                    "task_id": "task-1",
+                    "episode_task_id": "ep-1",
+                    "seed": 418,
+                    "success": True,
+                    "score": 1.0,
+                    "steps": 1,
+                    "final_url": "http://localhost:8000/contact?seed=418",
+                }
+            ],
+        },
+        use_case="CONTACT",
+        seed=96,
+        attempt_name="baseline",
+        out_path=tmp_path / "runs" / "seed_0096_baseline.json",
+        trace_dir=tmp_path / "traces" / "seed_0096_baseline",
+    )
+
+    assert row is not None
+    assert row["seed"] == 418
+    assert "seed=418" in row["notes"]
+
+
 def test_build_focus_eval_command_supports_parallel_eval() -> None:
     cmd = build_focus_eval_command(
         use_case="LOGIN",

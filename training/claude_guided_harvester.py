@@ -579,8 +579,9 @@ async def _run_guided_brief_async(
     if not isinstance(brief, dict):
         raise ValueError("brief payload missing brief object")
     task = _task_for_seed(use_case=use_case, seed=seed, task_cache=task_cache, web_project_id=web_project_id)
-    web_agent_id = _guided_web_agent_id(seed)
-    validator_id = f"claude-guided-validator-{seed}-{random.randint(1000, 9999)}"
+    effective_seed = extract_seed_from_task_url(str(task.url)) or int(seed)
+    web_agent_id = _guided_web_agent_id(effective_seed)
+    validator_id = f"claude-guided-validator-{effective_seed}-{random.randint(1000, 9999)}"
     planned_actions_source = (
         list(planned_actions_override)
         if isinstance(planned_actions_override, list) and planned_actions_override
@@ -637,10 +638,10 @@ async def _run_guided_brief_async(
                     "success": success,
                     "score": score,
                     "steps": len(execution_log),
-                    "seed": int(seed),
+                    "seed": int(effective_seed),
                     "use_case": use_case,
                     "task_id": str(task.id),
-                    "episode_task_id": f"claude-guided-{use_case.lower()}-{seed}",
+                    "episode_task_id": f"claude-guided-{use_case.lower()}-{effective_seed}",
                     "web_agent_id": web_agent_id,
                     "validator_id": validator_id,
                     "final_url": final_url,

@@ -365,6 +365,65 @@ def test_guided_web_agent_id_stays_in_expected_user_range() -> None:
     assert 1 <= int(_guided_web_agent_id(31000)) <= 255
 
 
+def test_run_guided_brief_reports_seed_from_task_url(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        guided_module,
+        "_task_for_seed",
+        lambda **kwargs: SimpleNamespace(id="task-1", url="http://localhost:8000/?seed=418", web_project_id="autocinema"),
+    )
+    monkeypatch.setattr(guided_module, "_guided_actions_from_brief", lambda **kwargs: [])
+
+    class FakeScore:
+        success = True
+        raw_score = 1.0
+
+    class FakeSnapshot:
+        url = "http://localhost:8000/profile?seed=418"
+        html = "<html></html>"
+
+    class FakeStepResult:
+        score = FakeScore()
+        snapshot = FakeSnapshot()
+
+    class FakeSession:
+        async def reset(self):
+            return FakeStepResult()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(guided_module, "build_task_execution_session", lambda **kwargs: FakeSession(), raising=False)
+
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "src.operator.eval.session":
+
+            class _Module:
+                @staticmethod
+                def build_task_execution_session(**kwargs):
+                    return FakeSession()
+
+            return _Module()
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    report = guided_module.run_guided_brief(
+        use_case="CONTACT",
+        seed=96,
+        brief_payload={"brief": {}},
+        task_cache=tmp_path / "tasks.json",
+        max_steps=1,
+        headless=True,
+    )
+
+    assert report["episodes"][0]["seed"] == 418
+    assert report["episodes"][0]["episode_task_id"].endswith("-418")
+
+
 def test_execute_action_candidates_uses_dom_custom_selector_when_no_explicit_selector_candidates(monkeypatch) -> None:
     class FakePage:
         async def evaluate(self, script, payload):

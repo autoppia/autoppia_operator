@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from training.deterministic_harvester.normalizer import extract_seed_from_task_url
 from training.layout import use_case_layout
 from training.trace_compaction import compact_trace_dir
 from training.trajectory_contract import build_provenance_fields
@@ -285,6 +286,7 @@ def _episode_row_from_report(
     episode = episodes[0] if isinstance(episodes[0], dict) else None
     if not isinstance(episode, dict):
         return None
+    effective_seed = int(episode.get("seed") or 0) or extract_seed_from_task_url(str(episode.get("final_url") or "")) or int(seed)
     episode_task_id = str(episode.get("episode_task_id") or "")
     trace_file = trace_dir / "episodes" / f"{episode_task_id}.json"
     row = {
@@ -292,7 +294,7 @@ def _episode_row_from_report(
         "task_id": str(episode.get("task_id") or ""),
         "episode_task_id": episode_task_id,
         "use_case": use_case,
-        "seed": int(seed),
+        "seed": int(effective_seed),
         "success": bool(episode.get("success")),
         "score": float(episode.get("score") or 0.0),
         "steps": int(episode.get("steps") or 0),
@@ -309,7 +311,7 @@ def _episode_row_from_report(
         "trace_ref": episode_task_id,
         "attempt_name": attempt_name,
         "harvest_mode": "focus_use_case",
-        "notes": f"{use_case} seed={seed} attempt={attempt_name}",
+        "notes": f"{use_case} seed={effective_seed} attempt={attempt_name}",
         "final_url": str(episode.get("final_url") or ""),
     }
     row.update(build_provenance_fields(operator_version="step_engine", policy_mode="direct"))

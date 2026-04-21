@@ -10,6 +10,7 @@ from typing import Any
 from training.claude_code_harvester import generate_claude_brief
 from training.claude_guided_harvester import _guided_actions_from_brief, run_guided_brief
 from training.deterministic_harvester import build_deterministic_plan, load_task_objective, load_task_row
+from training.deterministic_harvester.normalizer import extract_seed_from_task_url
 from training.deterministic_harvester.projects import normalized_origin, resolve_project_id
 from training.focus_pipeline import (
     build_prompt_override,
@@ -142,7 +143,8 @@ def build_guided_row(
     episode = episodes[0] if isinstance(episodes, list) and episodes else None
     if not isinstance(episode, dict):
         return None
-    trace_root = out_path.parent.parent / "traces" / f"seed_{int(seed):04d}_{attempt_name}"
+    effective_seed = int(episode.get("seed") or 0) or extract_seed_from_task_url(str(episode.get("final_url") or "")) or int(seed)
+    trace_root = out_path.parent.parent / "traces" / f"seed_{int(effective_seed):04d}_{attempt_name}"
     trace_episodes_dir = trace_root / "episodes"
     trace_episodes_dir.mkdir(parents=True, exist_ok=True)
     episode_task_id = str(episode.get("episode_task_id") or "")
@@ -152,7 +154,7 @@ def build_guided_row(
         "report_model": report.get("model"),
         "attempt_name": attempt_name,
         "use_case": use_case,
-        "seed": int(seed),
+        "seed": int(effective_seed),
     }
     trace_file.write_text(json.dumps(trace_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     row = {
@@ -160,7 +162,7 @@ def build_guided_row(
         "task_id": str(episode.get("task_id") or ""),
         "episode_task_id": episode_task_id,
         "use_case": use_case,
-        "seed": int(seed),
+        "seed": int(effective_seed),
         "success": bool(episode.get("success")),
         "score": float(episode.get("score") or 0.0),
         "steps": int(episode.get("steps") or 0),
@@ -179,7 +181,7 @@ def build_guided_row(
         "harvest_mode": "claude_code_direct",
         "teacher_model": str(teacher_model or ""),
         "teacher_brief_path": str(teacher_brief_path or ""),
-        "notes": f"{use_case} seed={seed} attempt={attempt_name}",
+        "notes": f"{use_case} seed={effective_seed} attempt={attempt_name}",
         "final_url": str(episode.get("final_url") or ""),
     }
     return row

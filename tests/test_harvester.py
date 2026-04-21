@@ -391,6 +391,33 @@ def test_collect_rows_from_guided_brief_uses_shared_guided_row_builder(monkeypat
     assert rows[0]["teacher_brief_path"].endswith("brief.json")
 
 
+def test_build_guided_row_prefers_episode_seed_over_requested_seed(tmp_path: Path) -> None:
+    row = harvester_module.build_guided_row(
+        use_case="CONTACT",
+        seed=96,
+        attempt_name="guided",
+        report={
+            "model": "claude-guided",
+            "episodes": [
+                {
+                    "task_id": "task-1",
+                    "episode_task_id": "ep-1",
+                    "seed": 418,
+                    "success": True,
+                    "score": 1.0,
+                    "steps": 1,
+                    "final_url": "http://localhost:8000/contact?seed=418",
+                }
+            ],
+        },
+        out_path=tmp_path / "gold" / "runs" / "seed_0096_guided.json",
+    )
+
+    assert row is not None
+    assert row["seed"] == 418
+    assert "seed=418" in row["notes"]
+
+
 def test_build_candidate_from_brief_uses_guided_actions(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         harvester_module,
