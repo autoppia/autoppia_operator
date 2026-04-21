@@ -12,8 +12,8 @@ from training.use_case_registry import dagger_extra_lines
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def focus_root(*, use_case: str) -> Path:
-    return use_case_layout(repo_root=REPO_ROOT, web_project="autocinema", use_case=use_case).root
+def focus_root(*, use_case: str, project_id: str = "autocinema") -> Path:
+    return use_case_layout(repo_root=REPO_ROOT, web_project=str(project_id or "autocinema"), use_case=use_case).root
 
 
 def _now_utc() -> str:
@@ -52,11 +52,12 @@ def run_dagger_round(
     max_steps: int = 12,
     task_cache_path: Path | None = None,
     env_overrides: dict[str, str] | None = None,
+    project_id: str = "autocinema",
 ) -> dict[str, Any]:
     normalized_use_case = str(use_case or "").strip().upper()
     source_results = _load_results(source_summary_path)
     failed = [row for row in source_results if not bool(row.get("success"))]
-    output_root = focus_root(use_case=normalized_use_case) / "dagger" / split_name
+    output_root = focus_root(use_case=normalized_use_case, project_id=project_id) / "dagger" / split_name
     correction_rows: list[dict[str, Any]] = []
     merged_rows: list[dict[str, Any]] = []
 
@@ -71,6 +72,7 @@ def run_dagger_round(
             use_case=normalized_use_case,
             prompt_override=prompt_override,
             out_path=out_task_cache,
+            project_id=project_id,
         )
         corrected = run_eval_attempt(
             use_case=normalized_use_case,
@@ -81,6 +83,7 @@ def run_dagger_round(
             model=teacher_model,
             max_steps=max_steps,
             task_cache=out_task_cache,
+            web_project_id=project_id,
             env_overrides=dict(env_overrides or {}),
         )
         correction_row = {

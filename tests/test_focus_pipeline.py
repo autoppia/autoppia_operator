@@ -178,6 +178,7 @@ def test_episode_row_from_report_prefers_episode_seed(tmp_path: Path) -> None:
 
 def test_build_focus_eval_command_supports_parallel_eval() -> None:
     cmd = build_focus_eval_command(
+        project_id="autocinema",
         use_case="LOGIN",
         adapter_path=Path("/tmp/adapter"),
         endpoint="http://127.0.0.1:8000/v1",
@@ -218,6 +219,7 @@ def test_run_eval_attempt_keeps_direct_loop_enabled(tmp_path: Path, monkeypatch)
         provider="openai",
         model="gpt-5.4",
         max_steps=12,
+        web_project_id="autobooks",
     )
 
     env = captured["env"]
@@ -225,6 +227,8 @@ def test_run_eval_attempt_keeps_direct_loop_enabled(tmp_path: Path, monkeypatch)
     assert env["FSM_DIRECT_LOOP"] == "1"
     assert env["EVAL_CAPTURE_SCREENSHOT"] == "0"
     assert env["EVALUATOR_HEADLESS"] == "1"
+    assert "--web-project-id" in captured["cmd"]
+    assert "autobooks" in captured["cmd"]
     assert "--trace-full-payloads" not in captured["cmd"]
 
 

@@ -39,8 +39,6 @@ _AUTOCINEMA_LOCAL_ID_VARIANTS: dict[str, list[str]] = {
 
 
 def route_for_use_case(use_case: str, project_id: str = "autocinema") -> str:
-    if str(project_id or "").strip() != "autocinema":
-        raise ValueError(f"Project {project_id!r} is not yet supported by deterministic selectors")
     return _ROUTES.get(str(use_case or "").strip().upper(), "/")
 
 
@@ -536,21 +534,17 @@ def save_changes_selectors(project_id: str = "autocinema", seed: int | None = No
 
 
 def logout_selectors(project_id: str = "autocinema") -> list[dict[str, Any]]:
-    if str(project_id or "").strip() != "autocinema":
-        raise ValueError(f"Project {project_id!r} is not yet supported by deterministic selectors")
-    return selector_candidates_for_texts("Logout")
+    return selector_candidates_for_texts("Logout", "Log out", "Sign out")
 
 
 def profile_tab_selectors(tab_name: str, project_id: str = "autocinema") -> list[dict[str, Any]]:
-    if str(project_id or "").strip() != "autocinema":
-        raise ValueError(f"Project {project_id!r} is not yet supported by deterministic selectors")
     normalized = str(tab_name or "").strip().lower()
     texts = {
         "movies": ["Edit Movies", "Movies"],
         "watchlist": ["Watchlist"],
         "add-movies": ["Add Movies"],
     }
-    return selector_candidates_for_texts(*texts.get(normalized, [tab_name]))
+    return selector_candidates_for_texts(*texts.get(normalized, [tab_name, normalized.replace("-", " ")]))
 
 
 __all__ = [

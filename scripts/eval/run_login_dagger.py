@@ -14,6 +14,7 @@ from training.dagger import merge_dagger_episodes, run_dagger_round
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run DAgger corrections from a failed-summary split")
+    parser.add_argument("--project-id", default="autocinema")
     parser.add_argument("--use-case", default="LOGIN")
     parser.add_argument("--source-summary", required=True)
     parser.add_argument("--split-name", required=True)
@@ -32,12 +33,13 @@ def main(argv: list[str] | None = None) -> int:
         teacher_provider=str(args.teacher_provider),
         teacher_model=str(args.teacher_model),
         env_overrides=env_overrides,
+        project_id=str(args.project_id),
     )
     print(json.dumps(summary, indent=2))
     if args.merge_base_episodes and args.merge_output:
         merged = merge_dagger_episodes(
             base_episodes_path=Path(args.merge_base_episodes).resolve(),
-            dagger_teacher_path=REPO_ROOT / "data" / "autocinema" / str(use_case).lower() / "dagger" / str(args.split_name) / "teacher_gold_episodes.jsonl",
+            dagger_teacher_path=REPO_ROOT / "data" / str(args.project_id).strip() / str(use_case).lower() / "dagger" / str(args.split_name) / "teacher_gold_episodes.jsonl",
             output_path=Path(args.merge_output).resolve(),
         )
         print(json.dumps(merged, indent=2))

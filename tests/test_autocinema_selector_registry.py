@@ -8,6 +8,7 @@ from training.deterministic_harvester.selectors import (
     comment_submit_selectors,
     login_submit_selectors,
     login_username_selectors,
+    logout_selectors,
     profile_first_name_selectors,
     profile_tab_selectors,
     route_for_use_case,
@@ -113,3 +114,10 @@ def test_profile_tab_selectors_use_visible_text_fallbacks() -> None:
 def test_project_config_derives_project_key_for_future_projects() -> None:
     config = project_config("autobooks")
     assert config.project_key == "web_2_autobooks"
+
+
+def test_selector_helpers_do_not_block_non_autocinema_projects() -> None:
+    logout = logout_selectors("autobooks")
+    tabs = profile_tab_selectors("add-movies", "autobooks")
+    assert logout
+    assert tabs

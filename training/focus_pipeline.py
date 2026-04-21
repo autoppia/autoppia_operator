@@ -126,8 +126,19 @@ def _rows_from_run_reports(*, gold_root: Path, use_case: str) -> list[dict[str, 
     return rows
 
 
-def focus_root(*, use_case: str) -> Path:
-    return use_case_layout(repo_root=REPO_ROOT, web_project="autocinema", use_case=use_case).root
+def default_task_cache_for_project(project_id: str) -> Path:
+    normalized_project = str(project_id or "").strip() or "autocinema"
+    project_cache = REPO_ROOT / "data" / "task_cache" / f"{normalized_project}_tasks.json"
+    if project_cache.exists():
+        return project_cache
+    iwa_cache = REPO_ROOT.parent / "autoppia_iwa" / "data" / "task_cache" / f"{normalized_project}_tasks.json"
+    if iwa_cache.exists():
+        return iwa_cache
+    return DEFAULT_TASK_CACHE
+
+
+def focus_root(*, use_case: str, project_id: str = "autocinema") -> Path:
+    return use_case_layout(repo_root=REPO_ROOT, web_project=str(project_id or "autocinema"), use_case=use_case).root
 
 
 def build_prompt_override(*, use_case: str, extra_lines: list[str] | None = None) -> str:
@@ -143,6 +154,7 @@ def build_task_cache_override(
     use_case: str,
     prompt_override: str,
     out_path: Path,
+    project_id: str | None = None,
 ) -> Path:
     payload = _load_json(source_task_cache)
     tasks: list[dict[str, Any]] | None = None
@@ -159,6 +171,10 @@ def build_task_cache_override(
     for row in tasks:
         if not isinstance(row, dict):
             continue
+        if str(project_id or "").strip():
+            row_project_id = str(row.get("web_project_id") or row.get("project_id") or "").strip()
+            if row_project_id and row_project_id != str(project_id).strip():
+                continue
         use_case_payload = row.get("use_case")
         if not isinstance(use_case_payload, dict):
             continue
@@ -201,7 +217,8 @@ def build_task_cache_override(
             row["prompt"] = row["prompt"].replace("<web_agent_id>", "user1").replace("<username>", "user1")
         updated = True
     if not updated:
-        raise ValueError(f"No task found for use_case={use_case} in {source_task_cache}")
+        project_suffix = f" project_id={project_id}" if str(project_id or "").strip() else ""
+        raise ValueError(f"No task found for use_case={use_case}{project_suffix} in {source_task_cache}")
     _write_json(out_path, payload if isinstance(payload, dict) else {"tasks": tasks})
     return out_path
 
@@ -218,6 +235,7 @@ def run_eval_attempt(
     task_concurrency: int = 1,
     agent_workers: int = 1,
     task_cache: Path | None = None,
+    web_project_id: str = "autocinema",
     env_overrides: dict[str, str] | None = None,
     headed: bool = False,
 ) -> AttemptResult:
@@ -233,7 +251,7 @@ def run_eval_attempt(
         "--model",
         model,
         "--web-project-id",
-        "autocinema",
+        str(web_project_id or "autocinema"),
         "--use-case",
         use_case,
         "--num-tasks",
@@ -267,7 +285,15 @@ def run_eval_attempt(
     subprocess.run(cmd, cwd=REPO_ROOT, env={**os.environ, **env}, check=True)
     compact_trace_dir(traces_dir)
     report = _load_json(out_path)
-    row = _episode_row_from_report(report=report, use_case=use_case, seed=seed, attempt_name=attempt_name, out_path=out_path, trace_dir=traces_dir)
+    row = _episode_row_from_report(
+        report=report,
+        use_case=use_case,
+        seed=seed,
+        attempt_name=attempt_name,
+        out_path=out_path,
+        trace_dir=traces_dir,
+        web_project_id=web_project_id,
+    )
     return AttemptResult(seed=seed, attempt_name=attempt_name, out_path=out_path, trace_dir=traces_dir, report=report, row=row)
 
 
@@ -279,6 +305,7 @@ def _episode_row_from_report(
     attempt_name: str,
     out_path: Path,
     trace_dir: Path,
+    web_project_id: str = "autocinema",
 ) -> dict[str, Any] | None:
     episodes = report.get("episodes")
     if not isinstance(episodes, list) or not episodes:
@@ -290,7 +317,7 @@ def _episode_row_from_report(
     episode_task_id = str(episode.get("episode_task_id") or "")
     trace_file = trace_dir / "episodes" / f"{episode_task_id}.json"
     row = {
-        "web_project_id": "autocinema",
+        "web_project_id": str(web_project_id or "autocinema"),
         "task_id": str(episode.get("task_id") or ""),
         "episode_task_id": episode_task_id,
         "use_case": use_case,
@@ -433,6 +460,7 @@ def build_runpod_job_command(
 
 def build_focus_eval_command(
     *,
+    project_id: str,
     use_case: str,
     adapter_path: Path,
     endpoint: str,
@@ -449,7 +477,7 @@ def build_focus_eval_command(
         "-m",
         "training.post_finetune_eval",
         "--project-id",
-        "autocinema",
+        str(project_id or "autocinema"),
         "--adapter-path",
         str(adapter_path),
         "--endpoint",

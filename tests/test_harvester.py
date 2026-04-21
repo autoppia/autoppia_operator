@@ -359,6 +359,20 @@ def test_write_harvest_artifacts_merges_existing_attempts(tmp_path: Path) -> Non
     assert summary2["gold_seeds"] == [1, 2]
 
 
+def test_build_harvest_summary_reports_deterministic_vs_ai_attempts() -> None:
+    summary = harvester_module.build_harvest_summary(
+        use_case="CONTACT",
+        target_seeds=[1, 2],
+        rows=[
+            {"seed": 1, "attempt_name": "deterministic_01", "harvest_mode": "deterministic_replay", "success": True, "score": 1.0},
+            {"seed": 2, "attempt_name": "claude_01", "harvest_mode": "claude_code_replay", "success": False, "score": 0.0},
+        ],
+    )
+    assert summary["deterministic_attempts_total"] == 1
+    assert summary["ai_assisted_attempts_total"] == 1
+    assert summary["zero_ai_verified"] is False
+
+
 def test_collect_rows_from_guided_brief_uses_shared_guided_row_builder(monkeypatch, tmp_path: Path) -> None:
     def fake_run_guided_brief(*, use_case, seed, brief_payload, task_cache, web_project_id=None, max_steps, headless=None):
         return {

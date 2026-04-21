@@ -38,6 +38,12 @@ Focused CLI flow:
 5. `scripts/eval/focus_use_case.py train`
 6. `scripts/eval/focus_use_case.py eval`
 
+Deterministic-only teacher-harvest flow (zero-AI):
+1. Provide a task cache file scoped to the project/use case.
+2. Run:
+   - `python scripts/eval/focus_use_case.py teacher-harvest --project-id <project_id> --use-case <use_case> --task-cache <cache.json> --deterministic-only`
+3. The run resolves seeds from the provided cache for that project/use case, generates deterministic plans, replays them, and writes canonical harvest artifacts under `data/<project>/<use_case>/gold`.
+
 Multi-use-case bootstrap:
 - `scripts/eval/harvest_suite.py --use-cases all --seeds 1..10 --strategy baseline`
 - Use `--target-gold-per-use-case` and `--max-seeds-per-use-case` to cap exploratory collection while you measure which use cases already generalize well.

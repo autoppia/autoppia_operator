@@ -73,6 +73,7 @@ def _build_task_cache_for_seed(
         use_case=config.use_case,
         prompt_override=prompt_override,
         out_path=task_cache_path,
+        project_id=str(config.web_project_id or "").strip() or None,
     )
     return task_cache_path
 
@@ -660,11 +661,18 @@ def build_harvest_summary(*, use_case: str, target_seeds: list[int], rows: list[
     total_tokens = sum(int(row.get("total_tokens") or 0) for row in rows)
     total_estimated_cost_usd = round(sum(float(row.get("estimated_cost_usd") or 0.0) for row in rows), 6)
     per_model_attempts: dict[str, int] = {}
+    deterministic_attempts_total = 0
+    ai_assisted_attempts_total = 0
     for row in rows:
         model = str(row.get("model") or "").strip()
         if not model:
-            continue
+            model = "unknown"
         per_model_attempts[model] = int(per_model_attempts.get(model) or 0) + 1
+        harvest_mode = str(row.get("harvest_mode") or "").strip().lower()
+        if harvest_mode.startswith("deterministic_"):
+            deterministic_attempts_total += 1
+        elif harvest_mode.startswith("claude_") or "claude" in harvest_mode:
+            ai_assisted_attempts_total += 1
     return {
         "use_case": use_case,
         "seeds_targeted": [int(seed) for seed in target_seeds],
@@ -680,6 +688,9 @@ def build_harvest_summary(*, use_case: str, target_seeds: list[int], rows: list[
         "avg_tokens_per_attempt": round((total_tokens / all_attempts) if all_attempts else 0.0, 6),
         "avg_cost_usd_per_attempt": round((total_estimated_cost_usd / all_attempts) if all_attempts else 0.0, 8),
         "attempts_by_model": per_model_attempts,
+        "deterministic_attempts_total": deterministic_attempts_total,
+        "ai_assisted_attempts_total": ai_assisted_attempts_total,
+        "zero_ai_verified": ai_assisted_attempts_total == 0,
         "passed_target": len(gold_seeds) >= len(target_seeds),
         "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     }
@@ -890,6 +901,7 @@ def collect_seed_rows(*, config: HarvestConfig, seed: int) -> list[dict[str, Any
         task_concurrency=config.task_concurrency,
         agent_workers=config.agent_workers,
         task_cache=task_cache_path,
+        web_project_id=str(config.web_project_id or "autocinema"),
         env_overrides={},
         headed=bool(config.headed),
     )
@@ -910,6 +922,7 @@ def collect_seed_rows(*, config: HarvestConfig, seed: int) -> list[dict[str, Any
             task_concurrency=config.task_concurrency,
             agent_workers=config.agent_workers,
             task_cache=task_cache_path,
+            web_project_id=str(config.web_project_id or "autocinema"),
             env_overrides={},
             headed=bool(config.headed),
         )

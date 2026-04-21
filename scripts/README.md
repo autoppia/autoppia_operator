@@ -26,3 +26,7 @@ Key entrypoints:
 - `scripts/eval/harvest_suite.py`: multi-use-case runner over the same unified harvester, useful for bootstrap coverage scans and first-pass gold collection
 - `scripts/eval/run_login_dagger.py`: DAgger loop wrapper, now generic via `--use-case` and still defaulting to `LOGIN`
 - `scripts/eval/build_login_rule_corrections.py`: deterministic correction builder for repeated `LOGIN` failures
+
+Zero-AI deterministic trajectory generation (single project + single use case):
+- `python scripts/eval/focus_use_case.py teacher-harvest --project-id <project_id> --use-case <use_case> --task-cache <cache.json> --deterministic-only`
+- In deterministic-only mode, `teacher-harvest` enforces zero-AI generation and rejects multi-attempt AI fallback settings.

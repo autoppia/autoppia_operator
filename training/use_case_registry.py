@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from training.use_case_intents import resolve_by_intent
+
 
 @dataclass(frozen=True)
 class UseCaseSpec:
@@ -196,7 +198,11 @@ def all_use_case_specs() -> tuple[UseCaseSpec, ...]:
 
 def get_use_case_spec(use_case: str) -> UseCaseSpec:
     normalized = str(use_case or "").strip().upper()
-    return _USE_CASE_SPECS.get(normalized, UseCaseSpec(name=normalized or "UNKNOWN", harvester_hints=()))
+    resolved = resolve_by_intent(normalized, _USE_CASE_SPECS.keys())
+    spec = _USE_CASE_SPECS.get(resolved)
+    if spec is not None:
+        return spec
+    return UseCaseSpec(name=normalized or "UNKNOWN", harvester_hints=())
 
 
 def dagger_extra_lines(*, use_case: str, failure_category: str) -> list[str]:
