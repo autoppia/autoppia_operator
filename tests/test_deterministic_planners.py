@@ -100,7 +100,7 @@ def test_build_deterministic_plan_filter_film_uses_seeded_dropdown_order() -> No
     assert year_selectors[0]["value"] != genre_selectors[0]["value"]
 
 
-def test_build_deterministic_plan_remove_from_watchlist_uses_single_profile_remove_click() -> None:
+def test_build_deterministic_plan_remove_from_watchlist_uses_two_detail_toggle_clicks() -> None:
     task_row = _task_row(
         use_case="REMOVE_FROM_WATCHLIST",
         prompt="movie_name equals 'Dune'",
@@ -110,8 +110,11 @@ def test_build_deterministic_plan_remove_from_watchlist_uses_single_profile_remo
     )
     objective = normalize_task_row(task_row)
     plan = build_deterministic_plan(objective)
-    remove_clicks = [action for action in plan.actions if action["type"] == "ClickAction" and action.get("field_name") == "remove from watchlist"]
-    assert len(remove_clicks) == 1
+    add_click = [action for action in plan.actions if action["type"] == "ClickAction" and action.get("field_name") == "watchlist"]
+    remove_click = [action for action in plan.actions if action["type"] == "ClickAction" and action.get("field_name") == "remove from watchlist"]
+    assert len(add_click) == 1
+    assert len(remove_click) == 1
+    assert add_click[0]["selector_candidates"] == remove_click[0]["selector_candidates"]
 
 
 def test_build_deterministic_plan_add_film_uses_explicit_editor_selectors() -> None:

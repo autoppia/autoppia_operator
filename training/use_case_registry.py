@@ -156,9 +156,9 @@ _USE_CASE_SPECS: dict[str, UseCaseSpec] = {
     "REMOVE_FROM_WATCHLIST": UseCaseSpec(
         name="REMOVE_FROM_WATCHLIST",
         harvester_hints=(
-            "Navigate to the watchlist page and stay in the watchlist workflow only.",
-            "If login is required, complete login and return to the watchlist.",
-            "Use the visible remove or toggle-off watchlist control for the target movie.",
+            "On the target movie detail page, the watchlist control is a toggle: click once to add, click again to remove.",
+            "If login is required, log in, open the same movie detail page, add to watchlist if needed, then click the same control again to remove.",
+            "Do not rely on the profile watchlist tab alone unless the product only supports removal from there.",
         ),
         likely_failure_clusters=("watchlist_page_not_reached", "auth_gate_drift", "watchlist_control_variant", "no_progress_loop"),
     ),

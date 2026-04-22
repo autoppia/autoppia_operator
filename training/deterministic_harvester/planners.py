@@ -42,7 +42,6 @@ from .selectors import (
     trailer_button_selectors,
     view_detail_selectors,
     watchlist_button_selectors,
-    watchlist_remove_profile_selectors,
 )
 
 
@@ -432,24 +431,11 @@ def build_deterministic_plan(objective: DeterministicTaskObjective) -> Determini
         actions.extend(_movie_target_actions(objective, include_search=False))
         actions.append(_click(selectors=watchlist_button_selectors(objective.web_project_id, objective.seed), field_name="watchlist"))
     elif use_case == "REMOVE_FROM_WATCHLIST":
-        target_path = _resolve_target_movie_path(objective)
-        target_title = str(objective.entity_filters.get("name_exact") or objective.field_values.get("query") or "").strip()
-        remove_selectors = list(watchlist_remove_profile_selectors(objective.web_project_id, objective.seed))
-        if target_path:
-            remove_selectors.insert(0, _custom_selector(f'div.rounded-3xl:has(a[href*="{target_path}"]) button:has-text("Remove from List")'))
-        elif target_title:
-            remove_selectors.insert(
-                0,
-                _custom_selector(f'div.rounded-3xl:has(h3:has-text({json.dumps(target_title)})) button:has-text("Remove from List")'),
-            )
         actions = _login_actions(objective)
-        actions.extend(
-            [
-                _navigate("/profile", objective=objective),
-                _click(selectors=profile_tab_selectors("watchlist", objective.web_project_id), field_name="watchlist"),
-                _click(selectors=remove_selectors, field_name="remove from watchlist"),
-            ]
-        )
+        actions.extend(_movie_target_actions(objective, include_search=False))
+        wl = watchlist_button_selectors(objective.web_project_id, objective.seed)
+        actions.append(_click(selectors=wl, field_name="watchlist"))
+        actions.append(_click(selectors=wl, field_name="remove from watchlist"))
     elif use_case == "EDIT_USER":
         actions = _login_actions(objective)
         actions.append(_navigate("/profile", objective=objective))
