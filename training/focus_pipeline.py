@@ -131,9 +131,27 @@ def default_task_cache_for_project(project_id: str) -> Path:
     project_cache = REPO_ROOT / "data" / "task_cache" / f"{normalized_project}_tasks.json"
     if project_cache.exists():
         return project_cache
+    project_cache_legacy = REPO_ROOT / "data" / "task_cache" / f"{normalized_project}_tasks_cache.json"
+    if project_cache_legacy.exists():
+        return project_cache_legacy
     iwa_cache = REPO_ROOT.parent / "autoppia_iwa" / "data" / "task_cache" / f"{normalized_project}_tasks.json"
     if iwa_cache.exists():
         return iwa_cache
+    generic_cache = REPO_ROOT / "data" / "task_cache" / "tasks_cache.json"
+    if generic_cache.exists():
+        try:
+            payload = _load_json(generic_cache)
+            tasks = payload.get("tasks", payload if isinstance(payload, list) else [])
+            for row in tasks:
+                if not isinstance(row, dict):
+                    continue
+                row_project_id = str(row.get("web_project_id") or row.get("project_id") or "").strip()
+                if row_project_id == normalized_project:
+                    return generic_cache
+        except Exception:
+            pass
+    if DEFAULT_TASK_CACHE.exists():
+        return DEFAULT_TASK_CACHE
     return DEFAULT_TASK_CACHE
 
 

@@ -9,6 +9,7 @@ from training.focus_pipeline import (
     build_focus_summary,
     build_prompt_override,
     build_task_cache_override,
+    default_task_cache_for_project,
     focus_root,
     write_focus_artifacts,
 )
@@ -114,6 +115,36 @@ def test_focus_root_uses_use_case_slug() -> None:
 def test_focus_root_uses_canonical_layout_for_non_login() -> None:
     root = focus_root(use_case="CONTACT")
     assert str(root).endswith("data/autocinema/contact")
+
+
+def test_default_task_cache_for_project_uses_generic_cache_when_project_specific_file_missing(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "autoppia_operator"
+    task_cache_dir = repo_root / "data" / "task_cache"
+    task_cache_dir.mkdir(parents=True)
+    generic_cache = task_cache_dir / "tasks_cache.json"
+    generic_cache.write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "id": "film-detail-1",
+                        "web_project_id": "autocinema",
+                        "url": "http://localhost:8090/?seed=1",
+                        "prompt": "Open a film detail page.",
+                        "use_case": {"name": "FILM_DETAIL"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(focus_pipeline_module, "REPO_ROOT", repo_root)
+    monkeypatch.setattr(focus_pipeline_module, "DEFAULT_TASK_CACHE", repo_root / "missing_default.json")
+
+    resolved = default_task_cache_for_project("autocinema")
+
+    assert resolved == generic_cache
 
 
 def test_login_dagger_extra_lines_emphasize_non_repetition() -> None:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from training.deterministic_harvester.builders.autocinema import AUTOCINEMA_PLAN_BUILDERS
+from training.deterministic_harvester.builders.registry import DETERMINISTIC_PLAN_BUILDERS
 from training.deterministic_harvester.normalizer import normalize_task_row
 from training.deterministic_harvester.planners import build_deterministic_plan
+from training.use_case_registry import all_use_case_specs
 
 
 def _task_row(*, use_case: str, prompt: str, url: str, event_criteria: dict, relevant_data: dict | None = None) -> dict:
@@ -137,3 +140,11 @@ def test_build_deterministic_plan_add_film_uses_explicit_editor_selectors() -> N
     assert first_selector["type"] == "attributeValueSelector"
     assert first_selector["attribute"] == "custom"
     assert 'aria-controls*="add-movies"' in first_selector["value"]
+
+
+def test_deterministic_builder_registry_covers_all_autocinema_use_cases() -> None:
+    registered_use_cases = {use_case for project_id, use_case in DETERMINISTIC_PLAN_BUILDERS if project_id == "autocinema"}
+    expected_use_cases = {spec.name for spec in all_use_case_specs()}
+
+    assert set(AUTOCINEMA_PLAN_BUILDERS) == expected_use_cases
+    assert registered_use_cases == expected_use_cases

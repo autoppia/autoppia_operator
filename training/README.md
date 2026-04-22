@@ -51,6 +51,7 @@ Multi-use-case bootstrap:
 Implementation note:
 - `training/harvester.py` is the source of truth for collection, artifact writing, consolidation, and SFT export.
 - `training/focus_pipeline.py` remains only to preserve compatibility for older imports and tests while the repo finishes migrating.
+- Deterministic planner logic is organized under `training/deterministic_harvester/builders/`, with shared helpers in `common.py`, project-specific logic in `autocinema.py`, and a thin registry/facade in `planners.py`.
 
 Current trusted dataset:
 - `data/autocinema/login`
