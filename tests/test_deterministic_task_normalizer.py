@@ -186,3 +186,33 @@ def test_normalize_task_row_maps_film_detail_name_year_and_genre_list_into_entit
     assert objective.entity_filters["genre_any_of"] == ["Music", "Mystery", "Animation"]
     assert objective.entity_filters["year_gte"] == 1958
     assert objective.entity_filters["year_lte"] == 1958
+
+
+def test_normalize_task_row_resolves_login_placeholders_from_seed() -> None:
+    task_row = _task_row(
+        use_case="LOGIN",
+        prompt="username equals <username> and password equals <password>",
+        url="http://localhost:8000/login?seed=314",
+        event_criteria={"username": "<username>", "password": "<password>"},
+    )
+
+    objective = normalize_task_row(task_row)
+
+    assert objective.field_values["username"] == "user59"
+    assert objective.field_values["password"] == "Passw0rd!"
+
+
+def test_normalize_task_row_registration_uses_signup_defaults() -> None:
+    task_row = _task_row(
+        use_case="REGISTRATION",
+        prompt="username equals <signup_username> and email equals <signup_email>",
+        url="http://localhost:8000/register?seed=314",
+        event_criteria={"username": "<signup_username>", "email": "<signup_email>", "password": "<signup_password>"},
+    )
+
+    objective = normalize_task_row(task_row)
+
+    assert objective.field_values["username"] == "newuser59"
+    assert objective.field_values["email"] == "newuser59@gmail.com"
+    assert objective.field_values["password"] == "Passw0rd!"
+    assert objective.field_values["confirm_password"] == "Passw0rd!"

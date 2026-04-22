@@ -291,8 +291,9 @@ def cmd_claude_harvest(args: argparse.Namespace) -> int:
     seeds = _resolve_seed_list(use_case=use_case, seed_spec=args.seeds, task_cache=task_cache, project_id=project_id)
     collect_workers = max(1, int(args.collect_workers))
     deterministic_only = bool(getattr(args, "deterministic_only", False))
-    if deterministic_only and int(args.max_claude_attempts) > 1:
-        raise ValueError("--deterministic-only requires --max-claude-attempts <= 1")
+    max_claude_attempts = int(args.max_claude_attempts)
+    if deterministic_only and max_claude_attempts > 1:
+        max_claude_attempts = 0
     config = HarvestConfig(
         use_case=use_case,
         output_root=output_root,
@@ -305,7 +306,7 @@ def cmd_claude_harvest(args: argparse.Namespace) -> int:
         agent_workers=args.agent_workers,
         brief_model=args.brief_model,
         execution_mode=args.execution_mode,
-        max_claude_attempts=args.max_claude_attempts,
+        max_claude_attempts=max_claude_attempts,
         claude_workers=int(args.claude_workers),
         replay_workers=int(args.replay_workers),
         claude_timeout_seconds=int(args.claude_timeout_seconds),
@@ -321,6 +322,7 @@ def cmd_claude_harvest(args: argparse.Namespace) -> int:
                     "use_case": use_case,
                     "task_cache": task_cache,
                     "seed_count": len(seeds),
+                    "max_claude_attempts_forced": max_claude_attempts,
                 },
                 indent=2,
             )
@@ -557,7 +559,7 @@ def main(argv: list[str] | None = None) -> int:
     claude_harvest.add_argument("--claude-workers", type=int, default=1)
     claude_harvest.add_argument("--replay-workers", type=int, default=1)
     claude_harvest.add_argument("--task-cache", default="")
-    claude_harvest.add_argument("--max-claude-attempts", type=int, default=3)
+    claude_harvest.add_argument("--max-claude-attempts", type=int, default=1)
     claude_harvest.add_argument("--claude-timeout-seconds", type=int, default=120)
     claude_harvest.add_argument("--execution-mode", choices=["direct", "operator"], default="direct")
     claude_harvest.add_argument("--deterministic-only", action="store_true")

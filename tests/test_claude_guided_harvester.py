@@ -125,9 +125,7 @@ def test_ordered_selector_candidates_prefers_explicit_candidate_ids() -> None:
         exact_match_found=True,
     )
 
-    assert ordered[0]["value"] == "contact-name-input"
-    assert ordered[1]["value"] == "input"
-    assert len(ordered) == 2
+    assert [item["value"] for item in ordered] == ["contact-name-input", "name-field", "input"]
 
 
 def test_ordered_selector_candidates_prefers_dom_heuristic_when_no_exact_match_found() -> None:
@@ -144,7 +142,7 @@ def test_ordered_selector_candidates_prefers_dom_heuristic_when_no_exact_match_f
 
     ordered = _ordered_selector_candidates(planned_action, resolved_candidates, [], exact_match_found=False)
 
-    assert [item["value"] for item in ordered] == ["actual-seed-name-id"]
+    assert [item["value"] for item in ordered] == ["contact-name-input", "name-field", "actual-seed-name-id"]
 
 
 def test_ordered_selector_candidates_prefers_existing_exact_dom_ids_before_other_explicit_variants() -> None:
@@ -170,7 +168,7 @@ def test_ordered_selector_candidates_prefers_existing_exact_dom_ids_before_other
         exact_match_found=True,
     )
 
-    assert [item["value"] for item in ordered] == ["name-input-field"]
+    assert [item["value"] for item in ordered] == ["name-input-field", "contact-name-input", "name-field"]
 
 
 def test_ordered_selector_candidates_uses_only_existing_exact_and_dom_resolved_candidates() -> None:
@@ -196,7 +194,7 @@ def test_ordered_selector_candidates_uses_only_existing_exact_and_dom_resolved_c
         exact_match_found=True,
     )
 
-    assert [item["value"] for item in ordered] == ["send-button"]
+    assert [item["value"] for item in ordered] == ["send-button", "send-message-button", "submit-btn"]
 
 
 def test_dataset_movie_candidates_filters_seeded_movies(monkeypatch) -> None:
@@ -529,3 +527,41 @@ def test_execute_action_candidates_uses_dom_custom_selector_when_no_explicit_sel
         }
     ]
     assert execution["attempts"][0]["success"] is True
+
+
+def test_sanitize_task_row_for_replay_aligns_login_criteria_with_seed_identity() -> None:
+    row = {
+        "url": "http://localhost:3000/login?seed=314",
+        "use_case": {"name": "LOGIN"},
+        "tests": [
+            {
+                "event_name": "LOGIN",
+                "event_criteria": {"username": "<username>", "password": "<password>"},
+            }
+        ],
+    }
+
+    sanitized = guided_module._sanitize_task_row_for_replay(row)
+
+    criteria = sanitized["tests"][0]["event_criteria"]
+    assert criteria["username"] == "user59"
+    assert criteria["password"] == "Passw0rd!"
+
+
+def test_sanitize_task_row_for_replay_strips_logout_password() -> None:
+    row = {
+        "url": "http://localhost:3000/profile?seed=314",
+        "use_case": {"name": "LOGOUT"},
+        "tests": [
+            {
+                "event_name": "LOGOUT",
+                "event_criteria": {"username": "<username>", "password": "<password>"},
+            }
+        ],
+    }
+
+    sanitized = guided_module._sanitize_task_row_for_replay(row)
+
+    criteria = sanitized["tests"][0]["event_criteria"]
+    assert criteria["username"] == "user59"
+    assert "password" not in criteria

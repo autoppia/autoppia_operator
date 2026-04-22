@@ -29,4 +29,4 @@ Key entrypoints:
 
 Zero-AI deterministic trajectory generation (single project + single use case):
 - `python scripts/eval/focus_use_case.py teacher-harvest --project-id <project_id> --use-case <use_case> --task-cache <cache.json> --deterministic-only`
-- In deterministic-only mode, `teacher-harvest` enforces zero-AI generation and rejects multi-attempt AI fallback settings.
+- In deterministic-only mode, `teacher-harvest` enforces zero-AI generation and forces single-attempt behavior (no AI fallback loop).

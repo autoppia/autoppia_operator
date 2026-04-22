@@ -185,11 +185,12 @@ def selector_candidates_for_ids(
     project_id: str = "autocinema",
     seed: int | None = None,
     seed_specs: list[dict[str, Any]] | None = None,
+    include_expanded_variants: bool = True,
 ) -> list[dict[str, Any]]:
     canonical_ids = [value for value in ids if str(value).strip()]
     specs = seed_specs if isinstance(seed_specs, list) and seed_specs else [{"key": value, "fallback": value} for value in canonical_ids]
     exact_ids = _seeded_selector_ids(project_id=project_id, seed=seed, specs=specs)
-    expanded = _expand_id_variants(project_id, canonical_ids)
+    expanded = _expand_id_variants(project_id, canonical_ids) if include_expanded_variants else []
     ordered_ids = list(exact_ids)
     seen = {str(value).strip().lower() for value in ordered_ids}
     for value in expanded:
@@ -277,6 +278,7 @@ def _combined_selectors(
     class_seed_specs: list[dict[str, Any]] | None = None,
     placeholder_seed_specs: list[dict[str, Any]] | None = None,
     text_seed_specs: list[dict[str, Any]] | None = None,
+    include_expanded_id_variants: bool = True,
 ) -> list[dict[str, Any]]:
     ordered_ids = [
         selector.get("value")
@@ -285,6 +287,7 @@ def _combined_selectors(
             project_id=project_id,
             seed=seed,
             seed_specs=id_seed_specs,
+            include_expanded_variants=include_expanded_id_variants,
         )
         if isinstance(selector, dict) and str(selector.get("attribute") or "") == "id"
     ]
@@ -452,7 +455,24 @@ def share_button_selectors(project_id: str = "autocinema", seed: int | None = No
 
 
 def trailer_button_selectors(project_id: str = "autocinema", seed: int | None = None) -> list[dict[str, Any]]:
-    return _combined_selectors(ids=["watch-trailer-button"], classes=["button-primary"], text_keys=["watch_trailer"], texts=["Watch trailer"], project_id=project_id, seed=seed)
+    selectors = _combined_selectors(
+        ids=["watch-trailer-button"],
+        classes=["button-primary"],
+        text_keys=["watch_trailer"],
+        texts=["Watch trailer"],
+        project_id=project_id,
+        seed=seed,
+        include_expanded_id_variants=False,
+    )
+    custom = {
+        "type": "attributeValueSelector",
+        "attribute": "custom",
+        "value": 'section button:has-text("Watch trailer")',
+        "case_sensitive": False,
+    }
+    if custom not in selectors:
+        selectors.append(custom)
+    return selectors
 
 
 def search_submit_selectors(project_id: str = "autocinema", seed: int | None = None) -> list[dict[str, Any]]:
@@ -533,8 +553,41 @@ def save_changes_selectors(project_id: str = "autocinema", seed: int | None = No
     )
 
 
-def logout_selectors(project_id: str = "autocinema") -> list[dict[str, Any]]:
-    return selector_candidates_for_texts("Logout", "Log out", "Sign out")
+def logout_selectors(project_id: str = "autocinema", seed: int | None = None) -> list[dict[str, Any]]:
+    selectors = _combined_selectors(
+        text_keys=["logout"],
+        texts=["Logout", "Log out", "Sign out"],
+        project_id=project_id,
+        seed=seed,
+    )
+    header_selector = {
+        "type": "attributeValueSelector",
+        "attribute": "custom",
+        "value": 'header nav button:has-text("Logout")',
+        "case_sensitive": False,
+    }
+    if header_selector not in selectors:
+        selectors.insert(0, header_selector)
+    return selectors
+
+
+def watchlist_remove_profile_selectors(project_id: str = "autocinema", seed: int | None = None) -> list[dict[str, Any]]:
+    selectors = _combined_selectors(
+        classes=["button-secondary"],
+        texts=["Remove from List", "Remove from watchlist"],
+        text_keys=["remove_from_watchlist"],
+        project_id=project_id,
+        seed=seed,
+    )
+    custom = {
+        "type": "attributeValueSelector",
+        "attribute": "custom",
+        "value": 'button:has-text("Remove from List")',
+        "case_sensitive": False,
+    }
+    if custom not in selectors:
+        selectors.insert(0, custom)
+    return selectors
 
 
 def profile_tab_selectors(tab_name: str, project_id: str = "autocinema") -> list[dict[str, Any]]:
@@ -587,4 +640,5 @@ __all__ = [
     "trailer_button_selectors",
     "view_detail_selectors",
     "watchlist_button_selectors",
+    "watchlist_remove_profile_selectors",
 ]

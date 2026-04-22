@@ -80,3 +80,35 @@ def test_build_deterministic_plan_preserves_localhost_origin() -> None:
     plan = build_deterministic_plan(objective)
 
     assert plan.actions[0]["url"] == "http://localhost:3000/contact?seed=41"
+
+
+def test_build_deterministic_plan_filter_film_uses_seeded_dropdown_order() -> None:
+    task_row = _task_row(
+        use_case="FILTER_FILM",
+        prompt="genres equals 'Sci-Fi' and year equals '1986'",
+        url="http://localhost:3000/search?seed=415",
+        event_criteria={"genres": "Sci-Fi", "year": 1986},
+    )
+    objective = normalize_task_row(task_row)
+    plan = build_deterministic_plan(objective)
+    select_actions = [action for action in plan.actions if action["type"] == "SelectAction"]
+    assert len(select_actions) == 2
+    year_selectors = select_actions[0]["selector_candidates"]
+    genre_selectors = select_actions[1]["selector_candidates"]
+    assert year_selectors[0]["value"] in {"section#library select:nth-of-type(1)", "section#library select:nth-of-type(2)"}
+    assert genre_selectors[0]["value"] in {"section#library select:nth-of-type(1)", "section#library select:nth-of-type(2)"}
+    assert year_selectors[0]["value"] != genre_selectors[0]["value"]
+
+
+def test_build_deterministic_plan_remove_from_watchlist_uses_single_profile_remove_click() -> None:
+    task_row = _task_row(
+        use_case="REMOVE_FROM_WATCHLIST",
+        prompt="movie_name equals 'Dune'",
+        url="http://localhost:3000/profile?seed=23",
+        event_criteria={"movie": {"name": "Dune"}},
+        relevant_data={"user_for_login": {"username": "bob", "password": "letmein"}},
+    )
+    objective = normalize_task_row(task_row)
+    plan = build_deterministic_plan(objective)
+    remove_clicks = [action for action in plan.actions if action["type"] == "ClickAction" and action.get("field_name") == "remove from watchlist"]
+    assert len(remove_clicks) == 1

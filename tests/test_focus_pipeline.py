@@ -45,8 +45,8 @@ def test_build_task_cache_override_appends_prompt_for_target_use_case(tmp_path: 
     )
     payload = json.loads(out.read_text(encoding="utf-8"))
     tasks = payload["tasks"]
-    assert "Passw0rd!" in tasks[0]["prompt"]
-    assert "user1" in tasks[0]["prompt"]
+    assert "<password>" in tasks[0]["prompt"]
+    assert "<username>" in tasks[0]["prompt"]
     assert "Navigate directly to /login first." in tasks[0]["prompt"]
     assert tasks[1]["prompt"] == "Other prompt."
 

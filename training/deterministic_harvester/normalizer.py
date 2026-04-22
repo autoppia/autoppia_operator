@@ -40,6 +40,7 @@ _FIELD_ALIASES: dict[str, str] = {
     "bio": "bio",
     "cast": "cast",
     "comment_content": "content",
+    "commenter_name": "name",
     "comment_name": "name",
     "confirm_password": "confirm_password",
     "content": "content",
@@ -53,6 +54,9 @@ _FIELD_ALIASES: dict[str, str] = {
     "location": "location",
     "message": "message",
     "movie_name": "movie_name",
+    "movie_duration": "duration",
+    "movie_rating": "rating",
+    "movie_year": "year",
     "name": "name",
     "password": "password",
     "query": "query",
@@ -122,6 +126,15 @@ _MOVIE_FILTER_FIELDS = {
     "year",
     "duration",
     "rating",
+}
+
+_KNOWN_CREDENTIAL_PLACEHOLDERS = {
+    "<username>",
+    "<password>",
+    "<signup_username>",
+    "<signup_email>",
+    "<signup_password>",
+    "<web_agent_id>",
 }
 
 
@@ -294,9 +307,87 @@ def _constraint_hints_from_task(task_row: dict[str, Any]) -> list[ConstraintHint
 
 
 def _coerce_scalar(value: Any) -> str:
+    if value is None:
+        return ""
     if isinstance(value, list):
         return str(value[0]).strip() if value else ""
     return str(value).strip()
+
+
+def _is_placeholder_value(value: str) -> bool:
+    return "<" in str(value or "") and ">" in str(value or "")
+
+
+def _seed_to_web_agent_id(seed: int) -> str:
+    seed_i = int(seed)
+    if 1 <= seed_i <= 255:
+        return str(seed_i)
+    normalized = ((seed_i - 1) % 255) + 1
+    return str(normalized)
+
+
+def _replace_credential_placeholders(value: str, *, web_agent_id: str) -> str:
+    rendered = str(value or "")
+    rendered = rendered.replace("<username>", f"user{web_agent_id}")
+    rendered = rendered.replace("<password>", _DEFAULT_VALUES["password"])
+    rendered = rendered.replace("<signup_username>", f"newuser{web_agent_id}")
+    rendered = rendered.replace("<signup_email>", f"newuser{web_agent_id}@gmail.com")
+    rendered = rendered.replace("<signup_password>", _DEFAULT_VALUES["password"])
+    rendered = rendered.replace("<web_agent_id>", web_agent_id)
+    return rendered
+
+
+def _looks_like_credential_placeholder(value: str) -> bool:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in _KNOWN_CREDENTIAL_PLACEHOLDERS:
+        return True
+    return _is_placeholder_value(normalized)
+
+
+def _resolve_auth_field_values(
+    *,
+    use_case: str,
+    seed: int,
+    field_values: dict[str, str],
+    relevant_data: dict[str, Any],
+) -> None:
+    web_agent_id = _seed_to_web_agent_id(seed)
+    for key in ("username", "password", "email", "confirm_password"):
+        raw = _coerce_scalar(field_values.get(key))
+        if not raw:
+            continue
+        field_values[key] = _replace_credential_placeholders(raw, web_agent_id=web_agent_id)
+
+    login_user = relevant_data.get("user_for_login")
+    if isinstance(login_user, dict):
+        for key in ("username", "password"):
+            candidate = _replace_credential_placeholders(_coerce_scalar(login_user.get(key)), web_agent_id=web_agent_id)
+            if not candidate:
+                continue
+            if key not in field_values or _looks_like_credential_placeholder(field_values.get(key, "")):
+                field_values[key] = candidate
+
+    if use_case == "REGISTRATION":
+        registration_defaults = {
+            "username": f"newuser{web_agent_id}",
+            "email": f"newuser{web_agent_id}@gmail.com",
+            "password": _DEFAULT_VALUES["password"],
+        }
+        for key, fallback in registration_defaults.items():
+            current = _coerce_scalar(field_values.get(key))
+            if not current or _looks_like_credential_placeholder(current):
+                field_values[key] = fallback
+        confirm = _coerce_scalar(field_values.get("confirm_password"))
+        if not confirm or _looks_like_credential_placeholder(confirm):
+            field_values["confirm_password"] = str(field_values.get("password") or _DEFAULT_VALUES["confirm_password"])
+        return
+
+    for key in ("username", "password"):
+        current = _coerce_scalar(field_values.get(key))
+        if not current or _looks_like_credential_placeholder(current):
+            field_values[key] = _DEFAULT_VALUES[key]
 
 
 def _pick_value(field: str, operator: str, value: Any, seed: int) -> str:
@@ -437,17 +528,12 @@ def normalize_task_row(task_row: dict[str, Any], *, seed: int | None = None) -> 
         _update_entity_filters(entity_filters, hint)
 
     relevant_data = _relevant_data_payload(task_row)
-    login_user = relevant_data.get("user_for_login")
-    if isinstance(login_user, dict):
-        username = _coerce_scalar(login_user.get("username"))
-        password = _coerce_scalar(login_user.get("password"))
-        if username:
-            field_values.setdefault("username", username)
-        if password:
-            field_values.setdefault("password", password)
-
-    field_values.setdefault("username", _DEFAULT_VALUES["username"])
-    field_values.setdefault("password", _DEFAULT_VALUES["password"])
+    _resolve_auth_field_values(
+        use_case=use_case,
+        seed=task_seed,
+        field_values=field_values,
+        relevant_data=relevant_data,
+    )
 
     if "movie_name" in field_values and "query" not in field_values:
         field_values["query"] = field_values["movie_name"]

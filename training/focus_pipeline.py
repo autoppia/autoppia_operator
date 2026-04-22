@@ -183,13 +183,13 @@ def build_task_cache_override(
         base_prompt = str(row.get("prompt") or "").strip()
         row["prompt"] = f"{base_prompt} {prompt_override}".strip()
         if use_case.upper() == "LOGIN":
-            row["prompt"] = (f"First, authenticate with username 'user1' and password 'Passw0rd!' to log in successfully. {prompt_override}").strip()
+            row["prompt"] = (f"First, authenticate with username '<username>' and password '<password>' to log in successfully. {prompt_override}").strip()
             relevant_data = row.get("relevant_data")
             if isinstance(relevant_data, dict):
                 user_for_login = relevant_data.get("user_for_login")
                 if isinstance(user_for_login, dict):
-                    user_for_login["username"] = "user1"
-                    user_for_login["password"] = "Passw0rd!"
+                    user_for_login["username"] = "<username>"
+                    user_for_login["password"] = "<password>"
             tests = row.get("tests")
             if isinstance(tests, list):
                 for test in tests:
@@ -197,8 +197,9 @@ def build_task_cache_override(
                         continue
                     criteria = test.get("event_criteria")
                     if isinstance(criteria, dict):
-                        criteria["username"] = "user1"
-                        criteria["password"] = "Passw0rd!"
+                        criteria["username"] = "<username>"
+                        if "password" in criteria:
+                            criteria["password"] = "<password>"
             constraints = use_case_payload.get("constraints")
             if isinstance(constraints, list):
                 for constraint in constraints:
@@ -206,15 +207,40 @@ def build_task_cache_override(
                         continue
                     field = str(constraint.get("field") or "").strip().lower()
                     if field == "username":
-                        constraint["value"] = "user1"
+                        constraint["value"] = "<username>"
                     if field == "password":
-                        constraint["value"] = "Passw0rd!"
+                        constraint["value"] = "<password>"
             additional_prompt_info = str(use_case_payload.get("additional_prompt_info") or "")
             if additional_prompt_info:
-                use_case_payload["additional_prompt_info"] = additional_prompt_info.replace("password123", "Passw0rd!")
-                use_case_payload["additional_prompt_info"] = use_case_payload["additional_prompt_info"].replace("<username>", "user1")
-            row["prompt"] = row["prompt"].replace("password123", "Passw0rd!")
-            row["prompt"] = row["prompt"].replace("<web_agent_id>", "user1").replace("<username>", "user1")
+                use_case_payload["additional_prompt_info"] = additional_prompt_info.replace("password123", "<password>")
+            row["prompt"] = row["prompt"].replace("password123", "<password>")
+        elif use_case.upper() == "REGISTRATION":
+            row["prompt"] = (f"First, register with username '<signup_username>', email '<signup_email>', and password '<signup_password>'. {prompt_override}").strip()
+            tests = row.get("tests")
+            if isinstance(tests, list):
+                for test in tests:
+                    if not isinstance(test, dict):
+                        continue
+                    criteria = test.get("event_criteria")
+                    if not isinstance(criteria, dict):
+                        continue
+                    if "username" in criteria:
+                        criteria["username"] = "<signup_username>"
+                    if "email" in criteria:
+                        criteria["email"] = "<signup_email>"
+                    if "password" in criteria:
+                        criteria["password"] = "<signup_password>"
+        elif use_case.upper() == "LOGOUT":
+            tests = row.get("tests")
+            if isinstance(tests, list):
+                for test in tests:
+                    if not isinstance(test, dict):
+                        continue
+                    criteria = test.get("event_criteria")
+                    if not isinstance(criteria, dict):
+                        continue
+                    criteria["username"] = "<username>"
+                    criteria.pop("password", None)
         updated = True
     if not updated:
         project_suffix = f" project_id={project_id}" if str(project_id or "").strip() else ""

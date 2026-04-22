@@ -41,17 +41,73 @@ def _load_raw_tasks(cache_path: Path) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
+def _sanitize_task_row_for_replay(row: dict[str, Any]) -> dict[str, Any]:
+    sanitized = deepcopy(row)
+    use_case_payload = sanitized.get("use_case")
+    use_case_name = str(use_case_payload.get("name") or "").strip().upper() if isinstance(use_case_payload, dict) else ""
+    if not use_case_name:
+        return sanitized
+    seed = extract_seed_from_task_url(str(sanitized.get("url") or "")) or 1
+    web_agent_id = _guided_web_agent_id(seed)
+    sanitized = _render_placeholders(sanitized, web_agent_id)
+    auth_defaults = {
+        "username": f"user{web_agent_id}",
+        "password": "Passw0rd!",
+        "email": f"newuser{web_agent_id}@gmail.com",
+        "signup_username": f"newuser{web_agent_id}",
+        "signup_password": "Passw0rd!",
+    }
+    relevant_data = sanitized.get("relevant_data")
+    if isinstance(relevant_data, dict):
+        login_user = relevant_data.get("user_for_login")
+        if isinstance(login_user, dict):
+            username = str(login_user.get("username") or "").strip()
+            password = str(login_user.get("password") or "").strip()
+            if username:
+                auth_defaults["username"] = username
+            if password:
+                auth_defaults["password"] = password
+    tests = sanitized.get("tests")
+    if not isinstance(tests, list):
+        return sanitized
+    for test in tests:
+        if not isinstance(test, dict):
+            continue
+        if str(test.get("event_name") or "").strip().upper() != use_case_name:
+            continue
+        criteria = test.get("event_criteria")
+        if not isinstance(criteria, dict):
+            continue
+        if use_case_name == "LOGOUT":
+            # Logout events only expose username in the demo app; keep criteria executable.
+            criteria["username"] = auth_defaults["username"]
+            criteria.pop("password", None)
+        elif use_case_name == "LOGIN":
+            criteria["username"] = auth_defaults["username"]
+            if "password" in criteria:
+                criteria["password"] = auth_defaults["password"]
+        elif use_case_name == "REGISTRATION":
+            if "username" in criteria:
+                criteria["username"] = auth_defaults["signup_username"]
+            if "email" in criteria:
+                criteria["email"] = auth_defaults["email"]
+            if "password" in criteria:
+                criteria["password"] = auth_defaults["signup_password"]
+    return sanitized
+
+
 def _load_tasks(*, cache_path: Path, use_case: str, web_project_id: str, limit: int | None = 1) -> list[Task]:
     tasks: list[Task] = []
     for row in _load_raw_tasks(cache_path):
+        normalized_row = _sanitize_task_row_for_replay(row)
         uc_payload = row.get("use_case")
         uc_name = str(uc_payload.get("name") or "") if isinstance(uc_payload, dict) else ""
         if use_case and str(use_case).upper() not in uc_name.upper():
             continue
-        if web_project_id and str(row.get("web_project_id") or "") != str(web_project_id):
+        if web_project_id and str(normalized_row.get("web_project_id") or "") != str(web_project_id):
             continue
         try:
-            tasks.append(Task(**row))
+            tasks.append(Task(**normalized_row))
         except Exception:
             continue
         if limit is not None and int(limit) > 0 and len(tasks) >= int(limit):
@@ -250,7 +306,9 @@ def _ordered_selector_candidates(
     explicit = list(planned_action.get("selector_candidates") or [])
     existing_exact = list(existing_exact_candidates or [])
     if existing_exact:
-        selector_stream = existing_exact + [selector for selector in list(resolved_candidates or []) if selector not in existing_exact]
+        selector_stream = existing_exact + explicit + [selector for selector in list(resolved_candidates or []) if selector not in existing_exact]
+    elif explicit:
+        selector_stream = explicit + list(resolved_candidates or [])
     elif resolved_candidates and not exact_match_found:
         selector_stream = list(resolved_candidates)
     else:
@@ -425,7 +483,7 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
     }
   }
 
-  if (type === "ClickAction" && !heuristic) {
+    if (type === "ClickAction" && !heuristic) {
     for (const control of controls) {
       const id = String(control.id || "");
       const text = (control.textContent || "").trim();
@@ -434,7 +492,7 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
         break;
       }
     }
-    if (!heuristic) {
+    if (!heuristic && fieldName !== "logout") {
       for (const control of controls) {
         const tag = control.tagName.toLowerCase();
         const typeAttr = String(control.getAttribute("type") || "");
@@ -484,11 +542,15 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
         existing_exact_candidates,
         exact_match_found=exact_match_found,
     )
+    if action_type == "ClickAction" and field_name == "logout":
+        selector_candidates = selector_candidates[:6]
     last_result = None
     for selector in selector_candidates:
         payload = {"type": action_type, "selector": selector}
         if action_type == "TypeAction":
             payload["text"] = str(planned_action.get("text") or "")
+        elif action_type == "SelectAction":
+            payload["value"] = str(planned_action.get("value") or "")
         action = BaseAction.create_action(payload)
         result = await session.step(action)
         action_result = result.action_result
@@ -500,6 +562,7 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
             not success
             and action_type == "ClickAction"
             and page is not None
+            and field_name != "logout"
             and isinstance(selector, dict)
             and selector.get("type") == "attributeValueSelector"
             and selector.get("attribute") == "id"

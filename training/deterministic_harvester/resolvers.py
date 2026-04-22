@@ -57,6 +57,7 @@ def dataset_movie_candidates(*, task_url: str, filters: dict[str, Any], web_proj
     rating_lte = float(filters.get("rating_lte") or 0) if str(filters.get("rating_lte") or "").strip() else 0.0
     year_gte = int(filters.get("year_gte") or 0) if str(filters.get("year_gte") or "").strip() else 0
     year_lte = int(filters.get("year_lte") or 0) if str(filters.get("year_lte") or "").strip() else 0
+    requires_trailer = bool(filters.get("requires_trailer"))
 
     candidates: list[str] = []
     for movie in movies:
@@ -68,6 +69,7 @@ def dataset_movie_candidates(*, task_url: str, filters: dict[str, Any], web_proj
         title = str(movie.get("title") or "").strip().lower()
         director = str(movie.get("director") or "").strip().lower()
         genres = [str(item).strip().lower() for item in (movie.get("genres") or []) if str(item).strip()]
+        trailer_url = str(movie.get("trailerUrl") or movie.get("trailer_url") or "").strip()
         try:
             duration = int(float(movie.get("duration") or 0))
         except Exception:
@@ -111,6 +113,8 @@ def dataset_movie_candidates(*, task_url: str, filters: dict[str, Any], web_proj
         if year_gte and year < year_gte:
             continue
         if year_lte and year > year_lte:
+            continue
+        if requires_trailer and not trailer_url:
             continue
         candidates.append(f"/movies/{movie_id}")
     return candidates
