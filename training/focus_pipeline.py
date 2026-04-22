@@ -197,9 +197,7 @@ def build_task_cache_override(
                         continue
                     criteria = test.get("event_criteria")
                     if isinstance(criteria, dict):
-                        criteria["username"] = "<username>"
-                        if "password" in criteria:
-                            criteria["password"] = "<password>"
+                        criteria.pop("password", None)
             constraints = use_case_payload.get("constraints")
             if isinstance(constraints, list):
                 for constraint in constraints:
@@ -224,12 +222,7 @@ def build_task_cache_override(
                     criteria = test.get("event_criteria")
                     if not isinstance(criteria, dict):
                         continue
-                    if "username" in criteria:
-                        criteria["username"] = "<signup_username>"
-                    if "email" in criteria:
-                        criteria["email"] = "<signup_email>"
-                    if "password" in criteria:
-                        criteria["password"] = "<signup_password>"
+                    criteria.pop("password", None)
         elif use_case.upper() == "LOGOUT":
             tests = row.get("tests")
             if isinstance(tests, list):
@@ -239,7 +232,6 @@ def build_task_cache_override(
                     criteria = test.get("event_criteria")
                     if not isinstance(criteria, dict):
                         continue
-                    criteria["username"] = "<username>"
                     criteria.pop("password", None)
         updated = True
     if not updated:

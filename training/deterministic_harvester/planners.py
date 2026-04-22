@@ -317,6 +317,7 @@ def _movie_editor_fill_actions(
     *,
     target_movie_path: str = "",
     target_movie_title: str = "",
+    editor_scope: str = "",
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     scope = ""
@@ -324,6 +325,8 @@ def _movie_editor_fill_actions(
         scope = f'div.rounded-3xl:has(a[href*="{target_movie_path}"])'
     elif target_movie_title:
         scope = f"div.rounded-3xl:has(h3:has-text({json.dumps(target_movie_title)}))"
+    elif editor_scope:
+        scope = str(editor_scope).strip()
 
     scoped_selectors: dict[str, list[dict[str, Any]]] = {}
     if scope:
@@ -456,11 +459,18 @@ def build_deterministic_plan(objective: DeterministicTaskObjective) -> Determini
         actions.append(_click(selectors=logout_selectors(objective.web_project_id, objective.seed), field_name="logout"))
     elif use_case == "ADD_FILM":
         actions = _login_actions(objective)
+        add_tab_selectors = list(profile_tab_selectors("add-movies", objective.web_project_id))
+        add_tab_selectors.insert(0, _custom_selector('button[role="tab"][aria-controls*="add-movies"]'))
+        add_tab_selectors.insert(1, _custom_selector('button[role="tab"][id*="trigger-add-movies"]'))
+        add_tab_selectors.insert(2, _custom_selector('button[role="tab"]:has-text("Movies")'))
         actions.extend(
             [
                 _navigate("/profile", objective=objective),
-                _click(selectors=profile_tab_selectors("add-movies", objective.web_project_id), field_name="add movies"),
-                *_movie_editor_fill_actions(objective),
+                _click(selectors=add_tab_selectors, field_name="add movies"),
+                *_movie_editor_fill_actions(
+                    objective,
+                    editor_scope='div[role="tabpanel"][data-state="active"] div.rounded-2xl:has(form)',
+                ),
             ]
         )
     elif use_case == "EDIT_FILM":

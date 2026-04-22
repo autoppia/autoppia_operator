@@ -545,7 +545,7 @@ def test_sanitize_task_row_for_replay_aligns_login_criteria_with_seed_identity()
 
     criteria = sanitized["tests"][0]["event_criteria"]
     assert criteria["username"] == "user59"
-    assert criteria["password"] == "Passw0rd!"
+    assert "password" not in criteria
 
 
 def test_sanitize_task_row_for_replay_strips_logout_password() -> None:
@@ -565,3 +565,23 @@ def test_sanitize_task_row_for_replay_strips_logout_password() -> None:
     criteria = sanitized["tests"][0]["event_criteria"]
     assert criteria["username"] == "user59"
     assert "password" not in criteria
+
+
+def test_sanitize_task_row_for_replay_drops_auth_keys_for_non_auth_events() -> None:
+    row = {
+        "url": "http://localhost:3000/profile?seed=314",
+        "use_case": {"name": "ADD_FILM"},
+        "tests": [
+            {
+                "event_name": "ADD_FILM",
+                "event_criteria": {"username": "<username>", "password": "<password>", "name": "New Film"},
+            }
+        ],
+    }
+
+    sanitized = guided_module._sanitize_task_row_for_replay(row)
+
+    criteria = sanitized["tests"][0]["event_criteria"]
+    assert "username" not in criteria
+    assert "password" not in criteria
+    assert criteria["name"] == "New Film"

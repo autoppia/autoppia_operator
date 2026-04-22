@@ -595,9 +595,27 @@ def profile_tab_selectors(tab_name: str, project_id: str = "autocinema") -> list
     texts = {
         "movies": ["Edit Movies", "Movies"],
         "watchlist": ["Watchlist"],
-        "add-movies": ["Add Movies"],
+        "add-movies": ["Add Movies", "Add Film", "Add movie"],
     }
-    return selector_candidates_for_texts(*texts.get(normalized, [tab_name, normalized.replace("-", " ")]))
+    text_keys = {
+        "movies": ["edit_movies"],
+        "watchlist": ["watchlist"],
+        "add-movies": ["add_movies", "add_film"],
+    }
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for selector in [
+        *selector_candidates_for_text_variant_keys(*text_keys.get(normalized, []), project_id=project_id),
+        *selector_candidates_for_texts(*texts.get(normalized, [tab_name, normalized.replace("-", " ")])),
+    ]:
+        if not isinstance(selector, dict):
+            continue
+        key = json.dumps(selector, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(selector)
+    return out
 
 
 __all__ = [

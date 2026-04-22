@@ -112,3 +112,25 @@ def test_build_deterministic_plan_remove_from_watchlist_uses_single_profile_remo
     plan = build_deterministic_plan(objective)
     remove_clicks = [action for action in plan.actions if action["type"] == "ClickAction" and action.get("field_name") == "remove from watchlist"]
     assert len(remove_clicks) == 1
+
+
+def test_build_deterministic_plan_add_film_uses_explicit_editor_selectors() -> None:
+    task_row = _task_row(
+        use_case="ADD_FILM",
+        prompt="title equals 'New Film', director equals 'Jane Doe'",
+        url="http://localhost:3000/profile?seed=23",
+        event_criteria={"name": "New Film"},
+        relevant_data={"user_for_login": {"username": "bob", "password": "letmein"}},
+    )
+    objective = normalize_task_row(task_row)
+    plan = build_deterministic_plan(objective)
+    type_actions = [action for action in plan.actions if action["type"] == "TypeAction"]
+    assert type_actions
+    assert all(action.get("selector_candidates") for action in type_actions)
+    add_movies_clicks = [action for action in plan.actions if action["type"] == "ClickAction" and action.get("field_name") == "add movies"]
+    assert len(add_movies_clicks) == 1
+    assert add_movies_clicks[0]["selector_candidates"]
+    first_selector = add_movies_clicks[0]["selector_candidates"][0]
+    assert first_selector["type"] == "attributeValueSelector"
+    assert first_selector["attribute"] == "custom"
+    assert 'aria-controls*="add-movies"' in first_selector["value"]

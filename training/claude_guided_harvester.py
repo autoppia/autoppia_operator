@@ -47,26 +47,10 @@ def _sanitize_task_row_for_replay(row: dict[str, Any]) -> dict[str, Any]:
     use_case_name = str(use_case_payload.get("name") or "").strip().upper() if isinstance(use_case_payload, dict) else ""
     if not use_case_name:
         return sanitized
+    auth_use_cases = {"LOGIN", "LOGOUT", "REGISTRATION"}
     seed = extract_seed_from_task_url(str(sanitized.get("url") or "")) or 1
     web_agent_id = _guided_web_agent_id(seed)
     sanitized = _render_placeholders(sanitized, web_agent_id)
-    auth_defaults = {
-        "username": f"user{web_agent_id}",
-        "password": "Passw0rd!",
-        "email": f"newuser{web_agent_id}@gmail.com",
-        "signup_username": f"newuser{web_agent_id}",
-        "signup_password": "Passw0rd!",
-    }
-    relevant_data = sanitized.get("relevant_data")
-    if isinstance(relevant_data, dict):
-        login_user = relevant_data.get("user_for_login")
-        if isinstance(login_user, dict):
-            username = str(login_user.get("username") or "").strip()
-            password = str(login_user.get("password") or "").strip()
-            if username:
-                auth_defaults["username"] = username
-            if password:
-                auth_defaults["password"] = password
     tests = sanitized.get("tests")
     if not isinstance(tests, list):
         return sanitized
@@ -78,21 +62,9 @@ def _sanitize_task_row_for_replay(row: dict[str, Any]) -> dict[str, Any]:
         criteria = test.get("event_criteria")
         if not isinstance(criteria, dict):
             continue
-        if use_case_name == "LOGOUT":
-            # Logout events only expose username in the demo app; keep criteria executable.
-            criteria["username"] = auth_defaults["username"]
-            criteria.pop("password", None)
-        elif use_case_name == "LOGIN":
-            criteria["username"] = auth_defaults["username"]
-            if "password" in criteria:
-                criteria["password"] = auth_defaults["password"]
-        elif use_case_name == "REGISTRATION":
-            if "username" in criteria:
-                criteria["username"] = auth_defaults["signup_username"]
-            if "email" in criteria:
-                criteria["email"] = auth_defaults["email"]
-            if "password" in criteria:
-                criteria["password"] = auth_defaults["signup_password"]
+        criteria.pop("password", None)
+        if use_case_name not in auth_use_cases:
+            criteria.pop("username", None)
     return sanitized
 
 

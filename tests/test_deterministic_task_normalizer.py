@@ -216,3 +216,45 @@ def test_normalize_task_row_registration_uses_signup_defaults() -> None:
     assert objective.field_values["email"] == "newuser59@gmail.com"
     assert objective.field_values["password"] == "Passw0rd!"
     assert objective.field_values["confirm_password"] == "Passw0rd!"
+
+
+def test_normalize_task_row_maps_film_name_to_title_for_edit_film() -> None:
+    task_row = _task_row(
+        use_case="EDIT_FILM",
+        prompt="edit film where name equals 'West Side Story' and director equals 'Nia DaCosta'",
+        url="http://localhost:8000/profile?seed=489",
+        event_criteria={"name": "West Side Story", "director": "Nia DaCosta"},
+    )
+
+    objective = normalize_task_row(task_row)
+
+    assert objective.field_values["name"] == "West Side Story"
+    assert objective.field_values["title"] == "West Side Story"
+
+
+def test_normalize_task_row_auth_criteria_prefers_tests_over_prompt() -> None:
+    task_row = _task_row(
+        use_case="LOGIN",
+        prompt="username equals prompt_user and email equals prompt@example.com",
+        url="http://localhost:8000/login?seed=21",
+        event_criteria={"username": "criteria_user", "email": "criteria@example.com", "password": "<password>"},
+    )
+
+    objective = normalize_task_row(task_row)
+
+    assert objective.field_values["username"] == "criteria_user"
+    assert objective.field_values["email"] == "criteria@example.com"
+
+
+def test_normalize_task_row_auth_criteria_falls_back_to_prompt_when_tests_missing() -> None:
+    task_row = _task_row(
+        use_case="REGISTRATION",
+        prompt="username equals prompt_user, email equals prompt@example.com",
+        url="http://localhost:8000/register?seed=21",
+        event_criteria={"username": "", "email": ""},
+    )
+
+    objective = normalize_task_row(task_row)
+
+    assert objective.field_values["username"] == "prompt_user"
+    assert objective.field_values["email"] == "prompt@example.com"

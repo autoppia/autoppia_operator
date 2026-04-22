@@ -62,6 +62,9 @@ _FIELD_ALIASES: dict[str, str] = {
     "query": "query",
     "rating": "rating",
     "subject": "subject",
+    "signup_email": "email",
+    "signup_password": "password",
+    "signup_username": "username",
     "synopsis": "synopsis",
     "title": "title",
     "trailer_url": "trailer_url",
@@ -126,6 +129,12 @@ _MOVIE_FILTER_FIELDS = {
     "year",
     "duration",
     "rating",
+}
+
+_AUTH_EVENT_PRIORITY_FIELDS: dict[str, tuple[str, ...]] = {
+    "LOGIN": ("username", "email"),
+    "LOGOUT": ("username", "email"),
+    "REGISTRATION": ("username", "email"),
 }
 
 _KNOWN_CREDENTIAL_PLACEHOLDERS = {
@@ -304,6 +313,37 @@ def _constraint_hints_from_task(task_row: dict[str, Any]) -> list[ConstraintHint
             )
         )
     return hints
+
+
+def _auth_event_values_from_tests(task_row: dict[str, Any], *, use_case: str) -> dict[str, str]:
+    allowed_fields = _AUTH_EVENT_PRIORITY_FIELDS.get(use_case, ())
+    if not allowed_fields:
+        return {}
+    out: dict[str, str] = {}
+    tests = task_row.get("tests")
+    if isinstance(tests, list):
+        for test in tests:
+            if not isinstance(test, dict):
+                continue
+            if str(test.get("type") or "").strip() != "CheckEventTest":
+                continue
+            if str(test.get("event_name") or "").strip().upper() != use_case:
+                continue
+            criteria = test.get("event_criteria")
+            if not isinstance(criteria, dict):
+                continue
+            for field in allowed_fields:
+                if field in out:
+                    continue
+                if field not in criteria:
+                    continue
+                value = criteria.get(field)
+                if isinstance(value, dict) and "value" in value:
+                    value = value.get("value")
+                scalar = _coerce_scalar(value)
+                if scalar:
+                    out[field] = scalar
+    return out
 
 
 def _coerce_scalar(value: Any) -> str:
@@ -527,6 +567,14 @@ def normalize_task_row(task_row: dict[str, Any], *, seed: int | None = None) -> 
         _maybe_store_field_value(field_values, hint, task_seed)
         _update_entity_filters(entity_filters, hint)
 
+    if use_case in _AUTH_EVENT_PRIORITY_FIELDS:
+        # Event criteria for auth use cases should come only from task tests.
+        prioritized_event_values = _auth_event_values_from_tests(task_row, use_case=use_case)
+        for field in ("username", "email"):
+            value = _coerce_scalar(prioritized_event_values.get(field))
+            if value:
+                field_values[field] = value
+
     relevant_data = _relevant_data_payload(task_row)
     _resolve_auth_field_values(
         use_case=use_case,
@@ -541,6 +589,12 @@ def normalize_task_row(task_row: dict[str, Any], *, seed: int | None = None) -> 
         field_values["query"] = str(entity_filters["name_exact"])
     if "name_contains" in entity_filters and "query" not in field_values:
         field_values["query"] = str(entity_filters["name_contains"])
+    if use_case in {"ADD_FILM", "EDIT_FILM"} and not str(field_values.get("title") or "").strip():
+        # Task caches often express film names as `name` criteria; map them into
+        # the editor's `title` field so planned edits can satisfy name checks.
+        name_value = str(field_values.get("name") or "").strip()
+        if name_value:
+            field_values["title"] = name_value
 
     success_expectations = {
         "event_names": [str(test.get("event_name") or "").strip() for test in (task_row.get("tests") or []) if isinstance(test, dict) and str(test.get("event_name") or "").strip()],
