@@ -64,6 +64,13 @@ Implementation note:
 - `training/focus_pipeline.py` remains only to preserve compatibility for older imports and tests while the repo finishes migrating.
 - Deterministic planner logic is organized under `training/deterministic_harvester/builders/`, with shared helpers in `common.py`, project-specific logic in `autocinema.py` and IWA-backed `autobooks.py` / `autodining.py` / `autocrm.py` / `automail.py` / `autolodge.py` / `autodelivery.py` / `autowork.py` / `autoconnect.py` / `autocalendar.py` / `autolist.py` / `autozone.py` (convert IWA `trajectories.py` actions), plus `iwa_planned_actions.py` for IWA action shaping, and a thin registry/facade in `planners.py`.
 
+Deterministic selector strategy (non-cinema rollout):
+- Use semantic selectors first (`id`, `class`, `placeholder`, `text`) and keep XPath as ordered fallback only.
+- `training/deterministic_harvester/trajectory_selectors.py` now derives semantic selector candidates from raw trajectory selectors, including XPath parsing for common attribute/text patterns.
+- Curated per-use-case text fallbacks are applied where trajectories are too positional to infer stable semantic anchors.
+- Coverage and ordering checks are enforced by `tests/test_semantic_selector_coverage.py`.
+- Baseline project/use-case coverage matrix is tracked in `training/deterministic_harvester/selector_coverage_matrix.md`.
+
 Current trusted dataset:
 - `data/autocinema/login`
 

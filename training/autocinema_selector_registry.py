@@ -1,3 +1,4 @@
+from training.deterministic_harvester.normalizer import route_for_web_project_use_case
 from training.deterministic_harvester.selectors import (
     comment_message_selectors,
     comment_name_selectors,
@@ -29,6 +30,15 @@ from training.deterministic_harvester.selectors import (
     view_detail_selectors,
     watchlist_button_selectors,
 )
+from training.deterministic_harvester.trajectory_selectors import (
+    enrich_iwa_selector_candidates,
+    enrich_planned_actions_with_variants,
+    list_iwa_use_cases,
+    planned_actions_for_iwa_use_case,
+    planned_actions_for_iwa_use_case_enriched,
+    selector_candidates_enriched_for_iwa_use_case,
+    selector_candidates_from_iwa_trajectory,
+)
 
 __all__ = [
     "comment_message_selectors",
@@ -40,10 +50,15 @@ __all__ = [
     "contact_subject_selectors",
     "contact_submit_selectors",
     "delete_movie_selectors",
+    "enrich_iwa_selector_candidates",
+    "enrich_planned_actions_with_variants",
+    "list_iwa_use_cases",
     "login_password_selectors",
     "login_submit_selectors",
     "login_username_selectors",
     "logout_selectors",
+    "planned_actions_for_iwa_use_case",
+    "planned_actions_for_iwa_use_case_enriched",
     "profile_save_selectors",
     "profile_tab_selectors",
     "register_confirm_password_selectors",
@@ -52,10 +67,13 @@ __all__ = [
     "register_submit_selectors",
     "register_username_selectors",
     "route_for_use_case",
+    "route_for_web_project_use_case",
     "save_changes_selectors",
     "search_submit_selectors",
+    "selector_candidates_enriched_for_iwa_use_case",
     "selector_candidates_for_ids",
     "selector_candidates_for_texts",
+    "selector_candidates_from_iwa_trajectory",
     "share_button_selectors",
     "trailer_button_selectors",
     "view_detail_selectors",

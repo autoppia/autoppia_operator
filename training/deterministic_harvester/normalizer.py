@@ -400,6 +400,14 @@ def _route_target(*, web_project_id: str, use_case: str) -> str:
     return _ROUTE_BY_USE_CASE.get(use_case, "/")
 
 
+def route_for_web_project_use_case(*, web_project_id: str, use_case: str) -> str:
+    """URL path target for a demo web project and IWA use case (see `_route_target`)."""
+    return _route_target(
+        web_project_id=web_project_id,
+        use_case=str(use_case or "").strip().upper(),
+    )
+
+
 _DEFAULT_VALUES: dict[str, str] = {
     "bio": "films lover",
     "cast": "John,Roy",
@@ -1217,5 +1225,6 @@ __all__ = [
     "load_task_row",
     "load_task_rows",
     "normalize_task_row",
+    "route_for_web_project_use_case",
     "task_seeds_for_use_case",
 ]

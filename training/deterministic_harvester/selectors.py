@@ -6,26 +6,8 @@ from typing import Any
 
 from training.harvester_support import _selector_candidates
 
+from .normalizer import route_for_web_project_use_case
 from .projects import project_config
-
-_ROUTES = {
-    "ADD_COMMENT": "/movies",
-    "ADD_FILM": "/profile",
-    "ADD_TO_WATCHLIST": "/movies",
-    "CONTACT": "/contact",
-    "DELETE_FILM": "/profile",
-    "EDIT_FILM": "/profile",
-    "EDIT_USER": "/profile",
-    "FILM_DETAIL": "/movies",
-    "FILTER_FILM": "/search",
-    "LOGIN": "/login",
-    "LOGOUT": "/profile",
-    "REGISTRATION": "/register",
-    "REMOVE_FROM_WATCHLIST": "/movies",
-    "SEARCH_FILM": "/search",
-    "SHARE_MOVIE": "/movies",
-    "WATCH_TRAILER": "/movies",
-}
 
 _AUTOCINEMA_LOCAL_ID_VARIANTS: dict[str, list[str]] = {
     "featured-view-details-button": [
@@ -39,7 +21,10 @@ _AUTOCINEMA_LOCAL_ID_VARIANTS: dict[str, list[str]] = {
 
 
 def route_for_use_case(use_case: str, project_id: str = "autocinema") -> str:
-    return _ROUTES.get(str(use_case or "").strip().upper(), "/")
+    return route_for_web_project_use_case(
+        web_project_id=project_id,
+        use_case=str(use_case or "").strip().upper(),
+    )
 
 
 def _hash_string(value: str) -> int:
