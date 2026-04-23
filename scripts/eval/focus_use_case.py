@@ -105,11 +105,7 @@ def _resolve_task_cache(*, task_cache_arg: str, project_id: str) -> str:
     resolved = default_task_cache_for_project(project_id).resolve()
     if resolved.exists():
         return str(resolved)
-    raise FileNotFoundError(
-        "No task cache found for "
-        f"project_id={project_id}. Tried default path {resolved}. "
-        "Pass --task-cache explicitly or create data/task_cache/<project>_tasks.json."
-    )
+    raise FileNotFoundError(f"No task cache found for project_id={project_id}. Tried default path {resolved}. Pass --task-cache explicitly or create data/task_cache/<project>_tasks.json.")
 
 
 def _parse_model_ladder(value: str, default_model: str) -> list[str]:

@@ -8,9 +8,7 @@ from training.deterministic_harvester.normalizer import DeterministicTaskObjecti
 
 DeterministicPlanBuilder = Callable[[DeterministicTaskObjective], DeterministicPlan]
 
-DETERMINISTIC_PLAN_BUILDERS: dict[tuple[str, str], DeterministicPlanBuilder] = {
-    ("autocinema", use_case): build_autocinema_plan for use_case in AUTOCINEMA_PLAN_BUILDERS
-}
+DETERMINISTIC_PLAN_BUILDERS: dict[tuple[str, str], DeterministicPlanBuilder] = {("autocinema", use_case): build_autocinema_plan for use_case in AUTOCINEMA_PLAN_BUILDERS}
 
 
 def build_registered_plan(objective: DeterministicTaskObjective) -> DeterministicPlan:
