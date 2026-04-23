@@ -136,11 +136,37 @@ _ROUTE_BY_USE_CASE_AUTOZONE: dict[str, str] = {
     "VIEW_WISHLIST": "/wishlist",
 }
 
+# autodining (IWA p04) — primary route hints for `route_target` / success expectations
+_ROUTE_BY_USE_CASE_AUTODINING: dict[str, str] = {
+    "ABOUT_FEATURE_CLICK": "/about",
+    "ABOUT_PAGE_VIEW": "/about",
+    "BOOK_RESTAURANT": "/",
+    "COLLAPSE_MENU": "/",
+    "CONTACT_CARD_CLICK": "/contact",
+    "CONTACT_FORM_SUBMIT": "/contact",
+    "CONTACT_PAGE_VIEW": "/contact",
+    "COUNTRY_SELECTED": "/",
+    "DATE_DROPDOWN_OPENED": "/",
+    "HELP_CATEGORY_SELECTED": "/help",
+    "HELP_FAQ_TOGGLED": "/help",
+    "HELP_PAGE_VIEW": "/help",
+    "OCCASION_SELECTED": "/",
+    "PEOPLE_DROPDOWN_OPENED": "/",
+    "RESERVATION_COMPLETE": "/",
+    "SCROLL_VIEW": "/",
+    "SEARCH_RESTAURANT": "/search",
+    "TIME_DROPDOWN_OPENED": "/",
+    "VIEW_FULL_MENU": "/",
+    "VIEW_RESTAURANT": "/",
+}
+
 
 def _route_target(*, web_project_id: str, use_case: str) -> str:
     pid = str(web_project_id or "").strip().lower() or "autocinema"
     if pid == "autobooks":
         return _ROUTE_BY_USE_CASE_AUTOBOOKS.get(use_case, "/")
+    if pid == "autodining":
+        return _ROUTE_BY_USE_CASE_AUTODINING.get(use_case, "/")
     if pid == "autozone":
         return _ROUTE_BY_USE_CASE_AUTOZONE.get(use_case, "/")
     return _ROUTE_BY_USE_CASE.get(use_case, "/")
@@ -685,6 +711,29 @@ def normalize_task_row(task_row: dict[str, Any], *, seed: int | None = None) -> 
             success_expectations["url_contains"] = ["/checkout", "/cart"]
         elif use_case in {"VIEW_DETAIL", "DETAILS_TOGGLE", "ADD_TO_CART", "SHARE_PRODUCT", "CAROUSEL_SCROLL"}:
             success_expectations["url_contains"] = ["/product", "/", "/p/"]
+    elif str(web_project_id or "").strip().lower() == "autodining":
+        if use_case in {"CONTACT_FORM_SUBMIT", "CONTACT_PAGE_VIEW", "CONTACT_CARD_CLICK"}:
+            success_expectations["url_contains"] = ["/contact", "/"]
+        elif use_case in {"ABOUT_PAGE_VIEW", "ABOUT_FEATURE_CLICK"}:
+            success_expectations["url_contains"] = ["/about", "/"]
+        elif use_case in {"HELP_PAGE_VIEW", "HELP_CATEGORY_SELECTED", "HELP_FAQ_TOGGLED"}:
+            success_expectations["url_contains"] = ["/help", "/"]
+        elif use_case == "SEARCH_RESTAURANT":
+            success_expectations["url_contains"] = ["/search", "/"]
+        elif use_case in {
+            "VIEW_RESTAURANT",
+            "VIEW_FULL_MENU",
+            "COLLAPSE_MENU",
+            "DATE_DROPDOWN_OPENED",
+            "TIME_DROPDOWN_OPENED",
+            "PEOPLE_DROPDOWN_OPENED",
+            "SCROLL_VIEW",
+            "BOOK_RESTAURANT",
+            "COUNTRY_SELECTED",
+            "OCCASION_SELECTED",
+            "RESERVATION_COMPLETE",
+        }:
+            success_expectations["url_contains"] = ["/", "/restaurant", "/dining", "/r/"]
     elif use_case == "CONTACT":
         success_expectations["texts"] = ["Message Sent!"]
         success_expectations["url_contains"] = ["/contact"]
