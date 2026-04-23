@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import re
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
 
 from .utils import *
 from .utils import _norm_ws
@@ -10,52 +13,52 @@ from .utils import _norm_ws
 class Subgoal(BaseModel):
     id: str
     text: str
-    status: Literal[pending, active, done, blocked] = "pending"
+    status: Literal["pending", "active", "done", "blocked"] = "pending"
 
 
 class AgentPlan(BaseModel):
-    subgoals: List[Subgoal] = Field(default_factory=list)
+    subgoals: list[Subgoal] = Field(default_factory=list)
     active_id: str = ""
 
 
 class AgentFrontier(BaseModel):
-    pending_urls: List[str] = Field(default_factory=list)
-    pending_elements: List[str] = Field(default_factory=list)
+    pending_urls: list[str] = Field(default_factory=list)
+    pending_elements: list[str] = Field(default_factory=list)
 
 
 class AgentVisited(BaseModel):
-    urls: List[str] = Field(default_factory=list)
-    page_hashes: Dict[str, str] = Field(default_factory=dict)
+    urls: list[str] = Field(default_factory=list)
+    page_hashes: dict[str, str] = Field(default_factory=dict)
 
 
 class AgentMemory(BaseModel):
-    facts: List[str] = Field(default_factory=list)
-    checkpoints: List[str] = Field(default_factory=list)
-    visual_notes: List[str] = Field(default_factory=list)
-    visual_element_hints: List[str] = Field(default_factory=list)
+    facts: list[str] = Field(default_factory=list)
+    checkpoints: list[str] = Field(default_factory=list)
+    visual_notes: list[str] = Field(default_factory=list)
+    visual_element_hints: list[str] = Field(default_factory=list)
     last_vision_signature: str = ""
     history_summary: str = ""
     strategy_summary: str = ""
     prev_page_summary: str = ""
     prev_page_ir_text: str = ""
-    prev_candidate_sigs: List[str] = Field(default_factory=list)
+    prev_candidate_sigs: list[str] = Field(default_factory=list)
     obs_extract_dom_hash: str = ""
-    obs_extract_payload: Dict[str, Any] = Field(default_factory=dict)
-    obs_candidate_hints: List[str] = Field(default_factory=list)
-    reasoning_trace: Dict[str, str] = Field(default_factory=dict)
-    working_state: Dict[str, Any] = Field(default_factory=dict)
+    obs_extract_payload: dict[str, Any] = Field(default_factory=dict)
+    obs_candidate_hints: list[str] = Field(default_factory=list)
+    reasoning_trace: dict[str, str] = Field(default_factory=dict)
+    working_state: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentFormProgress(BaseModel):
-    typed_selector_sigs: List[str] = Field(default_factory=list)
-    typed_candidate_ids: List[str] = Field(default_factory=list)
-    typed_values_by_selector: Dict[str, str] = Field(default_factory=dict)
-    typed_values_by_candidate: Dict[str, str] = Field(default_factory=dict)
-    submit_attempt_sigs: List[str] = Field(default_factory=list)
+    typed_selector_sigs: list[str] = Field(default_factory=list)
+    typed_candidate_ids: list[str] = Field(default_factory=list)
+    typed_values_by_selector: dict[str, str] = Field(default_factory=dict)
+    typed_values_by_candidate: dict[str, str] = Field(default_factory=dict)
+    submit_attempt_sigs: list[str] = Field(default_factory=list)
     active_group_id: str = ""
     active_group_label: str = ""
     active_group_context: str = ""
-    active_group_candidate_ids: List[str] = Field(default_factory=list)
+    active_group_candidate_ids: list[str] = Field(default_factory=list)
 
 
 class AgentFocusRegion(BaseModel):
@@ -63,8 +66,8 @@ class AgentFocusRegion(BaseModel):
     region_kind: str = ""
     region_label: str = ""
     region_context: str = ""
-    candidate_ids: List[str] = Field(default_factory=list)
-    recent_region_ids: List[str] = Field(default_factory=list)
+    candidate_ids: list[str] = Field(default_factory=list)
+    recent_region_ids: list[str] = Field(default_factory=list)
 
 
 class ProgressEffect(BaseModel):
@@ -84,13 +87,13 @@ class ProgressEffect(BaseModel):
 
 
 class AgentProgressLedger(BaseModel):
-    recent_effects: List[ProgressEffect] = Field(default_factory=list)
-    region_attempts: Dict[str, int] = Field(default_factory=dict)
-    blocked_regions: List[str] = Field(default_factory=list)
-    successful_patterns: List[str] = Field(default_factory=list)
-    failed_patterns: List[str] = Field(default_factory=list)
-    satisfied_constraints: List[str] = Field(default_factory=list)
-    attempted_constraints: Dict[str, int] = Field(default_factory=dict)
+    recent_effects: list[ProgressEffect] = Field(default_factory=list)
+    region_attempts: dict[str, int] = Field(default_factory=dict)
+    blocked_regions: list[str] = Field(default_factory=list)
+    successful_patterns: list[str] = Field(default_factory=list)
+    failed_patterns: list[str] = Field(default_factory=list)
+    satisfied_constraints: list[str] = Field(default_factory=list)
+    attempted_constraints: dict[str, int] = Field(default_factory=dict)
     last_effect: str = ""
     no_progress_score: int = 0
     consecutive_no_effect_steps: int = 0
@@ -107,7 +110,7 @@ class AgentCounters(BaseModel):
 
 
 class AgentBlocklist(BaseModel):
-    element_ids: List[str] = Field(default_factory=list)
+    element_ids: list[str] = Field(default_factory=list)
     until_step: int = 0
 
 
@@ -127,8 +130,8 @@ class AgentState(BaseModel):
     last_action_sig: str = ""
     last_action_element_id: str = ""
     escalated_once: bool = False
-    session_query: Dict[str, str] = Field(default_factory=dict)
-    score_feedback: Dict[str, Any] = Field(default_factory=dict)
+    session_query: dict[str, str] = Field(default_factory=dict)
+    score_feedback: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_internal_state(cls, internal_state: Any, prompt: str) -> AgentState:
@@ -155,7 +158,7 @@ class AgentState(BaseModel):
         self.visited.urls = _dedupe_keep_order(self.visited.urls, MAX_VISITED_URLS)
         # Keep deterministic dict size by insertion order.
         if len(self.visited.page_hashes) > MAX_PAGE_HASHES:
-            trimmed: Dict[str, str] = {}
+            trimmed: dict[str, str] = {}
             for key in list(self.visited.page_hashes.keys())[-MAX_PAGE_HASHES:]:
                 trimmed[str(key)[:MAX_STR]] = str(self.visited.page_hashes.get(key) or "")[:64]
             self.visited.page_hashes = trimmed
@@ -286,7 +289,7 @@ class AgentState(BaseModel):
         self.last_action_sig = str(self.last_action_sig or "")[:MAX_STR]
         self.last_action_element_id = str(self.last_action_element_id or "")[:120]
         if len(self.session_query) > 16:
-            trimmed_q: Dict[str, str] = {}
+            trimmed_q: dict[str, str] = {}
             for key in list(self.session_query.keys())[:16]:
                 trimmed_q[str(key)[:80]] = str(self.session_query.get(key) or "")[:120]
             self.session_query = trimmed_q
@@ -318,18 +321,18 @@ class AgentState(BaseModel):
             self.plan.active_id = ""
         return self
 
-    def to_internal_state(self) -> Dict[str, Any]:
+    def to_internal_state(self) -> dict[str, Any]:
         self._sanitize()
         return self.model_dump(mode="json", exclude_none=True)
 
 
-def _split_prompt_subgoals(prompt: str) -> List[Subgoal]:
+def _split_prompt_subgoals(prompt: str) -> list[Subgoal]:
     raw = _norm_ws(prompt)
     if not raw:
         return []
     # Do not split on dots to avoid breaking hostnames like autoppia.com.
     parts = [p.strip() for p in re.split(r"\bthen\b|;|,|\band\b", raw, flags=re.I) if p.strip()]
-    out: List[Subgoal] = []
+    out: list[Subgoal] = []
     for idx, part in enumerate(parts[:8]):
         out.append(Subgoal(id=f"sg_{idx + 1}", text=part[:MAX_STR], status="pending"))
     return out or [Subgoal(id="sg_1", text=raw[:MAX_STR], status="pending")]
@@ -341,9 +344,9 @@ class FlagDetector:
         *,
         snapshot_html: str,
         url: str,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         state: AgentState,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         html = str(snapshot_html or "")
         lower = html.lower()
         text = self._visible_text(html).lower()

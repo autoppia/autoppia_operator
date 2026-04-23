@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Any
+
 from .state import *
 from .utils import *
 
@@ -12,7 +15,7 @@ class Candidate:
     text: str
     href: str
     context: str
-    selector: Dict[str, Any]
+    selector: dict[str, Any]
     dom_path: str
     field_hint: str = ""
     field_kind: str = ""
@@ -22,7 +25,7 @@ class Candidate:
     region_kind: str = ""
     region_label: str = ""
     parent_region_id: str = ""
-    region_ancestor_ids: List[str] = field(default_factory=list)
+    region_ancestor_ids: list[str] = field(default_factory=list)
     group_id: str = ""
     group_label: str = ""
     disabled: bool = False
@@ -32,10 +35,10 @@ class Candidate:
     aria_label: str = ""
     name_attr: str = ""
     current_value: str = ""
-    option_values: List[str] = field(default_factory=list)
-    bbox: Dict[str, float] | None = None
+    option_values: list[str] = field(default_factory=list)
+    bbox: dict[str, float] | None = None
 
-    def as_obs(self, *, index: int | None = None) -> Dict[str, Any]:
+    def as_obs(self, *, index: int | None = None) -> dict[str, Any]:
         out = {
             "id": self.id,
             "role": self.role,
@@ -72,7 +75,7 @@ class Candidate:
 
 
 class CandidateExtractor:
-    def extract(self, *, snapshot_html: str, url: str) -> List[Candidate]:
+    def extract(self, *, snapshot_html: str, url: str) -> list[Candidate]:
         html = str(snapshot_html or "")
         if not html or BeautifulSoup is None:
             return []
@@ -81,13 +84,13 @@ class CandidateExtractor:
         except Exception:
             return []
         nodes = list(soup.select("a,button,input,select,textarea,[role='button'],[role='link'],[role='tab'],[role='menuitem'],[role='checkbox'],[role='radio'],[role='switch'],[role='combobox']"))
-        id_counts: Dict[str, int] = {}
+        id_counts: dict[str, int] = {}
         for node in nodes:
             attrs = node.attrs if isinstance(getattr(node, "attrs", None), dict) else {}
             node_id = _norm_ws(attrs.get("id"))
             if node_id:
                 id_counts[node_id] = int(id_counts.get(node_id) or 0) + 1
-        out: List[Candidate] = []
+        out: list[Candidate] = []
         for node in nodes:
             try:
                 attrs = node.attrs if isinstance(getattr(node, "attrs", None), dict) else {}
@@ -99,7 +102,7 @@ class CandidateExtractor:
                 field_hint = self._field_hint(node)
                 current_value = _norm_ws(attrs.get("value"))
                 if tag == "select":
-                    selected_texts: List[str] = []
+                    selected_texts: list[str] = []
                     for option in node.find_all("option", limit=12):
                         opt_text = _norm_ws(option.get_text(" ", strip=True))
                         opt_value = _norm_ws(option.get("value"))
@@ -153,7 +156,7 @@ class CandidateExtractor:
                 placeholder = _norm_ws(attrs.get("placeholder"))
                 aria_label = _norm_ws(attrs.get("aria-label"))
                 name_attr = _norm_ws(attrs.get("name"))
-                option_values: List[str] = []
+                option_values: list[str] = []
                 if tag == "select":
                     for option in node.find_all("option", limit=16):
                         opt_text = _norm_ws(option.get_text(" ", strip=True))
@@ -203,12 +206,12 @@ class CandidateExtractor:
                 )
             except Exception:
                 continue
-        dedup: Dict[str, Candidate] = {}
+        dedup: dict[str, Candidate] = {}
         for cand in out:
             dedup[cand.id] = cand
         return list(dedup.values())[:220]
 
-    def _role_name(self, tag: str, role: str, attrs: Dict[str, Any]) -> str:
+    def _role_name(self, tag: str, role: str, attrs: dict[str, Any]) -> str:
         if tag == "a" or role == "link":
             return "link"
         if tag == "button" or role in {"button", "tab", "menuitem", "checkbox", "radio", "switch"}:
@@ -223,7 +226,7 @@ class CandidateExtractor:
         return ""
 
     def _dom_path(self, node: Any) -> str:
-        parts: List[str] = []
+        parts: list[str] = []
         cur = node
         guard = 0
         while cur is not None and guard < 12:
@@ -253,13 +256,13 @@ class CandidateExtractor:
         self,
         *,
         tag: str,
-        attrs: Dict[str, Any],
+        attrs: dict[str, Any],
         text: str,
         href: str,
         raw_href: str,
         dom_path: str,
-        id_counts: Dict[str, int],
-    ) -> Dict[str, Any]:
+        id_counts: dict[str, int],
+    ) -> dict[str, Any]:
         node_id = _norm_ws(attrs.get("id"))
         if node_id and int(id_counts.get(node_id) or 0) <= 1:
             return {"type": "attributeValueSelector", "attribute": "id", "value": node_id, "case_sensitive": False}
@@ -292,7 +295,7 @@ class CandidateExtractor:
             return {"type": "xpathSelector", "value": dom_path, "case_sensitive": False}
         return {"type": "xpathSelector", "value": f"//{tag}[1]", "case_sensitive": False}
 
-    def _stable_id(self, *, attrs: Dict[str, Any], selector: Dict[str, Any], text: str, href: str, dom_path: str) -> str:
+    def _stable_id(self, *, attrs: dict[str, Any], selector: dict[str, Any], text: str, href: str, dom_path: str) -> str:
         existing = _norm_ws(attrs.get("data-element-id"))
         if existing:
             return existing[:80]
@@ -387,9 +390,9 @@ class CandidateExtractor:
             return tag
         return "group"
 
-    def _region_lineage(self, node: Any) -> tuple[str, List[str]]:
+    def _region_lineage(self, node: Any) -> tuple[str, list[str]]:
         parent_region_id = ""
-        ancestor_ids: List[str] = []
+        ancestor_ids: list[str] = []
         cur = self._group_container(node)
         hops = 0
         while cur is not None and hops < 6:
@@ -413,7 +416,7 @@ class CandidateExtractor:
         self,
         *,
         tag: str,
-        attrs: Dict[str, Any],
+        attrs: dict[str, Any],
         role_name: str,
         text: str,
         field_hint: str,
@@ -533,12 +536,12 @@ class CandidateRanker:
         self,
         *,
         cand: Candidate,
-        task_constraints: Dict[str, str],
-    ) -> Dict[str, str]:
+        task_constraints: dict[str, str],
+    ) -> dict[str, str]:
         if not task_constraints:
             return {}
         blob = " ".join([cand.text, cand.field_hint, cand.context, cand.group_label, cand.region_label, cand.href]).lower()
-        matches: Dict[str, str] = {}
+        matches: dict[str, str] = {}
         for key, value in task_constraints.items():
             key_tokens = _constraint_key_tokens(key)
             key_match = bool(key_tokens and key_tokens.intersection(_tokenize(blob)))
@@ -549,7 +552,7 @@ class CandidateRanker:
                 matches[str(key)] = "field"
         return matches
 
-    def _candidate_constraint_keys(self, *, cand: Candidate, task_constraints: Dict[str, str]) -> set[str]:
+    def _candidate_constraint_keys(self, *, cand: Candidate, task_constraints: dict[str, str]) -> set[str]:
         return set(self._candidate_constraint_match(cand=cand, task_constraints=task_constraints).keys())
 
     def _candidate_group_key(self, cand: Candidate) -> str:
@@ -733,7 +736,7 @@ class CandidateRanker:
             )
         )
 
-    def _selector_signature(self, selector: Dict[str, Any] | None) -> str:
+    def _selector_signature(self, selector: dict[str, Any] | None) -> str:
         selector = _sanitize_selector(selector)
         if not isinstance(selector, dict):
             return ""
@@ -747,12 +750,12 @@ class CandidateRanker:
         *,
         task: str,
         mode: str,
-        flags: Dict[str, Any],
-        candidates: List[Candidate],
+        flags: dict[str, Any],
+        candidates: list[Candidate],
         state: AgentState,
         current_url: str = "",
         top_k: int = 30,
-    ) -> List[Candidate]:
+    ) -> list[Candidate]:
         task_tokens = _focus_terms(task)
         task_constraints = _task_constraints(task)
         satisfied_constraints = set(state.progress.satisfied_constraints or [])
@@ -778,12 +781,12 @@ class CandidateRanker:
         blocked_regions = set(state.progress.blocked_regions)
         current_path = str(urlsplit(str(current_url or "")).path or "/").rstrip("/") or "/"
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
-        candidate_tags: Dict[str, set[str]] = {cand.id: self._candidate_action_tags(cand) for cand in candidates}
-        candidate_intents: Dict[str, set[str]] = {cand.id: self._candidate_intent_tags(cand) for cand in candidates}
+        candidate_tags: dict[str, set[str]] = {cand.id: self._candidate_action_tags(cand) for cand in candidates}
+        candidate_intents: dict[str, set[str]] = {cand.id: self._candidate_intent_tags(cand) for cand in candidates}
         direct_intent_ids = {cand.id for cand in candidates if task_intents.intersection(candidate_intents.get(cand.id) or set())}
         has_direct_intent_controls = bool(direct_intent_ids)
-        group_stats: Dict[str, Dict[str, Any]] = {}
-        exact_value_match_keys: Dict[str, int] = {}
+        group_stats: dict[str, dict[str, Any]] = {}
+        exact_value_match_keys: dict[str, int] = {}
         for cand in candidates:
             group_key = self._candidate_group_key(cand)
             stats = group_stats.setdefault(
@@ -843,7 +846,7 @@ class CandidateRanker:
         has_non_form_controls = any(cand.role in {"button", "link"} for cand in candidates)
         has_same_region_commit_controls = any(self._looks_submit_like(cand) and not cand.disabled for cand in candidates)
         has_mutation_controls = any(candidate_tags.get(cand.id, set()).intersection(mutation_ops) for cand in candidates if cand.role in {"button", "link", "input"})
-        scored: List[tuple[float, Candidate]] = []
+        scored: list[tuple[float, Candidate]] = []
         for cand in candidates:
             if cand.id in blocked:
                 continue

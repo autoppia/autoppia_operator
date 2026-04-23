@@ -185,6 +185,7 @@ def cmd_export_sft(args: argparse.Namespace) -> int:
         val_ratio=float(args.val_ratio),
         train_seeds=train_seeds,
         val_seeds=val_seeds,
+        trace_only=not bool(getattr(args, "allow_guided_fallback", False)),
     )
     print(json.dumps(manifest, indent=2))
     return 0
@@ -502,6 +503,11 @@ def main(argv: list[str] | None = None) -> int:
     export_sft.add_argument("--train-seeds", default="")
     export_sft.add_argument("--val-seeds", default="")
     export_sft.add_argument("--output-dir-name", default="sft")
+    export_sft.add_argument(
+        "--allow-guided-fallback",
+        action="store_true",
+        help="If trace_file is missing, build SFT from result_path (replay result.json) when available",
+    )
     export_sft.set_defaults(func=cmd_export_sft)
 
     consolidate = sub.add_parser("consolidate-gold")

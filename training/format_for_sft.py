@@ -13,15 +13,22 @@ import argparse
 import json
 import random
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+# IWA imports may prepend .../autoppia_iwa/autoppia_iwa/src so a bare `import src` would load the
+# wrong top-level `src` package. Always re-pin the operator repo root to the front of sys.path
+# so `import src.operator` is this repo, not the sibling.
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+OP_ROOT = str(REPO_ROOT)
+if OP_ROOT in sys.path:
+    with suppress(Exception):
+        sys.path.remove(OP_ROOT)
+sys.path.insert(0, OP_ROOT)
 
 from src.operator.agents.step_engine.candidates import Candidate, CandidateExtractor
 from src.operator.agents.step_engine.observation import ObsBuilder
@@ -507,6 +514,27 @@ def convert_trace_to_sft_examples(
     return examples
 
 
+def _resolve_trace_path(*, row: dict[str, Any], gold_dir: Path) -> Path:
+    """Prefer absolute on-disk path; if missing, try path relative to the gold/ directory."""
+    raw = str(row.get("trace_file") or "").strip()
+    if not raw:
+        return Path()
+    p = Path(raw)
+    try:
+        if p.is_file():
+            return p
+    except OSError:
+        pass
+    if not p.is_absolute():
+        p2 = (gold_dir / p).resolve()
+        try:
+            if p2.is_file():
+                return p2
+        except OSError:
+            pass
+    return p
+
+
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as fh:
@@ -543,8 +571,12 @@ def export_harvest_to_sft(
 ) -> dict[str, Any]:
     episodes_path = Path(input_path)
     out_dir = Path(output_dir)
+    gold_dir = episodes_path.parent
     summary_file = Path(summary_path) if summary_path else episodes_path.with_name("summary.json")
     summary = json.loads(summary_file.read_text(encoding="utf-8")) if summary_file.exists() else {}
+
+    if not episodes_path.is_file():
+        raise FileNotFoundError(f"Missing gold episodes file: {episodes_path}\nRun `focus_use_case collect` (or your harvest) and `consolidate-gold` first so {gold_dir / 'episodes.jsonl'} exists.")
 
     episode_rows = _load_jsonl(episodes_path)
     successful_rows = [row for row in episode_rows if bool(row.get("success"))]
@@ -578,7 +610,7 @@ def export_harvest_to_sft(
 
     for bucket, rows in ((train_examples, train_rows), (val_examples, val_rows)):
         for row in rows:
-            trace_file = Path(str(row.get("trace_file") or ""))
+            trace_file = _resolve_trace_path(row=row, gold_dir=gold_dir)
             result_path = Path(str(row.get("result_path") or ""))
             if trace_file.exists() and trace_file.is_file():
                 trace = json.loads(trace_file.read_text(encoding="utf-8"))
@@ -610,7 +642,36 @@ def export_harvest_to_sft(
     usable_episode_ids = {str(example.episode_task_id) for example in train_examples + val_examples if str(example.episode_task_id)}
 
     if not train_records:
-        raise ValueError("No train SFT examples were produced from successful episodes")
+        sample_traces: list[str] = []
+        for row in list(train_rows)[:3]:
+            t = str(row.get("trace_file") or "").strip()
+            p = _resolve_trace_path(row=row, gold_dir=gold_dir)
+            sample_traces.append(f"  seed={row.get('seed')!r} trace_file={t!r} resolved_exists={p.is_file()!r} resolved={p!r}")
+        hint = (
+            f"export_harvest_to_sft produced zero training examples.\n"
+            f"  episodes file: {episodes_path} ({'exists' if episodes_path.is_file() else 'missing'})\n"
+            f"  rows in episodes.jsonl: {len(episode_rows)}, successful (success=true): {len(successful_rows)}\n"
+            f"  train split: {len(train_rows)} episode(s), val split: {len(val_rows)} episode(s)\n"
+            f"  trace_only={trace_only}, skipped rows (no readable trace on disk): {skipped_without_trace}, guided fallbacks: {guided_fallback_episodes}\n"
+        )
+        if not successful_rows:
+            hint += "  Fix: add successful harvest rows (score=1) to gold, or set success=true in episodes for replayable runs.\n"
+        elif not train_rows:
+            hint += "  Fix: train split is empty; check val_ratio/seed or pass explicit --train-seeds / --val-seeds on focus_use_case export-sft.\n"
+        elif trace_only and skipped_without_trace:
+            hint += (
+                "  Fix: every successful row should have an on-disk `trace_file` (full per-step trace), or re-run collection with trace persistence.\n"
+                "  If you only have `result_path` (e.g. deterministic replay `replays/.../result.json`) and empty `trace_file`, run:\n"
+                "    python scripts/eval/focus_use_case.py export-sft ... --allow-guided-fallback\n"
+                "  Sample rows:\n" + "\n".join(sample_traces)
+            )
+        else:
+            hint += (
+                "  If `resolved_exists` is true for train rows but you still get no SFT output, open the trace JSON and check for "
+                "non-empty `steps` with tool calls (or a guided `episode` block the exporter can convert).\n"
+            )
+            hint += "  Sample train rows (trace paths):\n" + "\n".join(sample_traces if sample_traces else ["  (no train split rows)"])
+        raise ValueError(hint)
     if not val_records and len(usable_episode_ids) > 1:
         raise ValueError("Validation split is empty; reduce filtering or adjust val_ratio")
 

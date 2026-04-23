@@ -735,6 +735,7 @@ def export_harvest_sft(
     val_ratio: float = 0.2,
     train_seeds: list[int] | None = None,
     val_seeds: list[int] | None = None,
+    trace_only: bool = True,
 ) -> dict[str, Any]:
     from training.format_for_sft import export_harvest_to_sft
 
@@ -746,7 +747,7 @@ def export_harvest_sft(
         val_ratio=float(val_ratio),
         train_seeds=train_seeds,
         val_seeds=val_seeds,
-        trace_only=True,
+        trace_only=bool(trace_only),
     )
 
 

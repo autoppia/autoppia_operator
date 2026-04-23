@@ -1,3 +1,4 @@
+from . import _iwa_path  # noqa: F401  — first: operator repo (src.*) + sibling autoppia_iwa
 from .dataset import split_train_val, write_jsonl
 from .exporters import export_ppo_bootstrap, export_sft, load_cleaned_trajectories
 from .iwap_client import IWAPClient
