@@ -118,11 +118,31 @@ _ROUTE_BY_USE_CASE_AUTOBOOKS: dict[str, str] = {
     "VIEW_CART_BOOK": "/cart",
 }
 
+# autozone (IWA p03) — primary route hints for `route_target`
+_ROUTE_BY_USE_CASE_AUTOZONE: dict[str, str] = {
+    "ADD_TO_CART": "/",
+    "ADD_TO_WISHLIST": "/",
+    "CAROUSEL_SCROLL": "/",
+    "CATEGORY_FILTER": "/search",
+    "CHECKOUT_STARTED": "/checkout",
+    "DETAILS_TOGGLE": "/",
+    "ORDER_COMPLETED": "/checkout",
+    "PROCEED_TO_CHECKOUT": "/checkout",
+    "QUANTITY_CHANGED": "/cart",
+    "SEARCH_PRODUCT": "/search",
+    "SHARE_PRODUCT": "/",
+    "VIEW_CART": "/cart",
+    "VIEW_DETAIL": "/",
+    "VIEW_WISHLIST": "/wishlist",
+}
+
 
 def _route_target(*, web_project_id: str, use_case: str) -> str:
     pid = str(web_project_id or "").strip().lower() or "autocinema"
     if pid == "autobooks":
         return _ROUTE_BY_USE_CASE_AUTOBOOKS.get(use_case, "/")
+    if pid == "autozone":
+        return _ROUTE_BY_USE_CASE_AUTOZONE.get(use_case, "/")
     return _ROUTE_BY_USE_CASE.get(use_case, "/")
 
 
@@ -654,6 +674,17 @@ def normalize_task_row(task_row: dict[str, Any], *, seed: int | None = None) -> 
             success_expectations["url_contains"] = ["/", "/login", "/register"]
         elif use_case in {"DELETE_BOOK", "ADD_BOOK", "EDIT_BOOK", "EDIT_USER_BOOK", "LOGOUT_BOOK"}:
             success_expectations["url_contains"] = ["/profile"]
+    elif str(web_project_id or "").strip().lower() == "autozone":
+        if use_case in {"SEARCH_PRODUCT", "CATEGORY_FILTER"}:
+            success_expectations["url_contains"] = ["/search", "/"]
+        elif use_case in {"VIEW_CART", "QUANTITY_CHANGED"}:
+            success_expectations["url_contains"] = ["/cart"]
+        elif use_case in {"VIEW_WISHLIST", "ADD_TO_WISHLIST"}:
+            success_expectations["url_contains"] = ["/wishlist", "/"]
+        elif use_case in {"PROCEED_TO_CHECKOUT", "CHECKOUT_STARTED", "ORDER_COMPLETED"}:
+            success_expectations["url_contains"] = ["/checkout", "/cart"]
+        elif use_case in {"VIEW_DETAIL", "DETAILS_TOGGLE", "ADD_TO_CART", "SHARE_PRODUCT", "CAROUSEL_SCROLL"}:
+            success_expectations["url_contains"] = ["/product", "/", "/p/"]
     elif use_case == "CONTACT":
         success_expectations["texts"] = ["Message Sent!"]
         success_expectations["url_contains"] = ["/contact"]

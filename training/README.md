@@ -39,11 +39,12 @@ Focused CLI flow:
 6. `scripts/eval/focus_use_case.py eval`
 
 Deterministic-only teacher-harvest flow (zero-AI):
-1. Provide a task cache file scoped to the project/use case (e.g. `data/task_cache/autocinema_50_tasks.json` or `data/task_cache/autobooks_tasks.json` for web2).
+1. Provide a task cache file scoped to the project/use case (e.g. `data/task_cache/autocinema_50_tasks.json`, `data/task_cache/autobooks_tasks.json` for web2, or `data/task_cache/autozone_tasks.json` for web3).
 2. Run:
    - `python scripts/eval/focus_use_case.py teacher-harvest --project-id <project_id> --use-case <use_case> --task-cache <cache.json> --deterministic-only`
    - Autobooks example: `python scripts/eval/focus_use_case.py teacher-harvest --project-id autobooks --use-case SEARCH_BOOK --task-cache data/task_cache/autobooks_tasks.json --deterministic-only --execution-mode operator`
-3. The run resolves seeds from the provided cache for that project/use case, generates deterministic plans, replays them, and writes canonical harvest artifacts under `data/<project>/<use_case>/gold`. For `autobooks`, gold plans are sourced from IWA `p02_autobooks/trajectories.py` via `training/deterministic_harvester/builders/autobooks.py`.
+   - Autozone example: `python scripts/eval/focus_use_case.py teacher-harvest --project-id autozone --use-case SEARCH_PRODUCT --task-cache data/task_cache/autozone_tasks.json --deterministic-only --execution-mode operator`
+3. The run resolves seeds from the provided cache for that project/use case, generates deterministic plans, replays them, and writes canonical harvest artifacts under `data/<project>/<use_case>/gold`. For `autobooks`, gold plans are sourced from IWA `p02_autobooks/trajectories.py` via `training/deterministic_harvester/builders/autobooks.py`. For `autozone`, use IWA `p03_autozone/trajectories.py` via `training/deterministic_harvester/builders/autozone.py`.
 
 Multi-use-case bootstrap:
 - `scripts/eval/harvest_suite.py --use-cases all --seeds 1..10 --strategy baseline`
@@ -52,7 +53,7 @@ Multi-use-case bootstrap:
 Implementation note:
 - `training/harvester.py` is the source of truth for collection, artifact writing, consolidation, and SFT export.
 - `training/focus_pipeline.py` remains only to preserve compatibility for older imports and tests while the repo finishes migrating.
-- Deterministic planner logic is organized under `training/deterministic_harvester/builders/`, with shared helpers in `common.py`, project-specific logic in `autocinema.py` and IWA-backed `autobooks.py` (converts IWA `trajectories.py` actions), plus `iwa_planned_actions.py` for IWA action shaping, and a thin registry/facade in `planners.py`.
+- Deterministic planner logic is organized under `training/deterministic_harvester/builders/`, with shared helpers in `common.py`, project-specific logic in `autocinema.py` and IWA-backed `autobooks.py` / `autozone.py` (convert IWA `trajectories.py` actions), plus `iwa_planned_actions.py` for IWA action shaping, and a thin registry/facade in `planners.py`.
 
 Current trusted dataset:
 - `data/autocinema/login`
