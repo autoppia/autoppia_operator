@@ -160,13 +160,241 @@ _ROUTE_BY_USE_CASE_AUTODINING: dict[str, str] = {
     "VIEW_RESTAURANT": "/",
 }
 
+# autocrm (IWA p05)
+_ROUTE_BY_USE_CASE_AUTOCRM: dict[str, str] = {
+    "ADD_CLIENT": "/clients",
+    "ADD_NEW_MATTER": "/matters",
+    "ARCHIVE_MATTER": "/matters",
+    "BILLING_SEARCH": "/billing",
+    "CHANGE_USER_NAME": "/settings",
+    "DELETE_CLIENT": "/clients",
+    "DELETE_MATTER": "/matters",
+    "DOCUMENT_DELETED": "/matters",
+    "DOCUMENT_RENAMED": "/matters",
+    "FILTER_CLIENTS": "/clients",
+    "FILTER_MATTER_STATUS": "/matters",
+    "HELP_VIEWED": "/help",
+    "LOG_DELETE": "/matters",
+    "LOG_EDITED": "/matters",
+    "NEW_CALENDAR_EVENT_ADDED": "/calendar",
+    "NEW_LOG_ADDED": "/matters",
+    "SEARCH_CLIENT": "/search",
+    "SEARCH_MATTER": "/search",
+    "SORT_MATTER_BY_CREATED_AT": "/matters",
+    "UPDATE_MATTER": "/matters",
+    "VIEW_CLIENT_DETAILS": "/clients",
+    "VIEW_MATTER_DETAILS": "/matters",
+    "VIEW_PENDING_EVENTS": "/calendar",
+}
+
+# automail (IWA p06)
+_ROUTE_BY_USE_CASE_AUTOMAIL: dict[str, str] = {
+    "ADD_LABEL": "/inbox",
+    "ARCHIVE_EMAIL": "/inbox",
+    "CLEAR_SELECTION": "/inbox",
+    "CREATE_LABEL": "/inbox",
+    "DELETE_EMAIL": "/inbox",
+    "EDIT_DRAFT_EMAIL": "/drafts",
+    "EMAILS_NEXT_PAGE": "/inbox",
+    "EMAILS_PREV_PAGE": "/inbox",
+    "EMAIL_SAVE_AS_DRAFT": "/compose",
+    "FORWARD_EMAIL": "/inbox",
+    "MARK_AS_SPAM": "/inbox",
+    "MARK_AS_UNREAD": "/inbox",
+    "MARK_EMAIL_AS_IMPORTANT": "/inbox",
+    "REPLY_EMAIL": "/inbox",
+    "SEARCH_EMAIL": "/search",
+    "SEND_EMAIL": "/compose",
+    "STAR_AN_EMAIL": "/inbox",
+    "TEMPLATE_BODY_EDITED": "/templates",
+    "TEMPLATE_CANCELED": "/templates",
+    "TEMPLATE_SAVED_DRAFT": "/templates",
+    "TEMPLATE_SELECTED": "/templates",
+    "TEMPLATE_SENT": "/templates",
+    "THEME_CHANGED": "/settings",
+    "VIEW_EMAIL": "/inbox",
+    "VIEW_TEMPLATES": "/templates",
+}
+
+# autolodge (IWA p08)
+_ROUTE_BY_USE_CASE_AUTOLODGE: dict[str, str] = {
+    "ADD_TO_WISHLIST": "/stay",
+    "APPLY_FILTERS": "/",
+    "BACK_TO_ALL_HOTELS": "/",
+    "BOOK_FROM_WISHLIST": "/wishlist",
+    "CONFIRM_AND_PAY": "/confirm",
+    "EDIT_CHECK_IN_OUT_DATES": "/stay",
+    "EDIT_NUMBER_OF_GUESTS": "/stay",
+    "FAQ_OPENED": "/help",
+    "HELP_VIEWED": "/help",
+    "MESSAGE_HOST": "/stay",
+    "PAYMENT_METHOD_SELECTED": "/confirm",
+    "POPULAR_HOTELS_VIEWED": "/",
+    "REMOVE_FROM_WISHLIST": "/wishlist",
+    "RESERVE_HOTEL": "/stay",
+    "SEARCH_HOTEL": "/search",
+    "SHARE_HOTEL": "/",
+    "SUBMIT_REVIEW": "/stay",
+    "VIEW_HOTEL": "/stay",
+    "WISHLIST_OPENED": "/wishlist",
+}
+
+# autodelivery (IWA p07)
+_ROUTE_BY_USE_CASE_AUTODELIVERY: dict[str, str] = {
+    "ADDRESS_ADDED": "/checkout",
+    "ADD_TO_CART_MENU_ITEM": "/restaurant",
+    "ADD_TO_CART_MODAL_OPEN": "/restaurant",
+    "BACK_TO_ALL_RESTAURANTS": "/",
+    "DELETE_REVIEW": "/restaurant",
+    "DELIVERY_PRIORITY_SELECTED": "/checkout",
+    "DROPOFF_PREFERENCE": "/checkout",
+    "EDIT_CART_ITEM": "/cart",
+    "EMPTY_CART": "/cart",
+    "ITEM_INCREMENTED": "/cart",
+    "OPEN_CHECKOUT_PAGE": "/checkout",
+    "PLACE_ORDER": "/checkout",
+    "QUICK_ORDER_STARTED": "/cart",
+    "RESTAURANT_FILTER": "/search",
+    "RESTAURANT_NEXT_PAGE": "/",
+    "RESTAURANT_PREV_PAGE": "/",
+    "REVIEW_SUBMITTED": "/restaurant",
+    "SEARCH_DELIVERY_RESTAURANT": "/search",
+    "VIEW_ALL_RESTAURANTS": "/",
+    "VIEW_DELIVERY_RESTAURANT": "/restaurant",
+}
+
+# autowork (IWA p10)
+_ROUTE_BY_USE_CASE_AUTOWORK: dict[str, str] = {
+    "ADD_SKILL": "/jobs",
+    "BOOK_A_CONSULTATION": "/experts",
+    "BROWSE_FAVORITE_EXPERT": "/favorites",
+    "CANCEL_HIRE": "/hires",
+    "CHOOSE_BUDGET_TYPE": "/jobs",
+    "CHOOSE_PROJECT_SIZE": "/jobs",
+    "CHOOSE_PROJECT_TIMELINE": "/jobs",
+    "CLOSE_POST_A_JOB_WINDOW": "/jobs",
+    "CONTACT_EXPERT_MESSAGE_SENT": "/experts",
+    "CONTACT_EXPERT_OPENED": "/experts",
+    "EDIT_ABOUT": "/profile",
+    "EDIT_PROFILE_EMAIL": "/profile",
+    "EDIT_PROFILE_LOCATION": "/profile",
+    "EDIT_PROFILE_NAME": "/profile",
+    "EDIT_PROFILE_TITLE": "/profile",
+    "FAVORITE_EXPERT_REMOVED": "/favorites",
+    "FAVORITE_EXPERT_SELECTED": "/favorites",
+    "HIRE_BTN_CLICKED": "/experts",
+    "HIRE_CONSULTANT": "/hires",
+    "HIRE_LATER_ADDED": "/hire-later",
+    "HIRE_LATER_REMOVED": "/hire-later",
+    "HIRE_LATER_START": "/hire-later",
+    "NAVBAR_EXPERTS_CLICK": "/experts",
+    "NAVBAR_FAVORITES_CLICK": "/favorites",
+    "NAVBAR_HIRES_CLICK": "/hires",
+    "NAVBAR_HIRE_LATER_CLICK": "/hire-later",
+    "NAVBAR_JOBS_CLICK": "/jobs",
+    "NAVBAR_PROFILE_CLICK": "/profile",
+    "POST_A_JOB": "/jobs",
+    "QUICK_HIRE": "/experts",
+    "SEARCH_SKILL": "/jobs",
+    "SELECT_HIRING_TEAM": "/hires",
+    "SET_RATE_RANGE": "/jobs",
+    "SUBMIT_JOB": "/jobs",
+    "WRITE_JOB_DESCRIPTION": "/jobs",
+    "WRITE_JOB_TITLE": "/jobs",
+}
+
+# autoconnect (IWA p09)
+_ROUTE_BY_USE_CASE_AUTOCONNECT: dict[str, str] = {
+    "ADD_EXPERIENCE": "/profile",
+    "APPLY_FOR_JOB": "/jobs",
+    "BACK_TO_ALL_JOBS": "/jobs",
+    "CANCEL_APPLICATION": "/jobs",
+    "COMMENT_ON_POST": "/",
+    "CONNECT_WITH_USER": "/",
+    "EDIT_EXPERIENCE": "/profile",
+    "EDIT_PROFILE": "/profile",
+    "FILTER_JOBS": "/jobs",
+    "FOLLOW_PAGE": "/",
+    "HIDE_POST": "/",
+    "HOME_NAVBAR": "/",
+    "JOBS_NAVBAR": "/jobs",
+    "LIKE_POST": "/",
+    "POST_STATUS": "/",
+    "REMOVE_POST": "/",
+    "SAVE_POST": "/",
+    "SEARCH_JOBS": "/jobs",
+    "SEARCH_USERS": "/search",
+    "UNFOLLOW_PAGE": "/",
+    "UNHIDE_POST": "/",
+    "VIEW_APPLIED_JOBS": "/jobs",
+    "VIEW_HIDDEN_POSTS": "/",
+    "VIEW_JOB": "/jobs",
+    "VIEW_SAVED_POSTS": "/",
+    "VIEW_USER_PROFILE": "/profile",
+}
+
+# autocalendar (IWA p11)
+_ROUTE_BY_USE_CASE_AUTOCALENDAR: dict[str, str] = {
+    "ADD_EVENT": "/",
+    "ADD_NEW_CALENDAR": "/",
+    "CANCEL_ADD_EVENT": "/",
+    "CELL_CLICKED": "/",
+    "CREATE_CALENDAR": "/",
+    "DELETE_ADDED_EVENT": "/",
+    "EVENT_ADD_ATTENDEE": "/",
+    "EVENT_ADD_REMINDER": "/",
+    "EVENT_REMOVE_ATTENDEE": "/",
+    "EVENT_REMOVE_REMINDER": "/",
+    "EVENT_WIZARD_OPEN": "/",
+    "SEARCH_SUBMIT": "/search",
+    "SELECT_CALENDAR": "/",
+    "SELECT_DAY": "/",
+    "SELECT_FIVE_DAYS": "/",
+    "SELECT_MONTH": "/",
+    "SELECT_TODAY": "/",
+    "SELECT_WEEK": "/",
+    "UNSELECT_CALENDAR": "/",
+}
+
+# autolist (IWA p12)
+_ROUTE_BY_USE_CASE_AUTOLIST: dict[str, str] = {
+    "AUTOLIST_ADD_TASK_CLICKED": "/tasks",
+    "AUTOLIST_ADD_TEAM_CLICKED": "/teams",
+    "AUTOLIST_CANCEL_TASK_CREATION": "/tasks",
+    "AUTOLIST_COMPLETE_TASK": "/tasks",
+    "AUTOLIST_DELETE_TASK": "/tasks",
+    "AUTOLIST_EDIT_TASK_MODAL_OPENED": "/tasks",
+    "AUTOLIST_SELECT_DATE_FOR_TASK": "/tasks",
+    "AUTOLIST_SELECT_TASK_PRIORITY": "/tasks",
+    "AUTOLIST_TASK_ADDED": "/tasks",
+    "AUTOLIST_TEAM_CREATED": "/teams",
+    "AUTOLIST_TEAM_MEMBERS_ADDED": "/teams",
+    "AUTOLIST_TEAM_ROLE_ASSIGNED": "/teams",
+}
+
 
 def _route_target(*, web_project_id: str, use_case: str) -> str:
     pid = str(web_project_id or "").strip().lower() or "autocinema"
     if pid == "autobooks":
         return _ROUTE_BY_USE_CASE_AUTOBOOKS.get(use_case, "/")
+    if pid == "autocalendar":
+        return _ROUTE_BY_USE_CASE_AUTOCALENDAR.get(use_case, "/")
+    if pid == "autoconnect":
+        return _ROUTE_BY_USE_CASE_AUTOCONNECT.get(use_case, "/")
     if pid == "autodining":
         return _ROUTE_BY_USE_CASE_AUTODINING.get(use_case, "/")
+    if pid == "autodelivery":
+        return _ROUTE_BY_USE_CASE_AUTODELIVERY.get(use_case, "/")
+    if pid == "autocrm":
+        return _ROUTE_BY_USE_CASE_AUTOCRM.get(use_case, "/")
+    if pid == "automail":
+        return _ROUTE_BY_USE_CASE_AUTOMAIL.get(use_case, "/")
+    if pid == "autolist":
+        return _ROUTE_BY_USE_CASE_AUTOLIST.get(use_case, "/")
+    if pid == "autolodge":
+        return _ROUTE_BY_USE_CASE_AUTOLODGE.get(use_case, "/")
+    if pid == "autowork":
+        return _ROUTE_BY_USE_CASE_AUTOWORK.get(use_case, "/")
     if pid == "autozone":
         return _ROUTE_BY_USE_CASE_AUTOZONE.get(use_case, "/")
     return _ROUTE_BY_USE_CASE.get(use_case, "/")
@@ -734,6 +962,214 @@ def normalize_task_row(task_row: dict[str, Any], *, seed: int | None = None) -> 
             "RESERVATION_COMPLETE",
         }:
             success_expectations["url_contains"] = ["/", "/restaurant", "/dining", "/r/"]
+    elif str(web_project_id or "").strip().lower() == "autocrm":
+        if use_case == "HELP_VIEWED":
+            success_expectations["url_contains"] = ["/help", "/"]
+        elif use_case == "BILLING_SEARCH":
+            success_expectations["url_contains"] = ["/billing", "/search", "/"]
+        elif use_case in {"SEARCH_MATTER", "SEARCH_CLIENT", "FILTER_CLIENTS", "FILTER_MATTER_STATUS", "SORT_MATTER_BY_CREATED_AT"}:
+            success_expectations["url_contains"] = ["/search", "/"]
+        elif use_case in {"VIEW_CLIENT_DETAILS", "ADD_CLIENT", "DELETE_CLIENT"}:
+            success_expectations["url_contains"] = ["/clients", "/"]
+        elif use_case in {
+            "UPDATE_MATTER",
+            "ADD_NEW_MATTER",
+            "VIEW_MATTER_DETAILS",
+            "ARCHIVE_MATTER",
+            "DELETE_MATTER",
+            "NEW_LOG_ADDED",
+            "LOG_EDITED",
+            "LOG_DELETE",
+            "DOCUMENT_RENAMED",
+            "DOCUMENT_DELETED",
+        }:
+            success_expectations["url_contains"] = ["/matters", "/"]
+        elif use_case in {"VIEW_PENDING_EVENTS", "NEW_CALENDAR_EVENT_ADDED"}:
+            success_expectations["url_contains"] = ["/calendar", "/"]
+        elif use_case == "CHANGE_USER_NAME":
+            success_expectations["url_contains"] = ["/settings", "/profile", "/"]
+        else:
+            success_expectations["url_contains"] = ["/"]
+    elif str(web_project_id or "").strip().lower() == "automail":
+        if use_case == "SEARCH_EMAIL":
+            success_expectations["url_contains"] = ["/search", "/"]
+        elif use_case in {
+            "VIEW_TEMPLATES",
+            "TEMPLATE_SELECTED",
+            "TEMPLATE_BODY_EDITED",
+            "TEMPLATE_SENT",
+            "TEMPLATE_SAVED_DRAFT",
+            "TEMPLATE_CANCELED",
+        }:
+            success_expectations["url_contains"] = ["/templates", "/"]
+        elif use_case in {"THEME_CHANGED", "CREATE_LABEL", "ADD_LABEL", "CLEAR_SELECTION"}:
+            success_expectations["url_contains"] = ["/settings", "/inbox", "/"]
+        elif use_case in {"SEND_EMAIL", "EMAIL_SAVE_AS_DRAFT", "EDIT_DRAFT_EMAIL"}:
+            success_expectations["url_contains"] = ["/compose", "/drafts", "/"]
+        else:
+            success_expectations["url_contains"] = ["/inbox", "/", "/mail", "/email"]
+    elif str(web_project_id or "").strip().lower() == "autolodge":
+        if use_case in {"HELP_VIEWED", "FAQ_OPENED"}:
+            success_expectations["url_contains"] = ["/help", "/"]
+        elif use_case == "SEARCH_HOTEL":
+            success_expectations["url_contains"] = ["/search", "/"]
+        elif use_case in {
+            "ADD_TO_WISHLIST",
+            "REMOVE_FROM_WISHLIST",
+            "WISHLIST_OPENED",
+            "BOOK_FROM_WISHLIST",
+        }:
+            success_expectations["url_contains"] = ["/wishlist", "/"]
+        elif use_case in {"CONFIRM_AND_PAY", "PAYMENT_METHOD_SELECTED"}:
+            success_expectations["url_contains"] = ["/confirm", "/stay", "/"]
+        elif use_case in {
+            "VIEW_HOTEL",
+            "RESERVE_HOTEL",
+            "EDIT_NUMBER_OF_GUESTS",
+            "EDIT_CHECK_IN_OUT_DATES",
+            "MESSAGE_HOST",
+            "SUBMIT_REVIEW",
+        }:
+            success_expectations["url_contains"] = ["/stay", "/", "/hotel", "/h/"]
+        else:
+            success_expectations["url_contains"] = ["/", "/stay", "/search"]
+    elif str(web_project_id or "").strip().lower() == "autodelivery":
+        if use_case in {"SEARCH_DELIVERY_RESTAURANT", "RESTAURANT_FILTER"}:
+            success_expectations["url_contains"] = ["/search", "/"]
+        elif use_case in {
+            "QUICK_ORDER_STARTED",
+            "EMPTY_CART",
+            "EDIT_CART_ITEM",
+            "ITEM_INCREMENTED",
+        }:
+            success_expectations["url_contains"] = ["/cart", "/"]
+        elif use_case in {
+            "OPEN_CHECKOUT_PAGE",
+            "DROPOFF_PREFERENCE",
+            "ADDRESS_ADDED",
+            "PLACE_ORDER",
+            "DELIVERY_PRIORITY_SELECTED",
+        }:
+            success_expectations["url_contains"] = ["/checkout", "/cart", "/"]
+        elif use_case in {
+            "VIEW_DELIVERY_RESTAURANT",
+            "ADD_TO_CART_MODAL_OPEN",
+            "ADD_TO_CART_MENU_ITEM",
+            "REVIEW_SUBMITTED",
+            "DELETE_REVIEW",
+        }:
+            success_expectations["url_contains"] = ["/restaurant", "/r/", "/"]
+        else:
+            success_expectations["url_contains"] = ["/", "/restaurant", "/search"]
+    elif str(web_project_id or "").strip().lower() == "autowork":
+        if use_case in {
+            "POST_A_JOB",
+            "WRITE_JOB_TITLE",
+            "SEARCH_SKILL",
+            "ADD_SKILL",
+            "CHOOSE_BUDGET_TYPE",
+            "CHOOSE_PROJECT_SIZE",
+            "CHOOSE_PROJECT_TIMELINE",
+            "SET_RATE_RANGE",
+            "WRITE_JOB_DESCRIPTION",
+            "SUBMIT_JOB",
+            "CLOSE_POST_A_JOB_WINDOW",
+        }:
+            success_expectations["url_contains"] = ["/jobs", "/post", "/"]
+        elif use_case in {
+            "NAVBAR_PROFILE_CLICK",
+            "EDIT_PROFILE_NAME",
+            "EDIT_ABOUT",
+            "EDIT_PROFILE_EMAIL",
+            "EDIT_PROFILE_TITLE",
+            "EDIT_PROFILE_LOCATION",
+        }:
+            success_expectations["url_contains"] = ["/profile", "/"]
+        elif use_case in {
+            "BOOK_A_CONSULTATION",
+            "HIRE_BTN_CLICKED",
+            "QUICK_HIRE",
+            "SELECT_HIRING_TEAM",
+            "HIRE_CONSULTANT",
+            "CANCEL_HIRE",
+            "CONTACT_EXPERT_OPENED",
+            "CONTACT_EXPERT_MESSAGE_SENT",
+        }:
+            success_expectations["url_contains"] = ["/experts", "/hire", "/"]
+        elif use_case in {
+            "HIRE_LATER_ADDED",
+            "HIRE_LATER_REMOVED",
+            "HIRE_LATER_START",
+            "NAVBAR_HIRE_LATER_CLICK",
+        }:
+            success_expectations["url_contains"] = ["/hire-later", "/"]
+        elif use_case in {
+            "BROWSE_FAVORITE_EXPERT",
+            "FAVORITE_EXPERT_SELECTED",
+            "FAVORITE_EXPERT_REMOVED",
+            "NAVBAR_FAVORITES_CLICK",
+        }:
+            success_expectations["url_contains"] = ["/favorites", "/"]
+        elif use_case in {"NAVBAR_HIRES_CLICK"}:
+            success_expectations["url_contains"] = ["/hires", "/"]
+        else:
+            success_expectations["url_contains"] = ["/", "/jobs", "/experts"]
+    elif str(web_project_id or "").strip().lower() == "autoconnect":
+        if use_case in {"SEARCH_JOBS", "FILTER_JOBS", "BACK_TO_ALL_JOBS", "VIEW_APPLIED_JOBS", "APPLY_FOR_JOB", "VIEW_JOB", "CANCEL_APPLICATION", "JOBS_NAVBAR"}:
+            success_expectations["url_contains"] = ["/jobs", "/"]
+        elif use_case in {"SEARCH_USERS", "FOLLOW_PAGE", "UNFOLLOW_PAGE", "VIEW_USER_PROFILE", "CONNECT_WITH_USER"}:
+            success_expectations["url_contains"] = ["/", "/search", "/profile", "/u/"]
+        elif use_case in {
+            "POST_STATUS",
+            "LIKE_POST",
+            "COMMENT_ON_POST",
+            "SAVE_POST",
+            "HIDE_POST",
+            "REMOVE_POST",
+            "VIEW_SAVED_POSTS",
+            "VIEW_HIDDEN_POSTS",
+            "UNHIDE_POST",
+            "HOME_NAVBAR",
+        }:
+            success_expectations["url_contains"] = ["/", "/feed", "/in"]
+        elif use_case in {"EDIT_PROFILE", "EDIT_EXPERIENCE", "ADD_EXPERIENCE"}:
+            success_expectations["url_contains"] = ["/profile", "/"]
+        else:
+            success_expectations["url_contains"] = ["/", "/jobs", "/profile"]
+    elif str(web_project_id or "").strip().lower() == "autocalendar":
+        if use_case == "SEARCH_SUBMIT":
+            success_expectations["url_contains"] = ["/search", "/"]
+        elif use_case in {
+            "ADD_NEW_CALENDAR",
+            "CREATE_CALENDAR",
+            "UNSELECT_CALENDAR",
+            "SELECT_CALENDAR",
+        }:
+            success_expectations["url_contains"] = ["/", "/calendar", "/cal"]
+        elif use_case in {
+            "EVENT_WIZARD_OPEN",
+            "ADD_EVENT",
+            "CANCEL_ADD_EVENT",
+            "DELETE_ADDED_EVENT",
+            "CELL_CLICKED",
+            "EVENT_ADD_REMINDER",
+            "EVENT_REMOVE_REMINDER",
+            "EVENT_ADD_ATTENDEE",
+            "EVENT_REMOVE_ATTENDEE",
+        }:
+            success_expectations["url_contains"] = ["/", "/event", "/e/"]
+        else:
+            success_expectations["url_contains"] = ["/", "/calendar", "/day", "/week", "/month"]
+    elif str(web_project_id or "").strip().lower() == "autolist":
+        if use_case in {
+            "AUTOLIST_ADD_TEAM_CLICKED",
+            "AUTOLIST_TEAM_MEMBERS_ADDED",
+            "AUTOLIST_TEAM_ROLE_ASSIGNED",
+            "AUTOLIST_TEAM_CREATED",
+        }:
+            success_expectations["url_contains"] = ["/teams", "/"]
+        else:
+            success_expectations["url_contains"] = ["/tasks", "/", "/task"]
     elif use_case == "CONTACT":
         success_expectations["texts"] = ["Message Sent!"]
         success_expectations["url_contains"] = ["/contact"]
