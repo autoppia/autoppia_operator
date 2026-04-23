@@ -94,6 +94,38 @@ _ROUTE_BY_USE_CASE: dict[str, str] = {
     "WATCH_TRAILER": "/movies",
 }
 
+# autobooks (IWA p02) — primary route hints for `route_target` / success expectations
+_ROUTE_BY_USE_CASE_AUTOBOOKS: dict[str, str] = {
+    "ADD_BOOK": "/profile",
+    "ADD_COMMENT_BOOK": "/books",
+    "ADD_TO_CART_BOOK": "/search",
+    "ADD_TO_READING_LIST": "/search",
+    "BOOK_DETAIL": "/books",
+    "CONTACT_BOOK": "/contact",
+    "DELETE_BOOK": "/profile",
+    "EDIT_BOOK": "/profile",
+    "EDIT_USER_BOOK": "/profile",
+    "FILTER_BOOK": "/search",
+    "LOGIN_BOOK": "/login",
+    "LOGOUT_BOOK": "/profile",
+    "OPEN_PREVIEW": "/search",
+    "PURCHASE_BOOK": "/books",
+    "REGISTRATION_BOOK": "/register",
+    "REMOVE_FROM_CART_BOOK": "/cart",
+    "REMOVE_FROM_READING_LIST": "/search",
+    "SEARCH_BOOK": "/search",
+    "SHARE_BOOK": "/books",
+    "VIEW_CART_BOOK": "/cart",
+}
+
+
+def _route_target(*, web_project_id: str, use_case: str) -> str:
+    pid = str(web_project_id or "").strip().lower() or "autocinema"
+    if pid == "autobooks":
+        return _ROUTE_BY_USE_CASE_AUTOBOOKS.get(use_case, "/")
+    return _ROUTE_BY_USE_CASE.get(use_case, "/")
+
+
 _DEFAULT_VALUES: dict[str, str] = {
     "bio": "films lover",
     "cast": "John,Roy",
@@ -601,8 +633,28 @@ def normalize_task_row(task_row: dict[str, Any], *, seed: int | None = None) -> 
         "texts": [],
         "url_contains": [],
     }
-    route_target = _ROUTE_BY_USE_CASE.get(use_case, "/")
-    if use_case == "CONTACT":
+    route_target = _route_target(web_project_id=web_project_id, use_case=use_case)
+    if str(web_project_id or "").strip().lower() == "autobooks":
+        if use_case == "CONTACT_BOOK":
+            success_expectations["url_contains"] = ["/contact"]
+        elif use_case in {"SEARCH_BOOK", "FILTER_BOOK", "OPEN_PREVIEW"}:
+            success_expectations["url_contains"] = ["/search"]
+        elif use_case in {"VIEW_CART_BOOK", "REMOVE_FROM_CART_BOOK", "ADD_TO_CART_BOOK"}:
+            success_expectations["url_contains"] = ["/cart"]
+        elif use_case in {
+            "BOOK_DETAIL",
+            "SHARE_BOOK",
+            "PURCHASE_BOOK",
+            "ADD_COMMENT_BOOK",
+            "ADD_TO_READING_LIST",
+            "REMOVE_FROM_READING_LIST",
+        }:
+            success_expectations["url_contains"] = ["/books"]
+        elif use_case in {"LOGIN_BOOK", "REGISTRATION_BOOK"}:
+            success_expectations["url_contains"] = ["/", "/login", "/register"]
+        elif use_case in {"DELETE_BOOK", "ADD_BOOK", "EDIT_BOOK", "EDIT_USER_BOOK", "LOGOUT_BOOK"}:
+            success_expectations["url_contains"] = ["/profile"]
+    elif use_case == "CONTACT":
         success_expectations["texts"] = ["Message Sent!"]
         success_expectations["url_contains"] = ["/contact"]
     elif use_case in {"LOGIN", "REGISTRATION", "EDIT_USER", "ADD_FILM", "EDIT_FILM", "DELETE_FILM", "LOGOUT"}:

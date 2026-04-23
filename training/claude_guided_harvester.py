@@ -314,6 +314,44 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
             "attempts": [{"action": normalized_action, "success": bool(result.action_result.successfully_executed), "error": str(result.action_result.error or "") if result.action_result else ""}],
         }
         return result, execution
+    if action_type == "WaitAction":
+        cands = list(planned_action.get("selector_candidates") or [])
+        single_sel = planned_action.get("selector")
+        if single_sel and isinstance(single_sel, dict) and not cands:
+            cands = [single_sel]
+        ts = planned_action.get("time_seconds")
+        if cands:
+            w_payload: dict[str, Any] = {
+                "type": "WaitAction",
+                "selector": cands[0],
+                "timeout_seconds": float(planned_action.get("timeout_seconds") or 5.0),
+            }
+            w_action = BaseAction.create_action(w_payload)
+            result = await session.step(w_action)
+            return result, {
+                "planned_action": planned_action,
+                "attempts": [
+                    {
+                        "action": w_payload,
+                        "success": bool(result.action_result.successfully_executed),
+                        "error": str(result.action_result.error or "") if result.action_result else "",
+                    }
+                ],
+            }
+        if ts is not None:
+            wa = {"type": "WaitAction", "time_seconds": float(ts)}
+            w_action = BaseAction.create_action(wa)
+            result = await session.step(w_action)
+            return result, {
+                "planned_action": planned_action,
+                "attempts": [
+                    {
+                        "action": wa,
+                        "success": bool(result.action_result.successfully_executed),
+                        "error": str(result.action_result.error or "") if result.action_result else "",
+                    }
+                ],
+            }
     attempts: list[dict[str, Any]] = []
     resolved_candidates: list[dict[str, Any]] = []
     existing_exact_candidates: list[dict[str, Any]] = []

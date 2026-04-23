@@ -40,7 +40,7 @@ def candidate_row_from_replay(
     if not isinstance(episode, dict):
         return None
     return {
-        "web_project_id": "autocinema",
+        "web_project_id": str(candidate.metadata.get("web_project_id") or "autocinema"),
         "task_id": str(episode.get("task_id") or ""),
         "episode_task_id": str(episode.get("episode_task_id") or ""),
         "use_case": candidate.use_case,
