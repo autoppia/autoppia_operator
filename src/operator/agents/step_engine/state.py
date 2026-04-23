@@ -4,10 +4,11 @@ import contextlib
 import re
 from typing import Any, Literal
 
+from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 
 from .utils import *
-from .utils import _norm_ws
+from .utils import MAX_HISTORY_SUMMARY_CHARS, MAX_PENDING_ELEMENTS, MAX_STR, MAX_VISUAL_HINTS, _dedupe_keep_order, _dom_digest, _norm_ws, _normalize_working_state
 
 
 class Subgoal(BaseModel):
