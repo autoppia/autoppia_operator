@@ -668,6 +668,22 @@ def _coerce_scalar(value: Any) -> str:
     return str(value).strip()
 
 
+def _coerce_numeric(value: Any) -> float | None:
+    raw = _coerce_scalar(value)
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except Exception:
+        match = re.search(r"-?\d+(?:\.\d+)?", raw)
+        if not match:
+            return None
+        try:
+            return float(match.group(0))
+        except Exception:
+            return None
+
+
 def _is_placeholder_value(value: str) -> bool:
     return "<" in str(value or "") and ">" in str(value or "")
 
@@ -816,32 +832,41 @@ def _update_entity_filters(filters: dict[str, Any], hint: ConstraintHint) -> Non
             if normalized:
                 filters["genre_none_of"] = normalized
     elif hint.field == "duration":
+        numeric = _coerce_numeric(raw)
+        if numeric is None:
+            return
         if hint.operator == "equals":
-            value = int(float(raw))
+            value = int(numeric)
             filters["duration_gte"] = value
             filters["duration_lte"] = value
         if hint.operator in {"greater_than", "greater_equal"}:
-            filters["duration_gte"] = int(float(raw))
+            filters["duration_gte"] = int(numeric)
         elif hint.operator in {"less_than", "less_equal"}:
-            filters["duration_lte"] = int(float(raw))
+            filters["duration_lte"] = int(numeric)
     elif hint.field == "rating":
+        numeric = _coerce_numeric(raw)
+        if numeric is None:
+            return
         if hint.operator == "equals":
-            value = float(raw)
+            value = float(numeric)
             filters["rating_gte"] = value
             filters["rating_lte"] = value
         if hint.operator in {"greater_than", "greater_equal"}:
-            filters["rating_gte"] = float(raw)
+            filters["rating_gte"] = float(numeric)
         elif hint.operator in {"less_than", "less_equal"}:
-            filters["rating_lte"] = float(raw)
+            filters["rating_lte"] = float(numeric)
     elif hint.field == "year":
+        numeric = _coerce_numeric(raw)
+        if numeric is None:
+            return
         if hint.operator == "equals":
-            value = int(float(raw))
+            value = int(numeric)
             filters["year_gte"] = value
             filters["year_lte"] = value
         if hint.operator in {"greater_than", "greater_equal"}:
-            filters["year_gte"] = int(float(raw))
+            filters["year_gte"] = int(numeric)
         elif hint.operator in {"less_than", "less_equal"}:
-            filters["year_lte"] = int(float(raw))
+            filters["year_lte"] = int(numeric)
 
 
 def _relevant_data_payload(task_row: dict[str, Any]) -> dict[str, Any]:
