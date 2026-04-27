@@ -258,3 +258,25 @@ def test_normalize_task_row_auth_criteria_falls_back_to_prompt_when_tests_missin
 
     assert objective.field_values["username"] == "prompt_user"
     assert objective.field_values["email"] == "prompt@example.com"
+
+
+def test_normalize_task_row_autohealth_maps_route_and_health_fields() -> None:
+    task_row = _task_row(
+        use_case="CONTACT_DOCTOR",
+        prompt="doctor_name not equals 'Dr. Linda Hernandez' and patient_name contains 'is' and preferred_contact_method equals 'phone'",
+        url="http://localhost:8013/doctors?seed=604",
+        event_criteria={
+            "doctor_name": {"operator": "not_equals", "value": "Dr. Linda Hernandez"},
+            "patient_name": {"operator": "contains", "value": "is"},
+            "preferred_contact_method": "phone",
+        },
+    )
+    task_row["web_project_id"] = "autohealth"
+
+    objective = normalize_task_row(task_row)
+
+    assert objective.web_project_id == "autohealth"
+    assert objective.route_target == "/doctors"
+    assert objective.field_values["doctor_name"]
+    assert objective.field_values["patient_name"] == "is"
+    assert objective.field_values["preferred_contact_method"] == "phone"

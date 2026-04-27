@@ -464,6 +464,11 @@ def search_submit_selectors(project_id: str = "autocinema", seed: int | None = N
     return _combined_selectors(ids=["search-submit-button"], classes=["search-button"], texts=["Search"], project_id=project_id, seed=seed)
 
 
+def search_input_selectors(project_id: str = "autocinema", seed: int | None = None) -> list[dict[str, Any]]:
+    # Search input has type="search" but no id — use attribute selector
+    return [{"type": "attributeValueSelector", "attribute": "type", "value": "search", "case_sensitive": False}]
+
+
 def view_detail_selectors(project_id: str = "autocinema", seed: int | None = None) -> list[dict[str, Any]]:
     return _combined_selectors(
         ids=["view-details-button", "featured-movie-view-details-btn"],
@@ -633,6 +638,7 @@ __all__ = [
     "register_username_selectors",
     "route_for_use_case",
     "save_changes_selectors",
+    "search_input_selectors",
     "search_submit_selectors",
     "selector_candidates_for_classes",
     "selector_candidates_for_ids",

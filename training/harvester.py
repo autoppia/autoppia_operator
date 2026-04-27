@@ -885,7 +885,7 @@ def collect_seed_rows(*, config: HarvestConfig, seed: int) -> list[dict[str, Any
             except Exception:
                 pass
     prompt_override = build_prompt_override(use_case=config.use_case, extra_lines=extra_lines)
-    task_cache_path = None
+    task_cache_path = Path(config.task_cache_arg).resolve()
     if prompt_override:
         task_cache_path = _build_task_cache_for_seed(config=config, seed=seed, prompt_override=prompt_override)
 

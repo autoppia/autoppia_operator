@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from training.deterministic_harvester.builders.autohealth import AUTOHEALTH_PLAN_BUILDERS
 from training.deterministic_harvester.builders.autocinema import AUTOCINEMA_PLAN_BUILDERS
 from training.deterministic_harvester.builders.registry import DETERMINISTIC_PLAN_BUILDERS
 from training.deterministic_harvester.normalizer import normalize_task_row
@@ -148,3 +149,28 @@ def test_deterministic_builder_registry_covers_all_autocinema_use_cases() -> Non
 
     assert set(AUTOCINEMA_PLAN_BUILDERS) == expected_use_cases
     assert registered_use_cases == expected_use_cases
+
+
+def test_build_deterministic_plan_for_autohealth_uses_iwa_enriched_selectors() -> None:
+    task_row = _task_row(
+        use_case="SEARCH_DOCTORS",
+        prompt="speciality contains 'ily Med' and language equals 'English'",
+        url="http://localhost:8013/doctors?seed=837",
+        event_criteria={"speciality": {"operator": "contains", "value": "ily Med"}, "language": "English"},
+    )
+    task_row["web_project_id"] = "autohealth"
+
+    objective = normalize_task_row(task_row)
+    plan = build_deterministic_plan(objective)
+
+    assert plan.actions
+    assert plan.actions[0]["type"] == "NavigateAction"
+    assert plan.metadata["web_project_id"] == "autohealth"
+    assert plan.metadata["selector_strategy"] == "semantic_first_with_xpath_fallback"
+    assert plan.metadata["route_target"] == "/doctors"
+
+
+def test_deterministic_builder_registry_includes_autohealth_use_cases() -> None:
+    registered_use_cases = {use_case for project_id, use_case in DETERMINISTIC_PLAN_BUILDERS if project_id == "autohealth"}
+    assert set(AUTOHEALTH_PLAN_BUILDERS)
+    assert registered_use_cases == set(AUTOHEALTH_PLAN_BUILDERS)
