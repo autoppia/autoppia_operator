@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from training.format_for_sft import BASE_MODEL, export_harvest_to_sft
+from training.format_for_sft import BASE_MODEL, StepRequest, StepResponse, export_harvest_to_sft
 
 
 def test_export_harvest_to_sft_generates_manifest_and_non_empty_split(tmp_path: Path) -> None:
@@ -11,9 +11,10 @@ def test_export_harvest_to_sft_generates_manifest_and_non_empty_split(tmp_path: 
         input_path="data/autocinema/contact/gold/episodes.jsonl",
         summary_path="data/autocinema/contact/gold/summary.json",
         output_dir=str(tmp_path / "sft"),
-        train_seeds=[1, 2],
-        val_seeds=[3],
+        train_seeds=[29, 52],
+        val_seeds=[57],
         seed=36,
+        trace_only=False,
     )
 
     train_path = tmp_path / "sft" / "train.jsonl"
@@ -42,9 +43,10 @@ def test_export_harvest_to_sft_keeps_richer_runtime_like_observation(tmp_path: P
         input_path="data/autocinema/contact/gold/episodes.jsonl",
         summary_path="data/autocinema/contact/gold/summary.json",
         output_dir=str(tmp_path / "sft"),
-        train_seeds=[1, 2],
-        val_seeds=[3],
+        train_seeds=[29, 52],
+        val_seeds=[57],
         seed=36,
+        trace_only=False,
     )
     train_path = tmp_path / "sft" / "train.jsonl"
     first = json.loads(train_path.read_text(encoding="utf-8").splitlines()[0])
@@ -336,13 +338,25 @@ def test_export_harvest_to_sft_runtime_aligned_uses_policy_prompt_and_browser_wr
 
     train_rows = [json.loads(line) for line in (tmp_path / "sft" / "train.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     user_text = train_rows[0]["messages"][1]["content"]
+    request = json.loads(user_text)
     assistant = json.loads(train_rows[0]["messages"][2]["content"])
 
-    assert "CURRENT STATE:" in user_text
-    assert "BROWSER SNAPSHOT:" in user_text
-    assert "INTERACTIVE ELEMENT SHORTLIST (JSON):" in user_text
-    assert assistant["type"] == "browser"
-    assert assistant["tool_call"]["name"] == "browser.click"
-    assert assistant["tool_call"]["arguments"]["index"] == 2
+    StepRequest.model_validate(request)
+    StepResponse.model_validate(assistant)
+    assert set(request).issubset({"protocol_version", "task_id", "prompt", "url", "html", "screenshot", "step_index", "history", "tools", "include_reasoning"})
+    assert "snapshot_html" not in request
+    assert "allowed_tools" not in request
+    assert "web_project_id" not in request
+    assert "use_case" not in request
+    assert request["protocol_version"] == "1.0"
+    assert request["task_id"] == "task-1"
+    assert request["html"]
+    assert request["include_reasoning"] is False
+    assert isinstance(request["tools"], list)
+    assert set(assistant).issubset({"protocol_version", "tool_calls", "content", "reasoning", "done", "error"})
+    assert assistant["protocol_version"] == "1.0"
+    assert assistant["tool_calls"][0]["name"] == "browser.click"
+    assert assistant["tool_calls"][0]["arguments"]["index"] == 2
+    assert assistant["done"] is False
     assert manifest["runtime_aligned"] is True
     assert manifest["format_version"].endswith(".v3")

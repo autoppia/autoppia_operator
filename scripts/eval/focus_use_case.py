@@ -6,6 +6,11 @@ Typical flow:
 2. export SFT from that gold set only
 3. train a LoRA on that use case
 4. evaluate only that use case
+
+Guided replays store per-step ``snapshot_html``; HTML is cleaned for fewer tokens
+(``training/snapshot_html_clean``: strip script/style, minify space). Set
+``AUTOPPIA_SNAPSHOT_HTML_COMPRESS=0`` to store raw. ``AUTOPPIA_GUIDED_STEP_HTML_MAX`` caps
+size after cleaning (default 2500000; 0 = unlimited).
 """
 
 from __future__ import annotations
@@ -186,6 +191,7 @@ def cmd_export_sft(args: argparse.Namespace) -> int:
         train_seeds=train_seeds,
         val_seeds=val_seeds,
         trace_only=not bool(getattr(args, "allow_guided_fallback", False)),
+        runtime_aligned=bool(getattr(args, "runtime_aligned", False)),
     )
     print(json.dumps(manifest, indent=2))
     return 0
@@ -507,6 +513,11 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-guided-fallback",
         action="store_true",
         help="If trace_file is missing, build SFT from result_path (replay result.json) when available",
+    )
+    export_sft.add_argument(
+        "--runtime-aligned",
+        action="store_true",
+        help="Export exact /step request JSON as user content and canonical /step response JSON as assistant content",
     )
     export_sft.set_defaults(func=cmd_export_sft)
 

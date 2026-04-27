@@ -736,8 +736,9 @@ def export_harvest_sft(
     train_seeds: list[int] | None = None,
     val_seeds: list[int] | None = None,
     trace_only: bool = True,
+    runtime_aligned: bool = False,
 ) -> dict[str, Any]:
-    from training.format_for_sft import export_harvest_to_sft
+    from training.format_for_sft import RUNTIME_ALIGNED_SYSTEM_PROMPT, SYSTEM_PROMPT, export_harvest_to_sft
 
     return export_harvest_to_sft(
         input_path=str(episodes_path),
@@ -748,6 +749,8 @@ def export_harvest_sft(
         train_seeds=train_seeds,
         val_seeds=val_seeds,
         trace_only=bool(trace_only),
+        runtime_aligned=bool(runtime_aligned),
+        system_prompt=RUNTIME_ALIGNED_SYSTEM_PROMPT if bool(runtime_aligned) else SYSTEM_PROMPT,
     )
 
 

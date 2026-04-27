@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import random
 import time
 from copy import deepcopy
@@ -19,9 +20,45 @@ import training.harvester_support as harvester_support
 from training.deterministic_harvester.normalizer import extract_seed_from_task_url
 from training.deterministic_harvester.projects import resolve_project_id
 from training.deterministic_harvester.resolvers import dataset_movie_candidates, resolve_movie_detail_url
+from training.snapshot_html_clean import clean_snapshot_html
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TASK_CACHE = REPO_ROOT.parent / "autoppia_rl" / "data" / "tasks" / "cache" / "autoppia_cinema_tasks.json"
+
+# Per-step DOM stored on each guided_execution item (SFT / debugging). 0 = no limit.
+_MAX_GUIDED_STEP_HTML_CHARS = int(os.environ.get("AUTOPPIA_GUIDED_STEP_HTML_MAX", "2500000"))
+
+
+def _snapshot_html_from_step_result(result: Any) -> str:
+    snap = getattr(result, "snapshot", None)
+    if snap is None:
+        return ""
+    return str(getattr(snap, "html", None) or "")
+
+
+def _trim_raw_snapshot_for_storage(html: str) -> str:
+    if not html:
+        return ""
+    if _MAX_GUIDED_STEP_HTML_CHARS <= 0 or len(html) <= _MAX_GUIDED_STEP_HTML_CHARS:
+        return html
+    return html[:_MAX_GUIDED_STEP_HTML_CHARS]
+
+
+def _clean_snapshot_for_storage(html: str) -> str:
+    if not html:
+        return ""
+    return _trim_raw_snapshot_for_storage(clean_snapshot_html(html))
+
+
+def _enrich_guided_execution_with_snapshot(execution: dict[str, Any], result: Any) -> None:
+    """Store post-step page HTML on the guided block so SFT can use real per-step DOM."""
+    raw = _snapshot_html_from_step_result(result)
+    if not raw.strip():
+        return
+    execution["snapshot_html"] = _clean_snapshot_for_storage(raw)
+    execution["raw_snapshot_html"] = _trim_raw_snapshot_for_storage(raw)
+
+
 WEB_ID_VARIANTS = REPO_ROOT.parent / "autoppia_webs_demo" / "web_1_autocinema" / "src" / "dynamic" / "v3" / "data" / "id-variants.json"
 
 
@@ -313,6 +350,7 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
             "planned_action": planned_action,
             "attempts": [{"action": normalized_action, "success": bool(result.action_result.successfully_executed), "error": str(result.action_result.error or "") if result.action_result else ""}],
         }
+        _enrich_guided_execution_with_snapshot(execution, result)
         return result, execution
     if action_type == "WaitAction":
         cands = list(planned_action.get("selector_candidates") or [])
@@ -328,7 +366,7 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
             }
             w_action = BaseAction.create_action(w_payload)
             result = await session.step(w_action)
-            return result, {
+            w_exec = {
                 "planned_action": planned_action,
                 "attempts": [
                     {
@@ -338,11 +376,13 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
                     }
                 ],
             }
+            _enrich_guided_execution_with_snapshot(w_exec, result)
+            return result, w_exec
         if ts is not None:
             wa = {"type": "WaitAction", "time_seconds": float(ts)}
             w_action = BaseAction.create_action(wa)
             result = await session.step(w_action)
-            return result, {
+            w_exec = {
                 "planned_action": planned_action,
                 "attempts": [
                     {
@@ -352,6 +392,8 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
                     }
                 ],
             }
+            _enrich_guided_execution_with_snapshot(w_exec, result)
+            return result, w_exec
     attempts: list[dict[str, Any]] = []
     resolved_candidates: list[dict[str, Any]] = []
     existing_exact_candidates: list[dict[str, Any]] = []
@@ -622,7 +664,9 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
             break
     if last_result is None:
         raise RuntimeError(f"No selector candidates available for action: {planned_action}")
-    return last_result, {"planned_action": planned_action, "attempts": attempts}
+    execution_out: dict[str, Any] = {"planned_action": planned_action, "attempts": attempts}
+    _enrich_guided_execution_with_snapshot(execution_out, last_result)
+    return last_result, execution_out
 
 
 async def _run_guided_brief_async(
@@ -718,7 +762,8 @@ async def _run_guided_brief_async(
                     "web_agent_id": web_agent_id,
                     "validator_id": validator_id,
                     "final_url": final_url,
-                    "final_content": final_html[:5000],
+                    "final_content": _clean_snapshot_for_storage(final_html),
+                    "final_content_raw": _trim_raw_snapshot_for_storage(final_html),
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
                     "total_tokens": 0,

@@ -31,10 +31,13 @@ if OP_ROOT in sys.path:
         sys.path.remove(OP_ROOT)
 sys.path.insert(0, OP_ROOT)
 
+from autoppia_iwa.src.web_agents.protocol import STEP_PROTOCOL_VERSION, StepRequest, StepResponse
+
 from src.operator.agents.step_engine.candidates import Candidate, CandidateExtractor
 from src.operator.agents.step_engine.observation import ObsBuilder
 
 from .obs_serializer import serialize_observation
+from .snapshot_html_clean import clean_snapshot_html
 
 SYSTEM_PROMPT = "You are a browser-use style web agent operating on Autocinema tasks. Return the next browser tool call as JSON with the chosen tool arguments."
 RUNTIME_ALIGNED_SYSTEM_PROMPT = (
@@ -64,7 +67,7 @@ DEFAULT_VAL_RATIO = 0.1
 
 _CANDIDATE_EXTRACTOR = CandidateExtractor()
 _OBS_BUILDER = ObsBuilder()
-_STEP_PROTOCOL_VERSION = "1.0"
+_STEP_PROTOCOL_VERSION = STEP_PROTOCOL_VERSION
 _STEP_TOOLS_CACHE: list[dict[str, Any]] | None = None
 
 
@@ -192,7 +195,7 @@ def _build_observation(
     before = step.get("before") if isinstance(step.get("before"), dict) else {}
     action = step.get("action") if isinstance(step.get("action"), dict) else {}
     response = step.get("act_response") if isinstance(step.get("act_response"), dict) else {}
-    snapshot_html = str(request.get("snapshot_html") or "")
+    snapshot_html = clean_snapshot_html(str(request.get("snapshot_html") or ""))
     url = str(request.get("url") or before.get("url") or trace.get("task_url") or "")
     if candidates is None:
         candidates = _CANDIDATE_EXTRACTOR.extract(snapshot_html=snapshot_html, url=url)
@@ -244,32 +247,54 @@ def _build_runtime_aligned_observation(
 ) -> str:
     request = step.get("act_request") if isinstance(step.get("act_request"), dict) else {}
     before = step.get("before") if isinstance(step.get("before"), dict) else {}
-    snapshot_html = str(request.get("snapshot_html") or "")
+    snapshot_html = clean_snapshot_html(str(request.get("snapshot_html") or ""))
     url = str(request.get("url") or before.get("url") or trace.get("task_url") or "")
     prompt = str(request.get("prompt") or trace.get("task_prompt") or "")
-    web_project_id = str(request.get("web_project_id") or trace.get("task_web_project_id") or "")
     step_index = int(step.get("step_index") or 0)
     if candidates is None:
         candidates = _CANDIDATE_EXTRACTOR.extract(snapshot_html=snapshot_html, url=url)
     if text_ir is None:
         text_ir = _OBS_BUILDER.build_text_ir(snapshot_html)
-    payload = {
-        "protocol_version": _STEP_PROTOCOL_VERSION,
-        "task_id": str(request.get("task_id") or trace.get("task_id") or ""),
-        "prompt": prompt,
-        "url": url,
-        "html": snapshot_html,
-        "screenshot": request.get("screenshot"),
-        "step_index": step_index,
-        "history": _step_history_from_trace_steps(
+    return _step_request_json(
+        task_id=str(request.get("task_id") or trace.get("task_id") or ""),
+        prompt=prompt,
+        url=url,
+        html=snapshot_html,
+        screenshot=request.get("screenshot"),
+        step_index=step_index,
+        history=_step_history_from_trace_steps(
             trace.get("steps") if isinstance(trace.get("steps"), list) else [],
             current_step_index=step_index,
         ),
-        "tools": _supported_step_tools(),
-        "include_reasoning": False,
-        "web_project_id": web_project_id,
-        "use_case": str(use_case or ""),
-    }
+        tools=_supported_step_tools(),
+        include_reasoning=False,
+    )
+
+
+def _step_request_json(
+    *,
+    task_id: str | None,
+    prompt: str | None,
+    url: str | None,
+    html: str,
+    screenshot: Any = None,
+    step_index: int,
+    history: list[dict[str, Any]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    include_reasoning: bool = False,
+) -> str:
+    request = StepRequest(
+        task_id=task_id or None,
+        prompt=prompt or None,
+        url=url or None,
+        html=str(html or ""),
+        screenshot=screenshot,
+        step_index=int(step_index),
+        history=history,
+        tools=tools or [],
+        include_reasoning=bool(include_reasoning),
+    )
+    payload = request.model_dump(mode="json", exclude_none=True)
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -278,16 +303,37 @@ def _supported_step_tools() -> list[dict[str, Any]]:
     if _STEP_TOOLS_CACHE is not None:
         return _STEP_TOOLS_CACHE
     try:
-        browser_tools = importlib.import_module("autoppia_iwa.src.execution.actions.browser_tools")
-        all_tools_fn = getattr(browser_tools, "all_tools", None)
-        tools = all_tools_fn() if callable(all_tools_fn) else None
-        if isinstance(tools, list):
-            _STEP_TOOLS_CACHE = [dict(item) for item in tools if isinstance(item, dict)]
+        actions_module = importlib.import_module("autoppia_iwa.src.execution.actions.actions")
+        BaseAction = actions_module.BaseAction
+        defs_fn = getattr(BaseAction, "all_function_definitions", None)
+        defs = defs_fn() if callable(defs_fn) else None
+        tools: list[dict[str, Any]] = []
+        for item in defs if isinstance(defs, list) else []:
+            normalized = _normalize_allowed_tool_for_step(item)
+            if normalized is not None:
+                tools.append(normalized)
+        if tools:
+            _STEP_TOOLS_CACHE = tools
             return _STEP_TOOLS_CACHE
     except Exception:
         pass
     _STEP_TOOLS_CACHE = []
     return _STEP_TOOLS_CACHE
+
+
+def _normalize_allowed_tool_for_step(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    fn = item.get("function") if isinstance(item.get("function"), dict) else {}
+    tool_name = str(fn.get("name") or "").strip()
+    if not tool_name or tool_name in {"done", "evaluate"}:
+        return None
+    namespaced = "user.request_input" if tool_name == "request_user_input" else f"browser.{tool_name}"
+    return {
+        "name": namespaced,
+        "description": str(fn.get("description") or ""),
+        "parameters": fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {},
+    }
 
 
 def _to_tool_call(payload: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -296,7 +342,7 @@ def _to_tool_call(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     # Already a tool call payload.
     if isinstance(payload.get("name"), str) and isinstance(payload.get("arguments"), dict):
         return {
-            "name": str(payload.get("name") or "").strip(),
+            "name": _canonical_step_tool_name(str(payload.get("name") or "").strip()),
             "arguments": dict(payload.get("arguments") or {}),
         }
     try:
@@ -306,10 +352,20 @@ def _to_tool_call(payload: dict[str, Any] | None) -> dict[str, Any] | None:
         if action is not None:
             tool_call = action.to_tool_call()
             if isinstance(tool_call, dict) and tool_call.get("name"):
+                tool_call = dict(tool_call)
+                tool_call["name"] = _canonical_step_tool_name(str(tool_call.get("name") or ""))
                 return tool_call
     except Exception:
         return None
     return None
+
+
+def _canonical_step_tool_name(name: str) -> str:
+    normalized = str(name or "").strip()
+    lowered = normalized.lower()
+    if not normalized or "." in normalized:
+        return normalized
+    return "user.request_input" if lowered == "request_user_input" else f"browser.{lowered}"
 
 
 def _step_history_from_trace_steps(
@@ -359,13 +415,13 @@ def _step_response_payload(
     done: bool,
     content: str | None = None,
 ) -> dict[str, Any]:
-    payload = {
-        "protocol_version": _STEP_PROTOCOL_VERSION,
-        "tool_calls": [tool_call],
-        "content": (str(content).strip() if isinstance(content, str) and str(content).strip() else None),
-        "done": bool(done),
-    }
-    return payload
+    response = StepResponse(
+        protocol_version=_STEP_PROTOCOL_VERSION,
+        tool_calls=[tool_call],
+        content=(str(content).strip() if isinstance(content, str) and str(content).strip() else None),
+        done=bool(done),
+    )
+    return response.model_dump(mode="json", exclude_none=True)
 
 
 def _tool_calls_from_step(step: dict[str, Any]) -> list[dict[str, Any]]:
@@ -384,8 +440,37 @@ def _normalize_trace_tool_call(
     candidates: list[Candidate],
     current_url: str,
 ) -> dict[str, Any] | None:
-    _ = (candidates, current_url)
-    return _to_tool_call(tool_call)
+    normalized = _to_tool_call(tool_call)
+    if not isinstance(normalized, dict):
+        return None
+    name = str(normalized.get("name") or "").strip().lower()
+    args = normalized.get("arguments") if isinstance(normalized.get("arguments"), dict) else {}
+    if name == "browser.navigate":
+        target = str(args.get("url") or "").strip()
+        if target and target.rstrip("/") == str(current_url or "").strip().rstrip("/"):
+            return None
+    if name == "browser.click":
+        index = args.get("index")
+        if isinstance(index, int) and 0 <= index < len(candidates) and not _candidate_supports_click(candidates[index]):
+            for candidate_index, candidate in enumerate(candidates):
+                if _candidate_supports_click(candidate):
+                    remapped = dict(normalized)
+                    remapped_args = dict(args)
+                    remapped_args["index"] = candidate_index
+                    remapped["arguments"] = remapped_args
+                    return remapped
+    return normalized
+
+
+def _candidate_supports_click(candidate: Candidate) -> bool:
+    role = str(candidate.role or "").strip().lower()
+    tag_type = str(candidate.type or "").strip().lower()
+    input_type = str(candidate.input_type or "").strip().lower()
+    if role in {"button", "link", "tab", "menuitem", "checkbox", "radio", "switch", "combobox"}:
+        return True
+    if tag_type in {"a", "button", "select"}:
+        return True
+    return tag_type == "input" and input_type in {"button", "submit", "reset", "checkbox", "radio"}
 
 
 def _guided_action_from_execution(execution: dict[str, Any]) -> dict[str, Any] | None:
@@ -453,6 +538,8 @@ def convert_guided_report_to_sft_examples(
     trace_file = str(episode_row.get("result_path") or episode_row.get("trace_file") or "")
     use_case = str(episode_row.get("use_case") or report_episode.get("use_case") or "")
     episode_prompt = _resolve_episode_prompt(episode_row=episode_row, report_episode=report_episode)
+    final_content_fallback = str(report_episode.get("final_content") or "").strip()
+    last_effective_html = ""
 
     for idx, execution in enumerate(execution_log):
         if not isinstance(execution, dict):
@@ -464,11 +551,16 @@ def convert_guided_report_to_sft_examples(
         if not isinstance(tool_call, dict):
             continue
         is_terminal = idx == len(execution_log) - 1 and bool(report_episode.get("success"))
-        step_html = _guided_execution_html(
-            execution=execution,
-            report_episode=report_episode,
+        step_html = _resolved_guided_step_html(
+            execution,
+            report_episode,
+            step_index=idx,
             is_terminal=is_terminal,
+            last_effective_html=last_effective_html,
+            final_content_fallback=final_content_fallback,
         )
+        if str(step_html or "").strip():
+            last_effective_html = str(step_html)
         assistant_payload = (
             _step_response_payload(
                 tool_call=tool_call,
@@ -484,20 +576,15 @@ def convert_guided_report_to_sft_examples(
                 {
                     "role": "user",
                     "content": (
-                        json.dumps(
-                            {
-                                "protocol_version": _STEP_PROTOCOL_VERSION,
-                                "task_id": str(episode_row.get("task_id") or report_episode.get("task_id") or ""),
-                                "prompt": episode_prompt,
-                                "url": str(execution.get("url") or report_episode.get("final_url") or ""),
-                                "html": step_html,
-                                "screenshot": None,
-                                "step_index": idx,
-                                "history": [],
-                                "tools": _supported_step_tools(),
-                                "include_reasoning": False,
-                            },
-                            ensure_ascii=False,
+                        _step_request_json(
+                            task_id=str(episode_row.get("task_id") or report_episode.get("task_id") or ""),
+                            prompt=episode_prompt,
+                            url=str(execution.get("url") or report_episode.get("final_url") or ""),
+                            html=step_html,
+                            step_index=idx,
+                            history=[],
+                            tools=_supported_step_tools(),
+                            include_reasoning=False,
                         )
                         if runtime_aligned
                         else _build_guided_observation(
@@ -557,7 +644,7 @@ def convert_trace_to_sft_examples(
             continue
         request = step.get("act_request") if isinstance(step.get("act_request"), dict) else {}
         before = step.get("before") if isinstance(step.get("before"), dict) else {}
-        snapshot_html = str(request.get("snapshot_html") or "")
+        snapshot_html = clean_snapshot_html(str(request.get("snapshot_html") or ""))
         url = str(request.get("url") or before.get("url") or trace.get("task_url") or "")
         candidates = _CANDIDATE_EXTRACTOR.extract(snapshot_html=snapshot_html, url=url)
         text_ir = _OBS_BUILDER.build_text_ir(snapshot_html)
@@ -691,6 +778,25 @@ def _resolve_episode_prompt(
     return ""
 
 
+def _html_embedded_in_guided_execution(execution: dict[str, Any]) -> str:
+    """Per-step HTML if the replay/harvester stored it on the block or on an attempt."""
+    for key in ("snapshot_html", "html", "page_html", "dom_html", "content_html", "page_snapshot_html"):
+        value = str(execution.get(key) or "").strip()
+        if value:
+            return value
+    attempts = execution.get("attempts")
+    if not isinstance(attempts, list):
+        return ""
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            continue
+        for key in ("snapshot_html", "html", "page_html", "dom_html", "after_html", "content_html"):
+            value = str(attempt.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def _guided_execution_html(
     *,
     execution: dict[str, Any],
@@ -703,6 +809,36 @@ def _guided_execution_html(
             return value
     if is_terminal:
         return str(report_episode.get("final_content") or "")
+    return ""
+
+
+def _resolved_guided_step_html(
+    execution: dict[str, Any],
+    report_episode: dict[str, Any],
+    *,
+    step_index: int,
+    is_terminal: bool,
+    last_effective_html: str,
+    final_content_fallback: str,
+) -> str:
+    """HTML for this guided step: embedded fields, then terminal final_content, then carry / episode fallback.
+
+    - Step 0 may stay empty (e.g. cold navigate) — caller allows that.
+    - For step_index > 0, if this step has no HTML, use the last non-empty HTML from prior steps, then
+      ``final_content`` (episode snapshot) so training rows are not blank when per-step DOM was not recorded.
+    """
+    direct = _html_embedded_in_guided_execution(execution) or _guided_execution_html(
+        execution=execution,
+        report_episode=report_episode,
+        is_terminal=is_terminal,
+    )
+    if direct.strip():
+        return clean_snapshot_html(direct)
+    if step_index > 0:
+        if last_effective_html.strip():
+            return clean_snapshot_html(last_effective_html)
+        if final_content_fallback.strip():
+            return clean_snapshot_html(final_content_fallback)
     return ""
 
 
