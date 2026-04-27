@@ -58,6 +58,14 @@ Thumbs.db
 data/*
 !data/autocinema_trajectory_harvest/
 !data/autocinema_trajectory_harvest/**
+# Per–use-case SFT under Autocinema (data/ is otherwise ignored). Parent dirs
+# must be un-ignored; we cannot re-include files under a fully ignored parent.
+!data/autocinema/
+!data/autocinema/*/
+!data/autocinema/*/*
+data/autocinema/*/*
+!data/autocinema/*/sft/
+!data/autocinema/*/sft/**
 Pipfile.lock  # Recommended to be included in version control per pypa/pipenv#598
 
 # Jupyter Notebook
