@@ -74,6 +74,7 @@ def _build_task_cache_for_seed(
         prompt_override=prompt_override,
         out_path=task_cache_path,
         project_id=str(config.web_project_id or "").strip() or None,
+        seed=int(seed),
     )
     return task_cache_path
 

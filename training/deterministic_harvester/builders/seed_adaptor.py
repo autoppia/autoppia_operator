@@ -69,6 +69,56 @@ def _fetch_rows(base_url: str, project_key: str, entity_type: str, seed: int) ->
         return []
 
 
+def _fetch_rows_page(base_url: str, project_key: str, entity_type: str, seed: int, filter_key: str) -> list[dict[str, Any]]:
+    """Fetch the same 50 rows the web page loads (distribute method, matching the frontend's fetchSeededSelection call).
+
+    When V2 is disabled the frontend always uses seed=1. When V2 is enabled it uses the URL seed.
+    Calling with BOTH seeds and merging the results makes adaptors robust to either V2 mode.
+    """
+    url = (
+        f"{base_url.rstrip('/')}/api/datasets/load"
+        f"?project_key={project_key}&entity_type={entity_type}"
+        f"&seed_value={seed}&limit=50&method=distribute&filter_key={filter_key}"
+    )
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+            data = json.loads(resp.read())
+        if isinstance(data, list):
+            return data
+        return data.get("data", data.get("rows", []))
+    except Exception:
+        return []
+
+
+def _fetch_page_rows_v2safe(
+    base_url: str,
+    project_key: str,
+    entity_type: str,
+    seed: int,
+    filter_key: str,
+) -> list[dict[str, Any]]:
+    """Return rows present in BOTH seed=1 and the actual seed's distribute-50 sets.
+
+    The web frontend fetches 50 rows via the distribute method. When V2 is disabled
+    it always uses seed=1 regardless of the URL seed; when V2 is enabled it uses the
+    URL seed.  Taking the intersection guarantees the rows we select are visible on
+    the page in either V2 mode.  Seed=1 rows are used as the base so that fields
+    reflect what V2-off browsers actually show.
+    """
+    rows_s1 = _fetch_rows_page(base_url, project_key, entity_type, 1, filter_key)
+    rows_seed = _fetch_rows_page(base_url, project_key, entity_type, seed, filter_key)
+    if seed == 1:
+        return rows_s1
+    seed_ids: set[str] = {str(r.get("id") or "") for r in rows_seed if r.get("id")}
+    # Keep seed=1 rows that are also present at the actual seed (safe for V2 on/off)
+    intersected = [r for r in rows_s1 if str(r.get("id") or "") in seed_ids]
+    if intersected:
+        return intersected
+    # No intersection: fall back to seed=1 subset (works when V2 is disabled)
+    return rows_s1
+
+
 def _unique_values(rows: list[dict[str, Any]], field: str) -> list[str]:
     """Extract unique non-empty scalar values for `field`, flattening list fields."""
     seen: list[str] = []
@@ -88,6 +138,52 @@ def _get_testid(action: dict[str, Any]) -> str:
         if isinstance(cand, dict) and str(cand.get("attribute", "")).lower() == "data-testid":
             return str(cand.get("value", ""))
     return ""
+
+
+def _get_id_attr(action: dict[str, Any]) -> str:
+    """Return the id attribute value from selector_candidates, or ''."""
+    for cand in action.get("selector_candidates") or []:
+        if isinstance(cand, dict) and str(cand.get("attribute", "")).lower() == "id":
+            return str(cand.get("value", ""))
+    return ""
+
+
+def _replace_in_xpath(action: dict[str, Any], old: str, new: str) -> dict[str, Any]:
+    """Return a copy of action with old replaced by new in all xpathSelector values."""
+    cands = action.get("selector_candidates")
+    if not cands:
+        return action
+    changed = False
+    new_cands = []
+    for cand in cands:
+        if isinstance(cand, dict) and cand.get("type") == "xpathSelector":
+            v = str(cand.get("value", ""))
+            if old in v:
+                cand = {**cand, "value": v.replace(old, new)}
+                changed = True
+        new_cands.append(cand)
+    if not changed:
+        return action
+    return {**action, "selector_candidates": new_cands}
+
+
+def _replace_xpath_containing(action: dict[str, Any], contains_substr: str, new_xpath: str) -> dict[str, Any]:
+    """Replace all xpathSelector values that contain `contains_substr` with `new_xpath`."""
+    cands = action.get("selector_candidates")
+    if not cands:
+        return action
+    changed = False
+    new_cands = []
+    for cand in cands:
+        if isinstance(cand, dict) and cand.get("type") == "xpathSelector":
+            v = str(cand.get("value", ""))
+            if contains_substr in v:
+                cand = {**cand, "value": new_xpath}
+                changed = True
+        new_cands.append(cand)
+    if not changed:
+        return action
+    return {**action, "selector_candidates": new_cands}
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +290,309 @@ def _adapt_doctors_search_flow(
     return adapted
 
 
+def _adapt_search_appointment(
+    actions: list[dict[str, Any]],
+    seed: int,
+    base_url: str,
+    project_key: str,
+) -> list[dict[str, Any]]:
+    """SEARCH_APPOINTMENT: replace hardcoded specialty and date with page-visible appointment data."""
+    rows = _fetch_page_rows_v2safe(base_url, project_key, "appointments", seed, "specialty")
+    if not rows:
+        return actions
+    specialty = str(rows[0].get("specialty") or "").strip()
+    date = str(rows[0].get("date") or "").strip()
+    adapted = []
+    for action in actions:
+        a = dict(action)
+        if a.get("type") == "TypeAction":
+            if _get_id_attr(a) == "specialty-filter":
+                a["text"] = specialty
+            elif _get_id_attr(a) == "date-filter":
+                a["text"] = date
+        elif a.get("type") == "ClickAction":
+            a = _replace_in_xpath(a, "Cardiology", specialty)
+        adapted.append(a)
+    return adapted
+
+
+def _adapt_open_appointment_form(
+    actions: list[dict[str, Any]],
+    seed: int,
+    base_url: str,
+    project_key: str,
+) -> list[dict[str, Any]]:
+    """OPEN_APPOINTMENT_FORM: use first page-visible appointment's date and click first row."""
+    rows = _fetch_page_rows_v2safe(base_url, project_key, "appointments", seed, "specialty")
+    if not rows:
+        return actions
+    date = str(rows[0].get("date") or "").strip()
+    adapted = []
+    for action in actions:
+        a = dict(action)
+        if a.get("type") == "TypeAction" and _get_id_attr(a) == "date-filter":
+            a["text"] = date
+        elif a.get("type") == "ClickAction":
+            a = _replace_xpath_containing(a, "tbody/tr", "(//tbody//tr//button)[1]")
+        adapted.append(a)
+    return adapted
+
+
+def _adapt_appointment_booked(
+    actions: list[dict[str, Any]],
+    seed: int,
+    base_url: str,
+    project_key: str,
+) -> list[dict[str, Any]]:
+    """APPOINTMENT_BOOKED_SUCCESSFULLY: use first page-visible appointment's date, click first row."""
+    rows = _fetch_page_rows_v2safe(base_url, project_key, "appointments", seed, "specialty")
+    if not rows:
+        return actions
+    date = str(rows[0].get("date") or "").strip()
+    adapted = []
+    for action in actions:
+        a = dict(action)
+        if a.get("type") == "TypeAction" and _get_id_attr(a) == "date-filter":
+            a["text"] = date
+        elif a.get("type") == "ClickAction":
+            a = _replace_xpath_containing(a, "tbody/tr", "(//tbody//tr//button)[1]")
+        adapted.append(a)
+    return adapted
+
+
+def _adapt_request_quick_appointment(
+    actions: list[dict[str, Any]],
+    seed: int,
+    base_url: str,
+    project_key: str,
+) -> list[dict[str, Any]]:
+    """REQUEST_QUICK_APPOINTMENT: replace hardcoded specialty with one visible in the doctors page."""
+    rows = _fetch_page_rows_v2safe(base_url, project_key, "doctors", seed, "specialty")
+    specialties = _unique_values(rows, "specialty")
+    specialty = specialties[0] if specialties else "General"
+    adapted = []
+    for action in actions:
+        a = dict(action)
+        if a.get("type") == "TypeAction":
+            cands = a.get("selector_candidates") or []
+            if any(c.get("type") == "xpathSelector" and "Speciality" in str(c.get("value", "")) for c in cands):
+                a["text"] = specialty
+        elif a.get("type") == "ClickAction":
+            a = _replace_in_xpath(a, "Pediatrics", specialty)
+        adapted.append(a)
+    return adapted
+
+
+def _adapt_search_prescription(
+    actions: list[dict[str, Any]],
+    seed: int,
+    base_url: str,
+    project_key: str,
+) -> list[dict[str, Any]]:
+    """SEARCH_PRESCRIPTION: replace hardcoded medicine and doctor fragments.
+
+    Uses the same 50-row distribute set the page loads so the search term matches
+    visible rows regardless of whether V2 is enabled or disabled.
+    """
+    rows = _fetch_page_rows_v2safe(base_url, project_key, "prescriptions", seed, "category")
+    if not rows:
+        return actions
+    medicine = str(rows[0].get("medicineName") or "").strip()
+    doctor = str(rows[0].get("doctorName") or "").strip()
+    med_frag = medicine[:6] if medicine else "med"
+    doc_parts = doctor.replace("Dr. ", "").split()
+    doc_frag = doc_parts[0][:5] if doc_parts else "Dr."
+    adapted = []
+    for action in actions:
+        a = dict(action)
+        if a.get("type") == "TypeAction":
+            testid = _get_testid(a)
+            if testid == "search-prescription-medicine":
+                a["text"] = med_frag
+            elif testid == "search-prescription-doctor":
+                a["text"] = doc_frag
+        adapted.append(a)
+    return adapted
+
+
+def _pick_refillable_prescription(rows: list[dict[str, Any]]) -> str:
+    """Return the doctor_name of the best refillable prescription from `rows`.
+
+    Prefers doctors whose EVERY prescription in `rows` is refillable (guarantees the
+    refill button is enabled no matter which row is clicked). Falls back to any
+    refillable prescription if no such doctor exists.
+    """
+    by_doctor: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        doc = str(r.get("doctorName") or "").strip()
+        if doc:
+            by_doctor.setdefault(doc, []).append(r)
+    candidates = [
+        (doc, prs) for doc, prs in by_doctor.items()
+        if all(int(p.get("refillsRemaining") or 0) > 0 for p in prs)
+    ]
+    if candidates:
+        candidates.sort(key=lambda x: len(x[1]))
+        return candidates[0][0]
+    refillable = [r for r in rows if int(r.get("refillsRemaining") or 0) > 0]
+    return str((refillable or rows or [{}])[0].get("doctorName") or "").strip()
+
+
+def _adapt_refill_prescription(
+    actions: list[dict[str, Any]],
+    seed: int,
+    base_url: str,
+    project_key: str,
+) -> list[dict[str, Any]]:
+    """REFILL_PRESCRIPTION: find a refillable prescription visible on the page.
+
+    Uses the seed=1 distribute-50 rows (what the page shows when V2 is disabled) as the
+    source of truth for which rows are visible.  Picks a doctor where ALL their seed=1
+    prescriptions have refillsRemaining > 0 so the refill button is enabled regardless
+    of which row the XPath clicks first.  Also verifies the doctor exists in the
+    actual-seed page for V2-on compatibility.
+    """
+    rows_s1 = _fetch_rows_page(base_url, project_key, "prescriptions", 1, "category")
+    if not rows_s1:
+        return actions
+
+    by_doctor: dict[str, list[dict[str, Any]]] = {}
+    for r in rows_s1:
+        doc = str(r.get("doctorName") or "").strip()
+        if doc:
+            by_doctor.setdefault(doc, []).append(r)
+
+    if seed != 1:
+        rows_seed = _fetch_rows_page(base_url, project_key, "prescriptions", seed, "category")
+        seed_doctors: set[str] = {str(r.get("doctorName") or "").strip() for r in rows_seed}
+    else:
+        seed_doctors = set(by_doctor)
+
+    # Doctor must have ALL seed=1 prescriptions refillable AND appear in seed-N page (V2-on compat)
+    candidates = [
+        (doc, prs)
+        for doc, prs in by_doctor.items()
+        if all(int(p.get("refillsRemaining") or 0) > 0 for p in prs) and doc in seed_doctors
+    ]
+    if not candidates:
+        candidates = [
+            (doc, prs)
+            for doc, prs in by_doctor.items()
+            if all(int(p.get("refillsRemaining") or 0) > 0 for p in prs)
+        ]
+
+    if candidates:
+        candidates.sort(key=lambda x: (len(x[1]), x[0]))
+        doctor_name = candidates[0][0]
+    else:
+        refillable = [r for r in rows_s1 if int(r.get("refillsRemaining") or 0) > 0]
+        doctor_name = str((refillable or rows_s1 or [{}])[0].get("doctorName") or "").strip()
+
+    frag = doctor_name.replace("Dr. ", "").strip().lower()
+    adapted = []
+    for action in actions:
+        a = dict(action)
+        if a.get("type") == "TypeAction" and _get_testid(a) == "search-prescription-doctor":
+            a["text"] = frag
+        elif a.get("type") == "ClickAction":
+            a = _replace_xpath_containing(
+                a,
+                "view-prescription-btn",
+                f"(//tr[contains(.,'{doctor_name}')]//button[@data-testid='view-prescription-btn'])[1]",
+            )
+        adapted.append(a)
+    return adapted
+
+
+def _adapt_view_prescription(
+    actions: list[dict[str, Any]],
+    seed: int,
+    base_url: str,
+    project_key: str,
+) -> list[dict[str, Any]]:
+    """VIEW_PRESCRIPTION: use first prescription visible on the page to search and click."""
+    rows = _fetch_page_rows_v2safe(base_url, project_key, "prescriptions", seed, "category")
+    if not rows:
+        return actions
+    doctor_name = str(rows[0].get("doctorName") or "").strip()
+    doctor_search = doctor_name.replace("Dr. ", "").strip()
+    adapted = []
+    for action in actions:
+        a = dict(action)
+        if a.get("type") == "TypeAction" and _get_testid(a) == "search-prescription-doctor":
+            a["text"] = doctor_search
+        elif a.get("type") == "ClickAction":
+            a = _replace_xpath_containing(
+                a,
+                "view-prescription-btn",
+                f"(//tr[contains(.,'{doctor_name}')]//button[@data-testid='view-prescription-btn'])[1]",
+            )
+        adapted.append(a)
+    return adapted
+
+
+_VIEW_RECORD_BTN_XPATH = "(//div[contains(@class,'rounded-lg')][contains(@class,'border')]//button[@data-testid='view-record-btn'])[1]"
+
+
+def _adapt_view_medical_analysis(
+    actions: list[dict[str, Any]],
+    seed: int,
+    base_url: str,
+    project_key: str,
+) -> list[dict[str, Any]]:
+    """VIEW_MEDICAL_ANALYSIS: no records API — use generic 'a' search and simplified click."""
+    adapted = []
+    for action in actions:
+        a = dict(action)
+        if a.get("type") == "TypeAction" and _get_testid(a) == "search-record-title":
+            a["text"] = "a"
+        elif a.get("type") == "ClickAction":
+            a = _replace_xpath_containing(a, "view-record-btn", _VIEW_RECORD_BTN_XPATH)
+        adapted.append(a)
+    return adapted
+
+
+def _adapt_search_medical_analysis(
+    actions: list[dict[str, Any]],
+    seed: int,
+    base_url: str,
+    project_key: str,
+) -> list[dict[str, Any]]:
+    """SEARCH_MEDICAL_ANALYSIS: no records API — use generic search terms."""
+    adapted = []
+    for action in actions:
+        a = dict(action)
+        if a.get("type") == "TypeAction":
+            testid = _get_testid(a)
+            if testid == "search-record-title":
+                a["text"] = "a"
+            elif testid == "search-record-doctor":
+                a["text"] = "Dr."
+        adapted.append(a)
+    return adapted
+
+
+def _adapt_view_doctor_education(
+    actions: list[dict[str, Any]],
+    seed: int,
+    base_url: str,
+    project_key: str,
+) -> list[dict[str, Any]]:
+    """VIEW_DOCTOR_EDUCATION: replace hardcoded doctor name in TypeAction and XPath."""
+    rows = _fetch_rows(base_url, project_key, "doctors", seed)
+    if not rows:
+        return actions
+    doctor_name = str(rows[0].get("name") or "").strip()
+    adapted = []
+    for action in actions:
+        a = dict(action)
+        if a.get("type") == "TypeAction" and _get_testid(a) == "doctor-name-search":
+            a["text"] = doctor_name
+        a = _replace_in_xpath(a, "Dr. Thomas Thomas", doctor_name)
+        adapted.append(a)
+    return adapted
+
+
 # ---------------------------------------------------------------------------
 # Registry and dispatch
 # ---------------------------------------------------------------------------
@@ -210,8 +609,19 @@ _DOCTORS_SEARCH_USE_CASES = {
 }
 
 _ADAPTORS: dict[tuple[str, str], _AdaptorFn] = {
-    ("autohealth", uc): _adapt_doctors_search_flow
-    for uc in _DOCTORS_SEARCH_USE_CASES
+    **{("autohealth", uc): _adapt_doctors_search_flow for uc in _DOCTORS_SEARCH_USE_CASES},
+    **{
+        ("autohealth", "SEARCH_APPOINTMENT"): _adapt_search_appointment,
+        ("autohealth", "OPEN_APPOINTMENT_FORM"): _adapt_open_appointment_form,
+        ("autohealth", "APPOINTMENT_BOOKED_SUCCESSFULLY"): _adapt_appointment_booked,
+        ("autohealth", "REQUEST_QUICK_APPOINTMENT"): _adapt_request_quick_appointment,
+        ("autohealth", "SEARCH_PRESCRIPTION"): _adapt_search_prescription,
+        ("autohealth", "REFILL_PRESCRIPTION"): _adapt_refill_prescription,
+        ("autohealth", "VIEW_PRESCRIPTION"): _adapt_view_prescription,
+        ("autohealth", "VIEW_MEDICAL_ANALYSIS"): _adapt_view_medical_analysis,
+        ("autohealth", "SEARCH_MEDICAL_ANALYSIS"): _adapt_search_medical_analysis,
+        ("autohealth", "VIEW_DOCTOR_EDUCATION"): _adapt_view_doctor_education,
+    },
 }
 
 

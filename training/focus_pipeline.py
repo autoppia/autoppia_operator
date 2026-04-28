@@ -166,6 +166,19 @@ def build_prompt_override(*, use_case: str, extra_lines: list[str] | None = None
     return " ".join(line.strip() for line in lines if line.strip()).strip()
 
 
+def _reseed_task_row(row: dict[str, Any], seed: int) -> None:
+    """Update the task row's id and url to reflect the target seed in-place."""
+    import re
+
+    target = str(int(seed))
+    old_id = str(row.get("id") or "")
+    if old_id:
+        row["id"] = re.sub(r"seed-\d+", f"seed-{target}", old_id)
+    old_url = str(row.get("url") or "")
+    if old_url:
+        row["url"] = re.sub(r"([?&]seed=)\d+", rf"\g<1>{target}", old_url)
+
+
 def build_task_cache_override(
     *,
     source_task_cache: Path,
@@ -173,6 +186,7 @@ def build_task_cache_override(
     prompt_override: str,
     out_path: Path,
     project_id: str | None = None,
+    seed: int | None = None,
 ) -> Path:
     payload = _load_json(source_task_cache)
     tasks: list[dict[str, Any]] | None = None
@@ -198,6 +212,8 @@ def build_task_cache_override(
             continue
         if str(use_case_payload.get("name") or "").upper() != use_case.upper():
             continue
+        if seed is not None:
+            _reseed_task_row(row, seed)
         base_prompt = str(row.get("prompt") or "").strip()
         row["prompt"] = f"{base_prompt} {prompt_override}".strip()
         if use_case.upper() == "LOGIN":
