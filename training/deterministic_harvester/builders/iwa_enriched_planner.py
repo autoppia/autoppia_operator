@@ -14,6 +14,7 @@ so ``selector_candidates`` get the same id/class/text expansion as
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from functools import lru_cache
 from typing import Any
@@ -22,6 +23,7 @@ from autoppia_iwa.src.demo_webs.trajectory_registry import get_trajectory_map
 
 import training._iwa_path  # noqa: F401
 from training.deterministic_harvester.builders.common import DeterministicPlan
+from training.deterministic_harvester.builders.seed_adaptor import adapt_actions_for_seed
 from training.deterministic_harvester.normalizer import DeterministicTaskObjective
 from training.deterministic_harvester.trajectory_selectors import (
     list_iwa_use_cases,
@@ -29,6 +31,10 @@ from training.deterministic_harvester.trajectory_selectors import (
 )
 
 PlanActionBuilder = Callable[[DeterministicTaskObjective], list[dict[str, Any]]]
+
+
+def _replace_seed_in_url(url: str, seed: int) -> str:
+    return re.sub(r"([?&]seed=)\d+", rf"\g<1>{seed}", str(url or ""))
 
 
 def build_iwa_enriched_action_list(
@@ -47,10 +53,13 @@ def build_iwa_enriched_action_list(
             seed=objective.seed,
         )
     ]
-    if actions and str(actions[0].get("type") or "").strip() == "NavigateAction" and str(objective.task_url or "").strip():
-        first = dict(actions[0])
-        first["url"] = str(objective.task_url).strip()
-        actions[0] = first
+    for i, action in enumerate(actions):
+        if str(action.get("type") or "").strip() != "NavigateAction":
+            continue
+        updated = dict(action)
+        updated["url"] = _replace_seed_in_url(str(action.get("url") or ""), objective.seed)
+        actions[i] = updated
+    actions = adapt_actions_for_seed(project_id, u, actions, objective.seed, objective.task_url)
     return actions
 
 

@@ -62,12 +62,17 @@ def _convert_action(action: dict[str, Any]) -> dict[str, Any]:
 
     The operator uses `selector_candidates` (list of fallback selectors tried
     in order by the step engine). IWA's action models expect a single `selector`
-    field. We pick the first candidate — typically the most specific one.
+    field. We prefer xpathSelector (most precise) over broad text selectors;
+    fallback to candidates[0] when no XPath is present.
     """
     candidates = action.get("selector_candidates")
     result = {k: v for k, v in action.items() if k != "selector_candidates"}
     if candidates and isinstance(candidates, list) and "selector" not in result:
-        result["selector"] = candidates[0]
+        xpath_sel = next(
+            (c for c in candidates if isinstance(c, dict) and c.get("type") == "xpathSelector"),
+            None,
+        )
+        result["selector"] = xpath_sel if xpath_sel else candidates[0]
     return result
 
 

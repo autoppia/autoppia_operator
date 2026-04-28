@@ -86,7 +86,6 @@ class HarvestSuiteConfig:
     execution_mode: str = "operator"
     max_claude_attempts: int = 3
     brief_dir: Path | None = None
-    merge_existing: bool = True
     max_seeds_per_use_case: int = 0
     target_gold_per_use_case: int = 0
     deterministic_only: bool = False
@@ -121,6 +120,8 @@ def collect_suite(config: HarvestSuiteConfig) -> dict[str, Any]:
         attempt_models = tuple(config.attempt_models) or tuple(get_use_case_spec(use_case).harvester_model_ladder) or (config.model,)
         max_claude_attempts = 0 if config.deterministic_only else config.max_claude_attempts
         effective_strategy = "code-aware" if config.deterministic_only else config.strategy
+        # Deterministic replay executes every planned action — don't cut trajectories short.
+        effective_max_steps = max(config.max_steps, 30) if config.deterministic_only else config.max_steps
         harvest_config = HarvestConfig(
             use_case=use_case,
             output_root=output_root,
@@ -128,7 +129,7 @@ def collect_suite(config: HarvestSuiteConfig) -> dict[str, Any]:
             model=attempt_models[0],
             task_cache_arg=config.task_cache_arg,
             web_project_id=project_id,
-            max_steps=config.max_steps,
+            max_steps=effective_max_steps,
             task_concurrency=config.task_concurrency,
             agent_workers=config.agent_workers,
             attempt_models=attempt_models,
@@ -149,7 +150,6 @@ def collect_suite(config: HarvestSuiteConfig) -> dict[str, Any]:
             use_case=use_case,
             target_seeds=seeds,
             rows=rows,
-            merge_existing=config.merge_existing,
         )
         attempt_count = len(rows)
         gold_count = sum(1 for row in rows if bool(row.get("success")) and float(row.get("score") or 0.0) >= 1.0)

@@ -35,7 +35,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-claude-attempts", type=int, default=3)
     parser.add_argument("--max-seeds-per-use-case", type=int, default=0)
     parser.add_argument("--target-gold-per-use-case", type=int, default=0)
-    parser.add_argument("--no-merge-existing", action="store_true")
     parser.add_argument("--deterministic-only", action="store_true", help="Zero-AI mode: use IWA trajectory plans only, no LLM calls")
     args = parser.parse_args(argv)
 
@@ -61,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         brief_model=str(args.brief_model),
         execution_mode=str(args.execution_mode),
         max_claude_attempts=int(args.max_claude_attempts),
-        merge_existing=not bool(args.no_merge_existing),
+
         max_seeds_per_use_case=int(args.max_seeds_per_use_case),
         target_gold_per_use_case=int(args.target_gold_per_use_case),
         deterministic_only=bool(args.deterministic_only),

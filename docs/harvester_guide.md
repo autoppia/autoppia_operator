@@ -234,8 +234,7 @@ because it is fast, free, and reproducible.
     --project-id <PROJECT_ID> \
     --use-case <USE_CASE> \
     --task-cache data/task_cache/<PROJECT_ID>_tasks_cache.json \
-    --deterministic-only \
-    --execution-mode operator
+    --deterministic-only
 ```
 
 **All use cases at once (via harvest_suite):**
@@ -244,14 +243,18 @@ because it is fast, free, and reproducible.
 .venv/bin/python scripts/eval/harvest_suite.py \
     --project-id <PROJECT_ID> \
     --use-cases all \
-    --seeds 1..10 \
+    --seeds 1..50 \
     --deterministic-only \
-    --execution-mode operator
+    --task-cache data/task_cache/<PROJECT_ID>_tasks_cache.json \
+    --collect-workers 4
 ```
 
 > **Important:** `--deterministic-only` is required to generate a valid `candidate_path` in each
 > gold episode. Without it, `export_gold_to_iwa.py` will skip those episodes
 > ("all episodes failed to build rows").
+>
+> **Note:** `--execution-mode operator` is the default when using `--deterministic-only`;
+> it does not need to be specified explicitly.
 
 ### How accumulation works
 
@@ -316,8 +319,14 @@ See [Project reference table](#11-project-reference-table) for the full mapping.
 
 | Operator format | IWA format |
 |-----------------|------------|
-| `selector_candidates` (list) | `selector` (first candidate) |
+| `selector_candidates` (list) | `selector` (xpathSelector preferred; fallback to first candidate) |
 | flat row | nested `task`, `tests`, `actions` |
+
+> **Why XPath is preferred:** broad text selectors (`tagContainsSelector`) match any element
+> containing the target text — including container rows or cells — and do not reliably trigger
+> click handlers on nested buttons. `xpathSelector` targets the exact element (e.g. a button
+> inside a table row) and is required for use cases that click slot-selection buttons within
+> appointment or list tables.
 
 ---
 
@@ -597,6 +606,33 @@ The operator's step engine could not match any selector. Inspect the candidate a
 
 The `--target-gold-per-use-case` threshold was already reached for that use case.
 Use `--no-merge-existing` or increase the target to force more collection.
+
+### Appointment use cases only produce gold at seed=1 (autohealth)
+
+**Affected use cases:** `APPOINTMENT_BOOKED_SUCCESSFULLY`, `OPEN_APPOINTMENT_FORM`,
+`REQUEST_QUICK_APPOINTMENT`, `SEARCH_APPOINTMENT`.
+
+**Root cause:** `SeedProviderInner` in `web_14_autohealth/src/context/SeedContext.tsx`
+initialises with `DEFAULT_SEED=1`. When the URL contains a different seed, the
+`DataReadyGate` child effect fires first (React fires children before parents), sees
+`seed=1` vs `currentSeed=N`, calls `reloadIfSeedChanged(1)` → `setReady(false)` →
+the entire page content is replaced by a spinner. Playwright cannot find the
+`appointments-search-button` and times out after 10 s.
+
+**Workaround (current):** run these four use cases with `--seeds 1` only. They work
+because `DEFAULT_SEED == URL_seed` → no mismatch → no reload.
+
+**Permanent fix:** in `SeedContext.tsx`, initialise state lazily from the URL instead
+of from `DEFAULT_SEED`:
+```tsx
+// Before
+const [seed, setSeedState] = useState<number>(DEFAULT_SEED);
+// After
+const [seed, setSeedState] = useState<number>(() => getSeedFromUrl());
+```
+This makes the initial state match the URL seed on every render, eliminating the race
+condition. An alternative is to gate `DataReadyGate`'s effect on `isSeedReady` so it
+never fires before the parent has read the URL seed.
 
 ---
 

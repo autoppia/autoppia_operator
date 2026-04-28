@@ -214,9 +214,18 @@ def enrich_iwa_selector_candidates(
             val = str(sel.get("value") or "").strip()
             expanded = []
             if val:
-                expanded.extend(_semantic_candidates_from_xpath(val, project_id=project_id, seed=seed))
-            # Keep original XPath at the end as a last-resort fallback.
-            expanded.append(dict(sel))
+                semantic = _semantic_candidates_from_xpath(val, project_id=project_id, seed=seed)
+                # XPath with axis navigation pinpoints a specific element precisely —
+                # put it first so the executor doesn't waste time on coarse class candidates.
+                uses_axis = any(ax in val for ax in ("following::", "following-sibling::", "preceding::", "ancestor::"))
+                if uses_axis:
+                    expanded.append(dict(sel))
+                    expanded.extend(semantic)
+                else:
+                    expanded.extend(semantic)
+                    expanded.append(dict(sel))
+            else:
+                expanded.append(dict(sel))
         else:
             expanded = [sel]
         for item in expanded:

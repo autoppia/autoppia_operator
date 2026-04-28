@@ -702,7 +702,6 @@ def write_harvest_artifacts(
     use_case: str,
     target_seeds: list[int],
     rows: list[dict[str, Any]],
-    merge_existing: bool = True,
 ) -> tuple[Path, Path, dict[str, Any]]:
     gold_root = output_root / "gold"
     gold_root.mkdir(parents=True, exist_ok=True)
@@ -710,13 +709,12 @@ def write_harvest_artifacts(
     episodes_path = gold_root / "episodes.jsonl"
     summary_path = gold_root / "summary.json"
     merged_rows = list(rows)
-    if merge_existing:
-        existing_attempts = _read_jsonl(attempts_path)
-        seen_attempt_keys = {(int(row.get("seed") or 0), str(row.get("attempt_name") or "")) for row in rows if isinstance(row, dict)}
-        for row in existing_attempts:
-            key = (int(row.get("seed") or 0), str(row.get("attempt_name") or ""))
-            if key not in seen_attempt_keys:
-                merged_rows.append(row)
+    existing_attempts = _read_jsonl(attempts_path)
+    seen_attempt_keys = {(int(row.get("seed") or 0), str(row.get("attempt_name") or "")) for row in rows if isinstance(row, dict)}
+    for row in existing_attempts:
+        key = (int(row.get("seed") or 0), str(row.get("attempt_name") or ""))
+        if key not in seen_attempt_keys:
+            merged_rows.append(row)
     merged_rows.sort(key=lambda row: (int(row.get("seed") or 0), str(row.get("attempt_name") or "")))
     gold_rows = [row for row in merged_rows if bool(row.get("success")) and float(row.get("score") or 0.0) >= 1.0]
     _write_jsonl(attempts_path, merged_rows)
