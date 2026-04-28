@@ -188,6 +188,45 @@ def _prompt_prefers_text_input(prompt: str, policy_obs: Dict[str, Any]) -> bool:
     )
 
 
+def _preferred_prompt_navigation(
+    prompt: str,
+    policy_obs: Dict[str, Any],
+    *,
+    allowed_tools: set[str],
+) -> Dict[str, Any] | None:
+    if allowed_tools and "browser.navigate" not in allowed_tools:
+        return None
+    current_url = str(policy_obs.get("url") or "").strip().lower()
+    if current_url not in {"", "about:blank"}:
+        return None
+    prompt_text = str(prompt or "").strip()
+    lowered = prompt_text.lower()
+    if not re.search(r"\b(open|visit|go to|navigate to)\b", lowered):
+        return None
+    match = re.search(
+        r"\b((?:https?://)?(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:/[^\s]*)?)",
+        prompt_text,
+        flags=re.I,
+    )
+    if match is None:
+        return None
+    target = str(match.group(1) or "").rstrip(".,);:]!?")
+    safe_target = _safe_url(target)
+    if not safe_target.startswith(("http://", "https://")):
+        return None
+    return {
+        "type": "browser",
+        "tool_call": {
+            "name": "browser.navigate",
+            "arguments": {
+                "url": safe_target,
+                "go_back": False,
+                "go_forward": False,
+            },
+        },
+    }
+
+
 def _autocinema_task_intent_tags(prompt: str, policy_obs: Dict[str, Any]) -> set[str]:
     use_case = _infer_autocinema_use_case(prompt, policy_obs)
     tags: set[str] = set()
@@ -1676,6 +1715,13 @@ class Policy:
         )
         if preferred_seed_navigation is not None:
             return preferred_seed_navigation
+        preferred_prompt_navigation = _preferred_prompt_navigation(
+            prompt,
+            policy_obs,
+            allowed_tools=allowed_tools,
+        )
+        if preferred_prompt_navigation is not None:
+            return preferred_prompt_navigation
         preferred_direct_action = _preferred_direct_intent_action(
             prompt,
             policy_obs,

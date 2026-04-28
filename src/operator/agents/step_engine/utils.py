@@ -218,6 +218,9 @@ def _looks_like_informational_task(prompt: str) -> bool:
     info_patterns = [
         r"\bwhat(?:'s| is)\b",
         r"\btell me\b",
+        r"\bsummari[sz]e\b",
+        r"\bsummary\b",
+        r"\bdescribe\b",
         r"\bhow much\b",
         r"\bhow many\b",
         r"\bvalue\b",

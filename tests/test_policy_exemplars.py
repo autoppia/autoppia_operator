@@ -179,6 +179,20 @@ def test_preferred_seed_navigation_uses_login_for_watchlist_when_detail_page_is_
     assert tool_call["arguments"]["url"].endswith("/login?seed=31000")
 
 
+def test_preferred_prompt_navigation_opens_domain_from_blank_page() -> None:
+    action = policy_module._preferred_prompt_navigation(
+        "Open autoppia.com and summarize the homepage.",
+        {
+            "url": "about:blank",
+        },
+        allowed_tools={"browser.navigate", "browser.click"},
+    )
+    assert action is not None
+    tool_call = action["tool_call"]
+    assert tool_call["name"] == "browser.navigate"
+    assert tool_call["arguments"]["url"] == "https://autoppia.com"
+
+
 def test_preferred_title_result_action_anchors_to_matching_movie_card() -> None:
     action = policy_module._preferred_title_result_action(
         "Add to watchlist a movie where the name equals 'The Incredibles'",

@@ -4488,6 +4488,34 @@ def test_meta_loop_auto_finalizes_informational_task_when_page_fact_is_visible(m
     assert "2.8K" in str(out.get("content") or "")
 
 
+def test_meta_loop_auto_finalizes_homepage_summary_prompt(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.run(
+        payload={
+            "task_id": "info-homepage",
+            "prompt": "Open autoppia.com and summarize the homepage",
+            "step_index": 1,
+            "url": "https://autoppia.com/",
+            "snapshot_html": """
+            <html><head><title>Autoppia</title></head><body>
+              <main>
+                <h1>Best Web Operator in the world</h1>
+                <p>Powered by Bittensor Subnet 36</p>
+                <a href="https://automata.autoppia.com">Automata Cloud</a>
+              </main>
+            </body></html>
+            """,
+            "internal_state": {},
+            "allowed_tools": [{"name": "browser.navigate"}, {"name": "browser.click"}],
+            "history": [],
+        }
+    )
+    assert out.get("done") is True
+    content = str(out.get("content") or "")
+    assert "Best Web Operator" in content or "Bittensor Subnet 36" in content
+
+
 def test_pre_done_verification_rejects_vague_informational_answer() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     ok, reason = engine._pre_done_verification(
