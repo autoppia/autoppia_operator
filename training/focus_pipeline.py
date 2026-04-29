@@ -438,6 +438,7 @@ def write_focus_artifacts(
     use_case: str,
     target_seeds: list[int],
     rows: list[dict[str, Any]],
+    merge_existing: bool = True,
 ) -> tuple[Path, Path, dict[str, Any]]:
     from training.harvester import write_harvest_artifacts
 
@@ -446,6 +447,7 @@ def write_focus_artifacts(
         use_case=use_case,
         target_seeds=target_seeds,
         rows=rows,
+        merge_existing=merge_existing,
     )
 
 

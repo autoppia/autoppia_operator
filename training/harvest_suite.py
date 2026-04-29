@@ -86,6 +86,7 @@ class HarvestSuiteConfig:
     execution_mode: str = "operator"
     max_claude_attempts: int = 3
     brief_dir: Path | None = None
+    merge_existing: bool = True
     max_seeds_per_use_case: int = 0
     target_gold_per_use_case: int = 0
     deterministic_only: bool = False
@@ -150,6 +151,7 @@ def collect_suite(config: HarvestSuiteConfig) -> dict[str, Any]:
             use_case=use_case,
             target_seeds=seeds,
             rows=rows,
+            merge_existing=config.merge_existing,
         )
         attempt_count = len(rows)
         gold_count = sum(1 for row in rows if bool(row.get("success")) and float(row.get("score") or 0.0) >= 1.0)
