@@ -24,7 +24,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from training.serve_model import _DEFAULT_ADAPTER_PATH as DEFAULT_ADAPTER_PATH, DEFAULT_BASE_MODEL as SERVE_BASE_MODEL, validate_adapter_artifacts
+from training.serve_model import (
+    _DEFAULT_ADAPTER_PATH as DEFAULT_ADAPTER_PATH,
+    DEFAULT_BASE_MODEL as SERVE_BASE_MODEL,
+    resolve_adapter_path,
+    validate_adapter_artifacts,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "data" / "autocinema_trajectory_harvest" / "post_finetune_eval.json"
@@ -105,6 +110,22 @@ def _validate_real_success(summary: dict[str, Any]) -> None:
         raise RuntimeError("Post-finetune eval did not produce any real successful Autocinema episode; refusing to write summary.")
 
 
+def build_operator_env(
+    *,
+    endpoint: str,
+    served_model_id: str,
+    completion_model: str | None = None,
+) -> dict[str, str]:
+    env = os.environ.copy()
+    env["OPENAI_BASE_URL"] = endpoint
+    env["OPENAI_MODEL"] = served_model_id
+    env["AGENT_COMPLETION_MODEL"] = str(completion_model or served_model_id)
+    # Compatibility-only exports for older wrappers that still read BU_POLICY_*.
+    env["BU_POLICY_ENDPOINT"] = endpoint
+    env["BU_POLICY_MODEL"] = served_model_id
+    return env
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run post-finetune Autocinema eval against a real adapter")
     parser.add_argument("--project-id", default="autocinema")
@@ -112,6 +133,7 @@ def main() -> None:
     parser.add_argument("--base-model", default=SERVE_BASE_MODEL)
     parser.add_argument("--endpoint", default="http://127.0.0.1:8000/v1")
     parser.add_argument("--served-model-id", default="autoppia")
+    parser.add_argument("--completion-model", default="", help="Optional completion-check model override (defaults to served model)")
     parser.add_argument("--provider", default="openai")
     parser.add_argument("--launch-server", action="store_true")
     parser.add_argument("--server-backend", choices=["hf", "vllm"], default="hf")
@@ -136,16 +158,17 @@ def main() -> None:
     parser.add_argument("--summary-out", default=str(DEFAULT_SUMMARY_OUT))
     args = parser.parse_args()
 
-    adapter_path = Path(args.adapter_path).resolve()
+    adapter_path = resolve_adapter_path(args.adapter_path)
     validate_adapter_artifacts(adapter_path)
     endpoint = args.endpoint
     if args.launch_server and args.endpoint == "http://127.0.0.1:8000/v1":
         endpoint = f"http://127.0.0.1:{args.port}/v1"
 
-    env = os.environ.copy()
-    env["FSM_POLICY"] = "learned"
-    env["BU_POLICY_ENDPOINT"] = endpoint
-    env["BU_POLICY_MODEL"] = args.served_model_id
+    env = build_operator_env(
+        endpoint=endpoint,
+        served_model_id=args.served_model_id,
+        completion_model=(args.completion_model or None),
+    )
 
     server_proc: subprocess.Popen[str] | None = None
     try:

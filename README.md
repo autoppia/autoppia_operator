@@ -4,7 +4,7 @@ This repo is a minimal FastAPI web-agent service intended to run as a **miner** 
 
 Current state of the local training assets:
 - the only trusted fine-tuning dataset kept in-repo is `data/autocinema/login`
-- the only trusted local adapter kept in-repo is `models/bu-30b-login-500-lora`
+- the only trusted local adapter path kept in-repo is `models/bu-30b-login-500-lora`
 - old multi-use-case harvests, reward-model experiments, and demo-seedpack-derived data were removed
 
 ## What the validator runs
@@ -132,6 +132,44 @@ Runtime constraints for the planner:
 - `AGENT_ENABLE_COMPLETION_CHECK=1` (enabled by default)
 - `AGENT_COMPLETION_MODEL=gpt-4o-mini` (smaller than typical planner model)
 - `AGENT_COMPLETION_MIN_CONFIDENCE=0.82`
+
+## Local OpenAI-compatible model serve
+
+For local `automata -> operator -> model server` testing, the operator does not
+read `BU_POLICY_ENDPOINT` / `BU_POLICY_MODEL` in the live `/act` path. The
+runtime uses `infra/llm_gateway.py`, so the canonical local wiring is:
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:8000/v1
+export OPENAI_MODEL=autoppia
+export AGENT_COMPLETION_MODEL=autoppia
+```
+
+Then start the operator:
+
+```bash
+export PYTHONPATH=/data/autoppia/autoppia_iwa:$PYTHONPATH
+uvicorn main:app --host 127.0.0.1 --port 5060
+```
+
+### Start the local model server
+
+`training/serve_model.py` launches an OpenAI-compatible endpoint on `/v1`.
+Before starting it, make sure the adapter directory contains real LoRA files:
+
+- `adapter_config.json`
+- `adapter_model.safetensors`
+- optional but recommended: `train_metrics.json`
+
+The serve helper can preflight both adapter files and Python dependencies:
+
+```bash
+python -m training.serve_model --preflight
+```
+
+The local serving stack is intentionally separate from `requirements.txt`. For
+HF serving you need local ML dependencies such as `torch`, `transformers`, and
+`peft` in the environment that launches `training/serve_model.py`.
 
 Planner reliability/cost behavior is now opinionated by default (not env-tuned):
 - candidate extraction/ranking budgeted internally

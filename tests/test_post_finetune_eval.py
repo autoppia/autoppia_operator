@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from training.post_finetune_eval import _build_summary, _validate_real_success
+from training.post_finetune_eval import _build_summary, _validate_real_success, build_operator_env
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -85,3 +85,26 @@ def test_validate_real_success_requires_successful_episode() -> None:
                 "successful_episode_ids": [],
             }
         )
+
+
+def test_build_operator_env_points_runtime_to_local_server(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "should-remain-if-user-set-it")
+
+    env = build_operator_env(endpoint="http://127.0.0.1:8001/v1", served_model_id="autoppia")
+
+    assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:8001/v1"
+    assert env["OPENAI_MODEL"] == "autoppia"
+    assert env["AGENT_COMPLETION_MODEL"] == "autoppia"
+    assert env["BU_POLICY_ENDPOINT"] == "http://127.0.0.1:8001/v1"
+    assert env["BU_POLICY_MODEL"] == "autoppia"
+    assert env["OPENAI_API_KEY"] == "should-remain-if-user-set-it"
+
+
+def test_build_operator_env_respects_explicit_completion_model() -> None:
+    env = build_operator_env(
+        endpoint="http://127.0.0.1:8001/v1",
+        served_model_id="autoppia",
+        completion_model="gpt-4o-mini",
+    )
+
+    assert env["AGENT_COMPLETION_MODEL"] == "gpt-4o-mini"
