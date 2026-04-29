@@ -304,6 +304,12 @@ def _act_http_response(
         "reasoning": str(raw_resp.get("reasoning")).strip()[:200] if isinstance(raw_resp.get("reasoning"), str) and str(raw_resp.get("reasoning")).strip() else None,
         "done": bool(raw_resp.get("done")) or done_from_actions,
     }
+    execution_mode = str(raw_resp.get("execution_mode") or "").strip().lower()
+    if execution_mode in {"batch", "single_step"}:
+        out["execution_mode"] = execution_mode
+    state_out = raw_resp.get("state_out") if isinstance(raw_resp.get("state_out"), dict) else raw_resp.get("internal_state") if isinstance(raw_resp.get("internal_state"), dict) else None
+    if isinstance(state_out, dict):
+        out["state_out"] = dict(state_out)
     if isinstance(raw_resp.get("error"), str) and str(raw_resp.get("error")).strip():
         out["error"] = str(raw_resp.get("error")).strip()[:400]
     if isinstance(raw_resp.get("metrics"), dict):

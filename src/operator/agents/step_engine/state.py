@@ -134,6 +134,8 @@ class AgentState(BaseModel):
     last_action_element_id: str = ""
     escalated_once: bool = False
     failure_reason: str = ""
+    execution_profile: str = "general_web"
+    goal_state: dict[str, Any] = Field(default_factory=dict)
     session_query: dict[str, str] = Field(default_factory=dict)
     score_feedback: dict[str, Any] = Field(default_factory=dict)
 
@@ -318,6 +320,40 @@ class AgentState(BaseModel):
         self.counters.consecutive_wait_count = max(0, int(self.counters.consecutive_wait_count or 0))
         self.blocklist.until_step = max(0, int(self.blocklist.until_step or 0))
         self.failure_reason = str(self.failure_reason or "").strip().lower().replace(" ", "_")[:80]
+        self.execution_profile = str(self.execution_profile or "general_web").strip().lower().replace(" ", "_")[:80] or "general_web"
+        raw_goal_state = self.goal_state if isinstance(self.goal_state, dict) else {}
+        raw_constraints = raw_goal_state.get("constraints") if isinstance(raw_goal_state.get("constraints"), dict) else {}
+        raw_eval = raw_goal_state.get("last_evaluation") if isinstance(raw_goal_state.get("last_evaluation"), dict) else {}
+        constraints: dict[str, Any] = {}
+        for key, value in list(raw_constraints.items())[:16]:
+            clean_key = str(key or "").strip().lower().replace(" ", "_")[:40]
+            if not clean_key:
+                continue
+            if isinstance(value, list):
+                constraints[clean_key] = [str(item)[:80] for item in value[:8] if str(item).strip()]
+            elif isinstance(value, bool):
+                constraints[clean_key] = bool(value)
+            elif isinstance(value, int | float):
+                constraints[clean_key] = value
+            else:
+                constraints[clean_key] = str(value or "")[:160]
+        self.goal_state = {
+            "kind": str(raw_goal_state.get("kind") or "")[:40],
+            "target_page_type": str(raw_goal_state.get("target_page_type") or "")[:40],
+            "entity_type": str(raw_goal_state.get("entity_type") or "")[:40],
+            "stop_on_page_match": bool(raw_goal_state.get("stop_on_page_match", False)),
+            "route_hint": str(raw_goal_state.get("route_hint") or "")[:80],
+            "route_reason": str(raw_goal_state.get("route_reason") or "")[:160],
+            "route_confidence": max(0.0, min(1.0, float(raw_goal_state.get("route_confidence", 0.0) or 0.0))),
+            "completion_hint": str(raw_goal_state.get("completion_hint") or "")[:240],
+            "constraints": constraints,
+            "last_evaluation": {
+                "satisfied": bool(raw_eval.get("satisfied", False)),
+                "reason": str(raw_eval.get("reason") or "")[:120],
+                "content": str(raw_eval.get("content") or "")[:240],
+                "evidence": [str(item)[:180] for item in list(raw_eval.get("evidence") or [])[:6] if str(item).strip()],
+            },
+        }
         self.plan.subgoals = self.plan.subgoals[:8]
         for sg in self.plan.subgoals:
             sg.id = str(sg.id or "")[:40]

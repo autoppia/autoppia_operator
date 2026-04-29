@@ -221,6 +221,112 @@ def test_wait_budget_terminal_failure_stops_direct_loop(monkeypatch: Any) -> Non
     assert "Unable to continue safely" in str(out.get("content") or "")
 
 
+def test_execution_profile_defaults_to_general_web_for_general_task() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.run(payload=_base_payload())
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    assert internal_state.get("execution_profile") == "general_web"
+
+
+def test_movie_detail_goal_finishes_before_secondary_demo_action() -> None:
+    def _llm_trailer(**_: Any) -> dict[str, Any]:
+        return {
+            "choices": [{"message": {"content": '{"type":"browser","tool_call":{"name":"browser.click","arguments":{"index":0}}}'}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
+            "model": "gpt-5.2",
+        }
+
+    engine = FSMOperator(llm_call=_llm_trailer)
+    out = engine.run(
+        payload={
+            **_base_payload(),
+            "prompt": "Navigate to a movie page with a duration of 141 minutes or less that is NOT named 'Glass Onion: A Knives Out Mystery' and does NOT contain the genre 'Drama'",
+            "url": "http://localhost:8000/movies/arrival",
+            "step_index": 2,
+            "snapshot_html": ("<html><body><h1>Arrival</h1><div>Duration: 116 minutes</div><div>Genres: Sci-Fi, Mystery</div><button>View trailer</button></body></html>"),
+            "allowed_tools": [{"name": "browser.click"}, {"name": "browser.wait"}],
+        }
+    )
+    assert out.get("done") is True
+    assert out.get("actions") == []
+    assert "Opened matching movie page" in str(out.get("content") or "")
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    assert internal_state.get("execution_profile") == "demo_catalog_navigation"
+    goal_state = internal_state.get("goal_state") if isinstance(internal_state.get("goal_state"), dict) else {}
+    last_eval = goal_state.get("last_evaluation") if isinstance(goal_state.get("last_evaluation"), dict) else {}
+    assert last_eval.get("reason") == "matching_movie_detail_page"
+
+
+def test_demo_catalog_profile_uses_non_direct_routing_on_list_pages() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.run(
+        payload={
+            **_base_payload(),
+            "prompt": "Navigate to a movie page where the name contains 'Dune'",
+            "url": "http://localhost:8000/",
+            "snapshot_html": ("<html><body><h1>Movies</h1><div class='movie-card'>Dune</div><div class='movie-card'>Arrival</div><input placeholder='Search movies' /></body></html>"),
+            "step_index": 1,
+            "allowed_tools": [{"name": "browser.click"}, {"name": "browser.input"}, {"name": "browser.wait"}],
+        }
+    )
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    assert internal_state.get("execution_profile") == "demo_catalog_navigation"
+    assert internal_state.get("mode") != "DIRECT"
+
+
+def test_completion_only_uses_goal_state_for_matching_movie_page() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.run(
+        payload={
+            **_base_payload(),
+            "completion_only": True,
+            "prompt": "Navigate to a movie page where the name contains 'Arrival'",
+            "url": "http://localhost:8000/movies/arrival",
+            "snapshot_html": ("<html><body><h1>Arrival</h1><div>Duration: 116 minutes</div><div>Genres: Sci-Fi, Mystery</div></body></html>"),
+            "step_index": 2,
+        }
+    )
+    assert out.get("done") is True
+    assert "Opened matching movie page" in str(out.get("content") or "")
+    assert out.get("actions") == []
+
+
+def test_wait_only_history_does_not_auto_complete_general_search_task(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.run(
+        payload={
+            **_base_payload(),
+            "prompt": "Go to wikipedia and search for 'elexander the great'",
+            "url": "about:blank",
+            "snapshot_html": "<html><body></body></html>",
+            "step_index": 1,
+            "history": [{"action": {"type": "WaitAction"}, "exec_ok": True, "url": "about:blank"}],
+            "internal_state": {
+                "mode": "NAV",
+                "last_action_sig": "WaitAction|1",
+                "goal_state": {
+                    "kind": "act",
+                    "target_page_type": "",
+                    "entity_type": "",
+                    "stop_on_page_match": False,
+                    "last_evaluation": {"satisfied": False, "reason": "target_page_not_reached"},
+                },
+            },
+            "allowed_tools": [
+                {"name": "browser.navigate"},
+                {"name": "browser.click"},
+                {"name": "browser.wait"},
+                {"name": "browser.scroll"},
+                {"name": "browser.go_back"},
+            ],
+        }
+    )
+    assert out.get("done") is False
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert actions
+
+
 def test_done_and_content_emitted_without_report_result_action() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_final)
     payload = _base_payload()
@@ -339,6 +445,76 @@ def test_prompt_domain_does_not_force_external_navigation() -> None:
         action = actions[0]
         if action.get("type") == "NavigateAction":
             assert "gmail.com" not in str(action.get("url") or "")
+
+
+def test_about_blank_named_site_prompt_bootstraps_navigation() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    payload = _base_payload()
+    payload["prompt"] = "Go to wikipedia and search for 'elexander the great'"
+    payload["url"] = "about:blank"
+    payload["snapshot_html"] = "<html><body></body></html>"
+    out = engine.run(payload=payload)
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert len(actions) == 1
+    assert actions[0].get("type") == "NavigateAction"
+    assert "wikipedia.org" in str(actions[0].get("url") or "")
+
+
+def test_about_blank_named_site_prompt_bootstraps_navigation_in_meta_mode(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    payload = _base_payload()
+    payload["prompt"] = "Go to wikipedia and search for 'elexander the great'"
+    payload["url"] = "about:blank"
+    payload["snapshot_html"] = "<html><body></body></html>"
+    out = engine.run(payload=payload)
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert len(actions) == 1
+    assert actions[0].get("type") == "NavigateAction"
+    assert "wikipedia.org" in str(actions[0].get("url") or "")
+
+
+def test_wikipedia_homepage_prefers_local_search_input() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    payload = _base_payload()
+    payload["prompt"] = "Go to wikipedia and search for 'elexander the great'"
+    payload["url"] = "https://www.wikipedia.org/"
+    payload["step_index"] = 1
+    payload["snapshot_html"] = """
+    <html><body>
+      <form>
+        <input id="searchInput" type="search" placeholder="Search Wikipedia" />
+        <button id="searchButton">Search</button>
+      </form>
+    </body></html>
+    """
+    out = engine.run(payload=payload)
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert len(actions) == 1
+    assert actions[0].get("type") == "TypeAction"
+    assert actions[0].get("text") == "elexander the great"
+
+
+def test_wikipedia_homepage_prefers_local_search_input_in_meta_mode(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    payload = _base_payload()
+    payload["prompt"] = "Go to wikipedia and search for 'elexander the great'"
+    payload["url"] = "https://www.wikipedia.org/"
+    payload["step_index"] = 1
+    payload["snapshot_html"] = """
+    <html><body>
+      <form>
+        <input id="searchInput" type="search" placeholder="Search Wikipedia" />
+        <button id="searchButton">Search</button>
+      </form>
+    </body></html>
+    """
+    out = engine.run(payload=payload)
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert len(actions) == 1
+    assert actions[0].get("type") == "TypeAction"
+    assert actions[0].get("text") == "elexander the great"
 
 
 def test_obs_builder_compacts_history_and_provides_tagged_input() -> None:

@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 from .candidates import Candidate, CandidateExtractor, CandidateRanker
 from .meta_tools import MetaToolExecutor, Router, Skills
 from .observation import ObsBuilder
-from .policy import Policy, _preferred_seed_stable_navigation
+from .policy import Policy, _preferred_prompt_navigation, _preferred_seed_stable_navigation
 from .state import AgentState, FlagDetector, ProgressEffect
 from .utils import (
     _REPO_ROOT,
@@ -130,6 +130,15 @@ class StepEngine:
         text_ir: dict[str, Any],
         flags: dict[str, Any],
     ) -> tuple[bool, str, str]:
+        goal_done, goal_content, goal_reason = self._goal_completion_result(
+            prompt=prompt,
+            url=url,
+            state=state,
+            text_ir=text_ir,
+            flags=flags,
+        )
+        if goal_done:
+            return True, goal_content, goal_reason
         if bool(flags.get("captcha_suspected")):
             return False, "", "Current page is blocked by a challenge."
         if _looks_like_informational_task(prompt):
@@ -151,6 +160,131 @@ class StepEngine:
             if content:
                 return True, content, "Current evidence is sufficient."
         return False, "", "Current page is not yet sufficient to conclude completion."
+
+    def _goal_completion_result(
+        self,
+        *,
+        prompt: str,
+        url: str,
+        state: AgentState,
+        text_ir: dict[str, Any],
+        flags: dict[str, Any],
+    ) -> tuple[bool, str, str]:
+        goal_state = state.goal_state if isinstance(state.goal_state, dict) else {}
+        if not goal_state:
+            return False, "", ""
+        evaluation = self.obs_builder.evaluate_goal_state(
+            prompt=prompt,
+            url=url,
+            text_ir=text_ir,
+            flags=flags,
+            goal_state=goal_state,
+        )
+        goal_state = dict(goal_state)
+        goal_state["last_evaluation"] = evaluation
+        state.goal_state = goal_state
+        if not bool(evaluation.get("satisfied")):
+            return False, "", str(evaluation.get("reason") or "")
+        content = _candidate_text(evaluation.get("content"))
+        if not content:
+            return False, "", str(evaluation.get("reason") or "")
+        if not state.memory.facts:
+            state.memory.facts = _dedupe_keep_order([content], 20)
+        return True, content, str(evaluation.get("reason") or "goal_state_satisfied")
+
+    def _search_query_from_prompt(self, *, prompt: str) -> str:
+        text = str(prompt or "")
+        patterns = [
+            r"\bsearch for\s+['\"]([^'\"]+)['\"]",
+            r"\blook up\s+['\"]([^'\"]+)['\"]",
+            r"\bfind\s+['\"]([^'\"]+)['\"]",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.I)
+            if match:
+                return _norm_ws(match.group(1))[:180]
+        return ""
+
+    def _local_search_pre_action(
+        self,
+        *,
+        prompt: str,
+        url: str,
+        history: list[dict[str, Any]],
+        state: AgentState,
+        flags: dict[str, Any],
+        ranked_candidates: list[Candidate],
+        allowed: set[str],
+    ) -> tuple[dict[str, Any] | None, str]:
+        query = self._search_query_from_prompt(prompt=prompt)
+        if not query:
+            return None, ""
+        current_url = str(url or "").strip().lower()
+        if current_url in {"", "about:blank"}:
+            return None, ""
+        if not (bool(flags.get("search_box")) or any(str(c.field_kind or "") == "search" for c in ranked_candidates)):
+            return None, ""
+
+        def allow(name: str) -> bool:
+            return (not allowed) or (name in allowed)
+
+        search_input: Candidate | None = None
+        for cand in ranked_candidates:
+            if cand.disabled or cand.readonly:
+                continue
+            role = str(cand.role or "").strip().lower()
+            blob = " ".join([cand.text, cand.field_hint, cand.field_kind, cand.placeholder, cand.aria_label, cand.context]).lower()
+            if role in {"input", "textarea"} and (cand.field_kind == "search" or "search" in blob or "query" in blob):
+                search_input = cand
+                break
+        if search_input is None:
+            return None, ""
+
+        selector = _sanitize_selector(search_input.selector)
+        if not isinstance(selector, dict):
+            return None, ""
+
+        remembered = self._remembered_value_for_candidate(candidate=search_input, state=state)
+        already_typed = self._candidate_has_usable_typed_value(candidate=search_input, history=history, state=state)
+        if allow("browser.input") and (not already_typed or (remembered and remembered != query)):
+            return {
+                "type": "TypeAction",
+                "selector": selector,
+                "text": query,
+                "_element_id": search_input.id,
+            }, "local_search_type"
+
+        if not allow("browser.click"):
+            return None, ""
+
+        submit_candidate: Candidate | None = None
+        preferred_group = str(search_input.group_id or "")
+        preferred_region = str(search_input.region_id or "")
+        for cand in ranked_candidates:
+            if cand.disabled:
+                continue
+            role = str(cand.role or "").strip().lower()
+            blob = " ".join([cand.text, cand.field_hint, cand.field_kind, cand.placeholder, cand.aria_label, cand.context]).lower()
+            if role not in {"button", "link", "input"}:
+                continue
+            if not any(token in blob for token in ("search", "find", "go", "submit")):
+                continue
+            same_group = preferred_group and str(cand.group_id or "") == preferred_group
+            same_region = preferred_region and str(cand.region_id or "") == preferred_region
+            if submit_candidate is None or same_group or same_region:
+                submit_candidate = cand
+                if same_group or same_region:
+                    break
+        if submit_candidate is None:
+            return None, ""
+        submit_selector = _sanitize_selector(submit_candidate.selector)
+        if not isinstance(submit_selector, dict):
+            return None, ""
+        return {
+            "type": "ClickAction",
+            "selector": submit_selector,
+            "_element_id": submit_candidate.id,
+        }, "local_search_submit"
 
     def _obs_extract_signature(self, *, dom_hash: str, url: str) -> str:
         raw = json.dumps({"dom_hash": str(dom_hash or "")[:64], "url": str(url or "")[:240]}, ensure_ascii=True, sort_keys=True)
@@ -873,6 +1007,7 @@ class StepEngine:
         prompt: str,
         url: str,
         step_index: int,
+        history: list[dict[str, Any]],
         state: AgentState,
         text_ir: dict[str, Any],
         candidates: list[Candidate],
@@ -887,7 +1022,44 @@ class StepEngine:
         done = False
         content = ""
         policy_reasoning = ""
+        goal_done, goal_content, goal_reason = self._goal_completion_result(
+            prompt=prompt,
+            url=url,
+            state=state,
+            text_ir=text_ir,
+            flags=policy_obs.get("flags") if isinstance(policy_obs.get("flags"), dict) else {},
+        )
+        if goal_done:
+            state.mode = "DONE"
+            return [], True, goal_content, goal_reason, policy_model_used
         direct_browser_allowed = {tool for tool in browser_allowed if tool != "browser.go_back"}
+        search_pre_action, search_note = self._local_search_pre_action(
+            prompt=prompt,
+            url=url,
+            history=history,
+            state=state,
+            flags=policy_obs.get("flags") if isinstance(policy_obs.get("flags"), dict) else {},
+            ranked_candidates=ranked,
+            allowed=direct_browser_allowed,
+        )
+        if search_pre_action is not None:
+            return [search_pre_action], False, "", search_note, policy_model_used
+        preferred_prompt_navigation = _preferred_prompt_navigation(
+            prompt,
+            policy_obs,
+            allowed_tools=direct_browser_allowed,
+        )
+        if isinstance(preferred_prompt_navigation, dict):
+            action = self._browser_action_from_tool_call(
+                tool_call=preferred_prompt_navigation.get("tool_call") if isinstance(preferred_prompt_navigation.get("tool_call"), dict) else preferred_prompt_navigation,
+                ranked_candidates=list(ranked) or list(candidates),
+                state=state,
+                prompt=prompt,
+                allowed=direct_browser_allowed,
+                current_url=url,
+            )
+            if action is not None:
+                return [action], False, "", "preferred_prompt_navigation", policy_model_used
         preferred_seed_navigation = _preferred_seed_stable_navigation(
             prompt,
             policy_obs,
@@ -1012,6 +1184,17 @@ class StepEngine:
         policy_reasoning = ""
         meta_exec_trace: list[str] = []
         step_vision_signatures: set[str] = set()
+        goal_done, goal_content, goal_reason = self._goal_completion_result(
+            prompt=prompt,
+            url=url,
+            state=state,
+            text_ir=text_ir,
+            flags=flags,
+        )
+        if goal_done:
+            state.mode = "DONE"
+            meta_exec_trace.append(f"GOAL_DONE:{goal_reason}")
+            return [], True, goal_content, goal_reason, policy_model_used, meta_exec_trace
 
         pre_action, pre_done, pre_content, pre_note = self._deterministic_pre_action(
             prompt=prompt,
@@ -1580,6 +1763,8 @@ class StepEngine:
             "done": bool(done),
             "content": final_content if done else None,
             "internal_state": state.to_internal_state(),
+            "execution_profile": str(state.execution_profile or "general_web"),
+            "goal_state": state.goal_state if isinstance(state.goal_state, dict) else {},
         }
         if done and str(state.failure_reason or "").strip():
             out["failure_reason"] = str(state.failure_reason or "").strip()
@@ -1691,6 +1876,8 @@ class StepEngine:
             "reasoning": policy_reasoning[:200] if include_reasoning and policy_reasoning else None,
             "actions": [],
             "internal_state": state.to_internal_state(),
+            "execution_profile": str(state.execution_profile or "general_web"),
+            "goal_state": state.goal_state if isinstance(state.goal_state, dict) else {},
             "usage": usage_payload.get("usage") if isinstance(usage_payload.get("usage"), dict) else None,
             "model": policy_model_used,
             "helper_models": usage_payload.get("helper_models") if isinstance(usage_payload.get("helper_models"), list) else [],
@@ -1728,7 +1915,7 @@ class StepEngine:
         allowed: set[str],
         model_override: str,
     ) -> dict[str, Any]:
-        direct_loop = _env_bool("FSM_DIRECT_LOOP", True)
+        configured_direct_loop = _env_bool("FSM_DIRECT_LOOP", True)
         flags = self.flags.detect(snapshot_html=html, url=url, history=history, state=state)
         state.counters.stall_count = int(flags.get("stall_count_suggested") or 0)
         self._record_progress_effect(
@@ -1756,9 +1943,35 @@ class StepEngine:
         if url:
             state.visited.page_hashes[url[:MAX_STR]] = str(flags.get("dom_hash") or "")[:64]
 
+        text_ir = self.obs_builder.build_text_ir(html)
+        candidates = self.extractor.extract(snapshot_html=html, url=url)
+        goal_state = self.obs_builder.build_goal_state(
+            prompt=prompt,
+            web_project_id=web_project_id,
+            use_case=use_case,
+            url=url,
+            flags=flags,
+            text_ir=text_ir,
+            state=state,
+        )
+        execution_route = self.obs_builder.route_execution_profile(
+            prompt=prompt,
+            web_project_id=web_project_id,
+            use_case=use_case,
+            url=url,
+            flags=flags,
+            goal_state=goal_state,
+        )
+        goal_state["route_hint"] = str(execution_route.get("profile") or "general_web")
+        goal_state["route_reason"] = str(execution_route.get("reason") or "")
+        goal_state["route_confidence"] = float(execution_route.get("confidence") or 0.0)
+        state.goal_state = goal_state
+        state.execution_profile = str(execution_route.get("profile") or "general_web")
+
+        direct_loop = bool(configured_direct_loop and state.execution_profile == "general_web")
         if direct_loop:
             routed_mode = "DIRECT"
-            route_reason = "direct_loop"
+            route_reason = f"execution_profile:{state.execution_profile}:direct_loop"
             state.mode = routed_mode
         else:
             routed_mode, route_reason = self.router.next_mode(step_index=step_index, state=state, flags=flags, prompt=prompt)
@@ -1767,20 +1980,19 @@ class StepEngine:
             self._apply_stagnation_policy(state=state, flags=flags)
             if state.mode == "PLAN" and mode_before_stagnation != "PLAN":
                 route_reason = "stagnation_replan"
+            route_reason = f"execution_profile:{state.execution_profile}:{route_reason}"
         self._debug_log(
             task_id,
             {
                 "phase": "flags_router",
                 "flags": flags,
+                "execution_profile": state.execution_profile,
                 "route_reason": route_reason,
                 "mode_routed": routed_mode,
                 "last_effect": state.progress.last_effect,
                 "no_progress_score": int(state.progress.no_progress_score or 0),
             },
         )
-
-        text_ir = self.obs_builder.build_text_ir(html)
-        candidates = self.extractor.extract(snapshot_html=html, url=url)
         obs_extract = self._maybe_extract_observation(
             task_id=task_id,
             prompt=prompt,
@@ -1974,6 +2186,7 @@ class StepEngine:
                 prompt=prompt,
                 url=url,
                 step_index=step_index,
+                history=history,
                 state=state,
                 text_ir=text_ir,
                 candidates=candidates,
@@ -2096,6 +2309,41 @@ class StepEngine:
         def allow(name: str) -> bool:
             return (not allowed) or (name in allowed)
 
+        preferred_prompt_navigation = _preferred_prompt_navigation(
+            prompt,
+            {"url": url},
+            allowed_tools=allowed,
+        )
+        if isinstance(preferred_prompt_navigation, dict):
+            tool_call = preferred_prompt_navigation.get("tool_call") if isinstance(preferred_prompt_navigation.get("tool_call"), dict) else {}
+            if str(tool_call.get("name") or "").strip() == "browser.navigate":
+                args = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
+                target_url = str(args.get("url") or "").strip()
+                if target_url and allow("browser.navigate"):
+                    return (
+                        {
+                            "type": "NavigateAction",
+                            "url": target_url,
+                            "go_back": False,
+                            "go_forward": False,
+                        },
+                        False,
+                        "",
+                        "bootstrap_prompt_navigation",
+                    )
+
+        search_pre_action, search_note = self._local_search_pre_action(
+            prompt=prompt,
+            url=url,
+            history=history,
+            state=state,
+            flags=flags,
+            ranked_candidates=ranked_candidates,
+            allowed=allowed,
+        )
+        if search_pre_action is not None:
+            return search_pre_action, False, "", search_note
+
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
         recent_errors = [str(item.get("error") or "").lower() for item in history[-4:] if isinstance(item, dict) and str(item.get("error") or "").strip()]
         if bool(flags.get("cookie_banner")) or (bool(flags.get("modal_dialog")) and not bool(flags.get("interactive_modal_form"))):
@@ -2128,8 +2376,10 @@ class StepEngine:
                 continue
             recent_wait_only = False
             break
-        if last_action_type == "waitaction" and int(step_index) >= 1 and recent_wait_only and wait_steps >= 1 and not _task_constraints(prompt):
-            return None, True, "Task completed.", "wait_only_complete"
+        goal_eval = state.goal_state.get("last_evaluation") if isinstance(state.goal_state, dict) and isinstance(state.goal_state.get("last_evaluation"), dict) else {}
+        wait_completion_ok = bool(goal_eval.get("satisfied")) and bool(state.goal_state.get("stop_on_page_match")) if isinstance(state.goal_state, dict) else False
+        if last_action_type == "waitaction" and int(step_index) >= 1 and recent_wait_only and wait_steps >= 1 and wait_completion_ok:
+            return None, True, _candidate_text(goal_eval.get("content"), "Task completed."), "wait_only_complete"
 
         # Give async side effects one short cycle to land before declaring stuck.
         if (

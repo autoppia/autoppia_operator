@@ -242,6 +242,36 @@ def test_act_http_response_passthroughs_failure_reason(monkeypatch) -> None:
     assert body["error"] == "no_progress_after_recovery"
 
 
+def test_act_http_response_maps_internal_state_to_state_out(monkeypatch) -> None:
+    async def _fake_act_from_payload(payload):
+        return {
+            "protocol_version": "1.0",
+            "tool_calls": [],
+            "done": False,
+            "execution_mode": "single_step",
+            "internal_state": {"execution_profile": "general_web", "goal_state": {"kind": "reach_page"}},
+        }
+
+    monkeypatch.setattr(agent.OPERATOR, "act_from_payload", _fake_act_from_payload)
+    client = TestClient(agent.app)
+
+    resp = client.post(
+        "/act",
+        json={
+            "task_id": "t-state",
+            "prompt": "go",
+            "url": "about:blank",
+            "snapshot_html": "<html></html>",
+            "step_index": 0,
+            "history": [],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["execution_mode"] == "single_step"
+    assert body["state_out"] == {"execution_profile": "general_web", "goal_state": {"kind": "reach_page"}}
+
+
 def test_capabilities_exposes_protocol_and_tools() -> None:
     client = TestClient(agent.app)
     resp = client.get("/capabilities")

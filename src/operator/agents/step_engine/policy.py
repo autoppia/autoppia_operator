@@ -308,10 +308,22 @@ def _preferred_prompt_navigation(
         prompt_text,
         flags=re.I,
     )
-    if match is None:
-        return None
-    target = str(match.group(1) or "").rstrip(".,);:]!?")
-    safe_target = _safe_url(target)
+    safe_target = ""
+    if match is not None:
+        target = str(match.group(1) or "").rstrip(".,);:]!?")
+        safe_target = _safe_url(target)
+    if not safe_target:
+        named_sites = {
+            "wikipedia": "https://www.wikipedia.org",
+            "google": "https://www.google.com",
+            "github": "https://github.com",
+            "youtube": "https://www.youtube.com",
+            "stackoverflow": "https://stackoverflow.com",
+        }
+        for label, target_url in named_sites.items():
+            if re.search(rf"\b{re.escape(label)}\b", lowered):
+                safe_target = target_url
+                break
     if not safe_target.startswith(("http://", "https://")):
         return None
     return {
@@ -817,6 +829,30 @@ def _tool_call_matches(preferred: Dict[str, Any], actual: Dict[str, Any]) -> boo
     return preferred_args == actual_args
 
 
+def _is_demo_execution_profile(profile: Any) -> bool:
+    text = str(profile or "").strip().lower()
+    return text.startswith("demo_")
+
+
+def _effective_execution_profile(policy_obs: Dict[str, Any]) -> str:
+    explicit = str(policy_obs.get("execution_profile") or "").strip().lower()
+    if explicit:
+        return explicit
+    prompt = str(policy_obs.get("prompt") or "").lower()
+    current_url = str(policy_obs.get("url") or "")
+    path = str(urlsplit(current_url).path or "").lower()
+    snapshot_html = str(policy_obs.get("snapshot_html") or "").lower()
+    candidate_blob = " ".join(
+        [str((item or {}).get("text") or "") for item in (policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else [])[:24] if isinstance(item, dict)]
+    ).lower()
+    combined = " ".join([prompt, path, snapshot_html, candidate_blob])
+    if path.startswith("/movies/") or any(token in combined for token in ("watchlist", "wishlist", "watch trailer", "movie page", "film detail", "view detail")):
+        return "demo_catalog_navigation"
+    if any(token in combined for token in ("log in", "login", "sign in", "register", "sign up", "signup")):
+        return "demo_auth_flow"
+    return "general_web"
+
+
 def _preferred_direct_intent_action(
     prompt: str,
     policy_obs: Dict[str, Any],
@@ -893,6 +929,16 @@ class Policy:
         plan_model_name: str,
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         max_actions_per_step = max(1, min(_env_int("FSM_MAX_ACTIONS_PER_STEP", 3), 5))
+        execution_profile = _effective_execution_profile(policy_obs)
+        goal_state = policy_obs.get("goal_state") if isinstance(policy_obs.get("goal_state"), dict) else {}
+        goal_evaluation = policy_obs.get("goal_evaluation") if isinstance(policy_obs.get("goal_evaluation"), dict) else {}
+        extra_rules: list[str] = []
+        if bool(goal_state.get("stop_on_page_match")):
+            extra_rules.append("- If GOAL STATE is already satisfied on the current page, finish immediately.")
+            extra_rules.append("- Once the target page is open and constraints match, do not open secondary local controls.")
+        if execution_profile == "demo_catalog_navigation":
+            extra_rules.append("- On demo catalog tasks, prefer visible search/filter controls before opening result cards.")
+            extra_rules.append("- Stop as soon as the matching detail page is open; do not continue into trailer/share/comment/watchlist actions.")
         if mode == "POPUP":
             return {"type": "meta", "name": "META.SOLVE_POPUPS", "arguments": {}}, {"source": "deterministic"}
         if mode == "REPORT":
@@ -936,6 +982,7 @@ class Policy:
                 "- If SCORE FEEDBACK is present in state and marks success=true or score=1.0, treat it as strong completion evidence and prefer final/browser.done unless visible evidence clearly contradicts it.\n"
                 "- If a login or registration form is visible, do not submit until the visible credential fields are filled.\n"
                 "- If the task shows empty quoted credentials, replace them with placeholders such as <username>, <password>, <signup_username>, <signup_email>, or <signup_password> instead of empty strings.\n"
+                + ("\n".join(extra_rules) + "\n" if extra_rules else "")
             )
         else:
             system = (
@@ -971,8 +1018,9 @@ class Policy:
                 "- If SCORE FEEDBACK is present in state and marks success=true or score=1.0, treat it as strong completion evidence and prefer final/browser.done unless visible evidence clearly contradicts it.\n"
                 "- If a login or registration form is visible, do not submit until the visible credential fields are filled.\n"
                 "- If the task shows empty quoted credentials, replace them with placeholders such as <username>, <password>, <signup_username>, <signup_email>, or <signup_password> instead of empty strings.\n"
+                + ("\n".join(extra_rules) + "\n" if extra_rules else "")
             )
-        autoplay_examples = _autocinema_example_block(prompt, policy_obs)
+        autoplay_examples = _autocinema_example_block(prompt, policy_obs) if _is_demo_execution_profile(execution_profile) else []
         if direct_mode:
             user_parts = [
                 "Choose the next browser step sequence.",
@@ -1029,6 +1077,14 @@ class Policy:
                 "",
                 "ACTIVE OBJECTIVE (JSON):",
                 json.dumps(policy_obs.get("active_objective") if isinstance(policy_obs.get("active_objective"), dict) else {}, ensure_ascii=False),
+                "",
+                f"EXECUTION PROFILE: {execution_profile}",
+                "",
+                "GOAL STATE (JSON):",
+                json.dumps(goal_state, ensure_ascii=False),
+                "",
+                "GOAL EVALUATION (JSON):",
+                json.dumps(goal_evaluation, ensure_ascii=False),
                 "",
                 "WORKING STATE (JSON):",
                 json.dumps(policy_obs.get("working_state") if isinstance(policy_obs.get("working_state"), dict) else {}, ensure_ascii=False),
@@ -1169,6 +1225,14 @@ class Policy:
                 "",
                 "ACTIVE OBJECTIVE (JSON):",
                 json.dumps(policy_obs.get("active_objective") if isinstance(policy_obs.get("active_objective"), dict) else {}, ensure_ascii=False),
+                "",
+                f"EXECUTION PROFILE: {execution_profile}",
+                "",
+                "GOAL STATE (JSON):",
+                json.dumps(goal_state, ensure_ascii=False),
+                "",
+                "GOAL EVALUATION (JSON):",
+                json.dumps(goal_evaluation, ensure_ascii=False),
                 "",
                 "WORKING STATE (JSON):",
                 json.dumps(policy_obs.get("working_state") if isinstance(policy_obs.get("working_state"), dict) else {}, ensure_ascii=False),
@@ -1670,60 +1734,62 @@ class Policy:
                 }
             if cleaned_calls:
                 if isinstance(policy_obs, dict):
-                    preferred_title_result = _preferred_title_result_action(
-                        str(policy_obs.get("prompt") or ""),
-                        policy_obs,
-                        allowed_tools=allowed_tools,
-                    )
-                    if preferred_title_result is not None:
-                        preferred_title_call = preferred_title_result.get("tool_call")
-                        if isinstance(preferred_title_call, dict) and not any(_tool_call_matches(preferred_title_call, call) for call in cleaned_calls):
-                            cleaned_calls = [preferred_title_call]
-                    preferred_seed_navigation = _preferred_seed_stable_navigation(
-                        str(policy_obs.get("prompt") or ""),
-                        policy_obs,
-                        allowed_tools=allowed_tools,
-                    )
-                    if preferred_seed_navigation is not None:
-                        preferred_seed_call = preferred_seed_navigation.get("tool_call")
-                        if isinstance(preferred_seed_call, dict) and not any(_tool_call_matches(preferred_seed_call, call) for call in cleaned_calls):
-                            cleaned_calls = [preferred_seed_call]
-                    preferred = _preferred_direct_intent_action(
-                        str(policy_obs.get("prompt") or ""),
-                        policy_obs,
-                        allowed_tools=allowed_tools,
-                    )
-                    if preferred is not None:
-                        preferred_call, preferred_candidate = preferred
-                        current_task_intents = _autocinema_task_intent_tags(
+                    execution_profile = _effective_execution_profile(policy_obs)
+                    if _is_demo_execution_profile(execution_profile):
+                        preferred_title_result = _preferred_title_result_action(
                             str(policy_obs.get("prompt") or ""),
                             policy_obs,
+                            allowed_tools=allowed_tools,
                         )
-                        keeps_direct_intent = False
-                        for call in cleaned_calls:
-                            args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
-                            if _candidate_matches_tool_args(preferred_candidate, args):
-                                keeps_direct_intent = True
-                                break
-                            for item in policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else []:
-                                if not isinstance(item, dict):
-                                    continue
-                                if _obs_candidate_primary_intent_tags(item).intersection(current_task_intents) and _candidate_matches_tool_args(item, args):
+                        if preferred_title_result is not None:
+                            preferred_title_call = preferred_title_result.get("tool_call")
+                            if isinstance(preferred_title_call, dict) and not any(_tool_call_matches(preferred_title_call, call) for call in cleaned_calls):
+                                cleaned_calls = [preferred_title_call]
+                        preferred_seed_navigation = _preferred_seed_stable_navigation(
+                            str(policy_obs.get("prompt") or ""),
+                            policy_obs,
+                            allowed_tools=allowed_tools,
+                        )
+                        if preferred_seed_navigation is not None:
+                            preferred_seed_call = preferred_seed_navigation.get("tool_call")
+                            if isinstance(preferred_seed_call, dict) and not any(_tool_call_matches(preferred_seed_call, call) for call in cleaned_calls):
+                                cleaned_calls = [preferred_seed_call]
+                        preferred = _preferred_direct_intent_action(
+                            str(policy_obs.get("prompt") or ""),
+                            policy_obs,
+                            allowed_tools=allowed_tools,
+                        )
+                        if preferred is not None:
+                            preferred_call, preferred_candidate = preferred
+                            current_task_intents = _autocinema_task_intent_tags(
+                                str(policy_obs.get("prompt") or ""),
+                                policy_obs,
+                            )
+                            keeps_direct_intent = False
+                            for call in cleaned_calls:
+                                args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+                                if _candidate_matches_tool_args(preferred_candidate, args):
                                     keeps_direct_intent = True
                                     break
-                            if keeps_direct_intent:
-                                break
-                        if not keeps_direct_intent:
-                            cleaned_calls = [preferred_call]
-                    preferred_markup_action = _preferred_direct_intent_action_from_markup(
-                        str(policy_obs.get("prompt") or ""),
-                        policy_obs,
-                        allowed_tools=allowed_tools,
-                    )
-                    if preferred_markup_action is not None:
-                        preferred_markup_call = preferred_markup_action.get("tool_call")
-                        if isinstance(preferred_markup_call, dict) and not any(_tool_call_matches(preferred_markup_call, call) for call in cleaned_calls):
-                            cleaned_calls = [preferred_markup_call]
+                                for item in policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else []:
+                                    if not isinstance(item, dict):
+                                        continue
+                                    if _obs_candidate_primary_intent_tags(item).intersection(current_task_intents) and _candidate_matches_tool_args(item, args):
+                                        keeps_direct_intent = True
+                                        break
+                                if keeps_direct_intent:
+                                    break
+                            if not keeps_direct_intent:
+                                cleaned_calls = [preferred_call]
+                        preferred_markup_action = _preferred_direct_intent_action_from_markup(
+                            str(policy_obs.get("prompt") or ""),
+                            policy_obs,
+                            allowed_tools=allowed_tools,
+                        )
+                        if preferred_markup_action is not None:
+                            preferred_markup_call = preferred_markup_action.get("tool_call")
+                            if isinstance(preferred_markup_call, dict) and not any(_tool_call_matches(preferred_markup_call, call) for call in cleaned_calls):
+                                cleaned_calls = [preferred_markup_call]
                 out: Dict[str, Any] = {
                     "type": "browser",
                     "reasoning": reasoning_summary,
@@ -1793,6 +1859,7 @@ class Policy:
         def allow(name: str) -> bool:
             return (not allowed_tools) or (name in allowed_tools)
 
+        execution_profile = _effective_execution_profile(policy_obs)
         candidates = policy_obs.get("candidates") if isinstance(policy_obs.get("candidates"), list) else []
         partitions = policy_obs.get("candidate_partitions") if isinstance(policy_obs.get("candidate_partitions"), dict) else {}
         local_candidates = partitions.get("local") if isinstance(partitions.get("local"), list) else []
@@ -1813,41 +1880,42 @@ class Policy:
         max_consecutive_waits = max(0, min(_env_int("FSM_MAX_CONSECUTIVE_WAITS", 1), 4))
         max_recovery_attempts = max(1, min(_env_int("FSM_MAX_RECOVERY_ATTEMPTS", 3), 8))
         prefer_text_input = _prompt_prefers_text_input(prompt, policy_obs)
-        preferred_title_result = _preferred_title_result_action(
-            prompt,
-            policy_obs,
-            allowed_tools=allowed_tools,
-        )
-        if preferred_title_result is not None:
-            return preferred_title_result
-        preferred_seed_navigation = _preferred_seed_stable_navigation(
-            prompt,
-            policy_obs,
-            allowed_tools=allowed_tools,
-        )
-        if preferred_seed_navigation is not None:
-            return preferred_seed_navigation
-        preferred_prompt_navigation = _preferred_prompt_navigation(
-            prompt,
-            policy_obs,
-            allowed_tools=allowed_tools,
-        )
-        if preferred_prompt_navigation is not None:
-            return preferred_prompt_navigation
-        preferred_direct_action = _preferred_direct_intent_action(
-            prompt,
-            policy_obs,
-            allowed_tools=allowed_tools,
-        )
-        if preferred_direct_action is not None:
-            return {"type": "browser", "tool_call": preferred_direct_action[0]}
-        preferred_markup_action = _preferred_direct_intent_action_from_markup(
-            prompt,
-            policy_obs,
-            allowed_tools=allowed_tools,
-        )
-        if preferred_markup_action is not None:
-            return preferred_markup_action
+        if _is_demo_execution_profile(execution_profile):
+            preferred_title_result = _preferred_title_result_action(
+                prompt,
+                policy_obs,
+                allowed_tools=allowed_tools,
+            )
+            if preferred_title_result is not None:
+                return preferred_title_result
+            preferred_seed_navigation = _preferred_seed_stable_navigation(
+                prompt,
+                policy_obs,
+                allowed_tools=allowed_tools,
+            )
+            if preferred_seed_navigation is not None:
+                return preferred_seed_navigation
+            preferred_prompt_navigation = _preferred_prompt_navigation(
+                prompt,
+                policy_obs,
+                allowed_tools=allowed_tools,
+            )
+            if preferred_prompt_navigation is not None:
+                return preferred_prompt_navigation
+            preferred_direct_action = _preferred_direct_intent_action(
+                prompt,
+                policy_obs,
+                allowed_tools=allowed_tools,
+            )
+            if preferred_direct_action is not None:
+                return {"type": "browser", "tool_call": preferred_direct_action[0]}
+            preferred_markup_action = _preferred_direct_intent_action_from_markup(
+                prompt,
+                policy_obs,
+                allowed_tools=allowed_tools,
+            )
+            if preferred_markup_action is not None:
+                return preferred_markup_action
 
         def candidate_id(item: Dict[str, Any]) -> str:
             return str(item.get("id") or item.get("element_id") or item.get("_element_id") or "").strip()

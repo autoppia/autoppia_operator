@@ -96,6 +96,329 @@ class ObsBuilder:
         )
         return any(term in text for term in account_terms)
 
+    def _page_blob(self, *, url: str, text_ir: Dict[str, Any]) -> str:
+        parts: list[str] = [str(url or "")]
+        for key in ("title", "visible_text", "html_excerpt"):
+            value = _candidate_text(text_ir.get(key))
+            if value:
+                parts.append(value[:4000])
+        for key in ("headings", "page_facts", "value_lines", "visible_lines"):
+            values = text_ir.get(key) if isinstance(text_ir.get(key), list) else []
+            parts.extend([_candidate_text(item)[:220] for item in values[:32] if _candidate_text(item)])
+        return "\n".join(parts)
+
+    def _parse_csv_or_list(self, raw: str) -> List[str]:
+        text = str(raw or "").strip()
+        if not text:
+            return []
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        items = [item.strip(" '\"\t\r\n") for item in re.split(r",|\|", text) if item.strip(" '\"\t\r\n")]
+        return _dedupe_keep_order(items, 8)
+
+    def _movie_goal_constraints(self, *, prompt: str, task_constraints: Dict[str, str]) -> Dict[str, Any]:
+        text = str(prompt or "")
+        lower = text.lower()
+        out: Dict[str, Any] = {}
+        max_duration = re.search(r"duration of\s+(\d{1,3})\s*(?:minutes?|mins?)\s+or less", lower)
+        if max_duration:
+            out["max_duration_minutes"] = int(max_duration.group(1))
+        min_duration = re.search(r"duration of\s+(\d{1,3})\s*(?:minutes?|mins?)\s+or more", lower)
+        if min_duration:
+            out["min_duration_minutes"] = int(min_duration.group(1))
+        exclude_title = re.search(r"(?:not named|is not named|isn't named)\s+['\"]([^'\"]+)['\"]", text, flags=re.I)
+        if exclude_title:
+            out["exclude_title"] = _norm_ws(exclude_title.group(1))[:120]
+        exact_title = re.search(r"name equals\s+['\"]([^'\"]+)['\"]", text, flags=re.I)
+        if exact_title:
+            out["title_equals"] = _norm_ws(exact_title.group(1))[:120]
+        title_contains = re.search(r"name contains\s+['\"]([^'\"]+)['\"]", text, flags=re.I)
+        if title_contains:
+            out["title_contains"] = _norm_ws(title_contains.group(1))[:120]
+        exclude_genre = re.search(r"(?:does not contain|doesn't contain|not contain)(?:\s+the)?\s+genre\s+['\"]([^'\"]+)['\"]", text, flags=re.I)
+        if exclude_genre:
+            out["exclude_genres"] = self._parse_csv_or_list(exclude_genre.group(1))
+        any_genre = re.search(r"genres?\s+is\s+one\s+of\s+(\[[^\]]+\])", text, flags=re.I)
+        if any_genre:
+            out["genre_any_of"] = self._parse_csv_or_list(any_genre.group(1))
+        year_equals = re.search(r"year equals\s+['\"]?((?:19|20)\d{2})['\"]?", text, flags=re.I)
+        if year_equals:
+            out["year_exact"] = int(year_equals.group(1))
+        raw_name = _candidate_text(task_constraints.get("name"), task_constraints.get("movie_name"))
+        if raw_name and "title_equals" not in out:
+            out["title_equals"] = raw_name[:120]
+        raw_year = _candidate_text(task_constraints.get("year"))
+        if raw_year.isdigit() and "year_exact" not in out:
+            out["year_exact"] = int(raw_year)
+        raw_genre = _candidate_text(task_constraints.get("genre"), task_constraints.get("genres"))
+        if raw_genre and "genre_any_of" not in out and "exclude_genres" not in out:
+            out["genre_any_of"] = self._parse_csv_or_list(raw_genre)
+        return out
+
+    def _target_page_type(self, *, prompt: str) -> str:
+        lower = str(prompt or "").lower()
+        if "homepage" in lower or "home page" in lower:
+            return "home"
+        if re.search(r"\b(login|log in|sign in)\b", lower):
+            return "login"
+        if re.search(r"\b(register|sign up|signup|create account)\b", lower):
+            return "register"
+        if "contact" in lower:
+            return "contact"
+        if "pricing" in lower:
+            return "pricing"
+        if "about" in lower:
+            return "about"
+        if re.search(r"\b(movie|film)\s+page\b|\bdetails?\b", lower):
+            return "detail"
+        if "search" in lower or "results" in lower:
+            return "results"
+        return ""
+
+    def build_goal_state(
+        self,
+        *,
+        prompt: str,
+        web_project_id: str,
+        use_case: Dict[str, str] | None,
+        url: str,
+        flags: Dict[str, Any],
+        text_ir: Dict[str, Any],
+        state: AgentState,
+    ) -> Dict[str, Any]:
+        task_constraints = _task_constraints(prompt)
+        prompt_lower = str(prompt or "").lower()
+        target_page_type = self._target_page_type(prompt=prompt)
+        kind = "act"
+        if _looks_like_informational_task(prompt):
+            kind = "informational"
+        elif (re.search(r"\b(navigate|open|go to|reach|find|show)\b", prompt_lower) and ("page" in prompt_lower or target_page_type)) or target_page_type in {"contact", "pricing", "about", "home"}:
+            kind = "reach_page"
+        entity_type = ""
+        if re.search(r"\b(movie|film)\b", prompt_lower) or str((use_case or {}).get("name") or "").upper() == "FILM_DETAIL":
+            entity_type = "movie"
+        constraints: Dict[str, Any] = {}
+        if entity_type == "movie":
+            constraints.update(self._movie_goal_constraints(prompt=prompt, task_constraints=task_constraints))
+        goal_state: Dict[str, Any] = {
+            "kind": kind,
+            "target_page_type": target_page_type,
+            "entity_type": entity_type,
+            "stop_on_page_match": bool(kind == "reach_page"),
+            "completion_hint": "",
+            "constraints": constraints,
+            "route_hint": "general_web",
+            "route_reason": "",
+            "route_confidence": 0.0,
+        }
+        if goal_state["stop_on_page_match"]:
+            goal_state["completion_hint"] = "Stop once the target page is open and the visible constraints match."
+        if entity_type == "movie" and target_page_type == "detail":
+            goal_state["completion_hint"] = "Stop on a matching movie detail page instead of opening trailer/share/watchlist flows."
+        if state.goal_state.get("last_evaluation") if isinstance(state.goal_state, dict) else None:
+            goal_state["last_evaluation"] = state.goal_state.get("last_evaluation")
+        if web_project_id:
+            goal_state["route_reason"] = f"project:{str(web_project_id).strip().lower()}"
+        elif str(urlsplit(str(url or "")).hostname or "") in {"localhost", "127.0.0.1"}:
+            goal_state["route_reason"] = "local_demo_host"
+        if flags.get("product_cards") or flags.get("results_list"):
+            existing_reason = str(goal_state.get("route_reason") or "").strip()
+            goal_state["route_reason"] = f"{existing_reason}, catalog_like_page".strip(", ") if existing_reason else "catalog_like_page"
+        return goal_state
+
+    def route_execution_profile(
+        self,
+        *,
+        prompt: str,
+        web_project_id: str,
+        use_case: Dict[str, str] | None,
+        url: str,
+        flags: Dict[str, Any],
+        goal_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        prompt_lower = str(prompt or "").lower()
+        host = str(urlsplit(str(url or "")).hostname or "").lower()
+        profile = "general_web"
+        confidence = 0.15
+        reasons: List[str] = []
+        if str(web_project_id or "").strip():
+            confidence += 0.5
+            reasons.append(f"web_project_id={str(web_project_id).strip().lower()}")
+        if host in {"localhost", "127.0.0.1"}:
+            confidence += 0.2
+            reasons.append(f"host={host}")
+        if bool(flags.get("product_cards")) or bool(flags.get("results_list")):
+            confidence += 0.15
+            reasons.append("catalog_ui")
+        entity_type = str(goal_state.get("entity_type") or "")
+        target_page_type = str(goal_state.get("target_page_type") or "")
+        if entity_type == "movie" and target_page_type == "detail":
+            profile = "demo_catalog_navigation"
+            confidence += 0.25
+            reasons.append("movie_detail_goal")
+        elif re.search(r"\b(login|log in|sign in|register|sign up|signup)\b", prompt_lower):
+            if confidence >= 0.55:
+                profile = "demo_auth_flow"
+                reasons.append("auth_goal")
+        elif re.search(r"\b(add|create|edit|update|delete|remove)\b", prompt_lower):
+            if confidence >= 0.55:
+                profile = "demo_form_task"
+                reasons.append("mutation_goal")
+        if not str((use_case or {}).get("name") or "").strip() and profile != "general_web" and confidence < 0.55:
+            profile = "general_web"
+        return {
+            "profile": profile,
+            "confidence": max(0.0, min(1.0, confidence)),
+            "reason": ", ".join(reasons[:4]) or "default_general_web",
+        }
+
+    def _movie_page_signals(self, *, url: str, text_ir: Dict[str, Any]) -> Dict[str, Any]:
+        page_blob = self._page_blob(url=url, text_ir=text_ir)
+        title = ""
+        headings = text_ir.get("headings") if isinstance(text_ir.get("headings"), list) else []
+        for heading in headings[:8]:
+            candidate = _candidate_text(heading)
+            if candidate and candidate.lower() not in {"movies", "films", "search", "results"}:
+                title = candidate[:120]
+                break
+        if not title:
+            title = _candidate_text(text_ir.get("title"))[:120]
+        duration_minutes = None
+        for pattern in (
+            r"(?:duration|runtime|running time)\s*:?\s*(\d{1,3})\s*(?:minutes?|mins?)",
+            r"\b(\d{1,3})\s*(?:minutes?|mins?)\b",
+        ):
+            match = re.search(pattern, page_blob, flags=re.I)
+            if match:
+                duration_minutes = int(match.group(1))
+                break
+        year = None
+        year_match = re.search(r"(?:year|release year|released)\s*:?\s*((?:19|20)\d{2})", page_blob, flags=re.I)
+        if year_match:
+            year = int(year_match.group(1))
+        genres: List[str] = []
+        for pattern in (
+            r"(?:genre|genres|category|categories)\s*:?\s*([A-Za-z][A-Za-z,\-/ ]{2,80})",
+            r"\b(?:Genre|Genres)\b[^\n]{0,4}\n([A-Za-z][A-Za-z,\-/ ]{2,80})",
+        ):
+            match = re.search(pattern, page_blob, flags=re.I)
+            if match:
+                genres = self._parse_csv_or_list(match.group(1))
+                break
+        is_detail_page = str(urlsplit(str(url or "")).path or "").startswith("/movies/")
+        if not is_detail_page and title and (duration_minutes is not None or genres or year is not None):
+            is_detail_page = True
+        return {
+            "title": title,
+            "duration_minutes": duration_minutes,
+            "year": year,
+            "genres": genres,
+            "is_detail_page": bool(is_detail_page),
+        }
+
+    def evaluate_goal_state(
+        self,
+        *,
+        prompt: str,
+        url: str,
+        text_ir: Dict[str, Any],
+        flags: Dict[str, Any],
+        goal_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not isinstance(goal_state, dict):
+            return {"satisfied": False, "reason": "missing_goal_state", "content": "", "evidence": []}
+        if bool(flags.get("captcha_suspected")):
+            return {"satisfied": False, "reason": "captcha_unresolved", "content": "", "evidence": []}
+        kind = str(goal_state.get("kind") or "")
+        target_page_type = str(goal_state.get("target_page_type") or "")
+        entity_type = str(goal_state.get("entity_type") or "")
+        constraints = goal_state.get("constraints") if isinstance(goal_state.get("constraints"), dict) else {}
+        page_blob = self._page_blob(url=url, text_ir=text_ir)
+        path = str(urlsplit(str(url or "")).path or "/").lower()
+        title = _candidate_text(text_ir.get("title"))
+        headings = text_ir.get("headings") if isinstance(text_ir.get("headings"), list) else []
+        evidence: List[str] = []
+        if kind != "reach_page" or not bool(goal_state.get("stop_on_page_match")):
+            return {"satisfied": False, "reason": "goal_not_terminal_page_navigation", "content": "", "evidence": []}
+        page_match = False
+        if target_page_type == "home":
+            page_match = path in {"", "/"}
+        elif target_page_type == "login":
+            page_match = path.startswith(("/login", "/signin", "/auth")) or "login" in page_blob.lower() or "sign in" in page_blob.lower()
+        elif target_page_type == "register":
+            page_match = path.startswith(("/register", "/signup")) or "sign up" in page_blob.lower() or "create account" in page_blob.lower()
+        elif target_page_type == "contact":
+            page_match = path.startswith("/contact") or "contact" in page_blob.lower()
+        elif target_page_type == "pricing":
+            page_match = path.startswith("/pricing") or "pricing" in page_blob.lower()
+        elif target_page_type == "about":
+            page_match = path.startswith("/about") or "about" in page_blob.lower()
+        elif target_page_type == "detail":
+            movie_signals = self._movie_page_signals(url=url, text_ir=text_ir)
+            page_match = bool(movie_signals.get("is_detail_page"))
+            if page_match:
+                if _candidate_text(movie_signals.get("title")):
+                    evidence.append(f"title={_candidate_text(movie_signals.get('title'))}")
+                if movie_signals.get("duration_minutes") is not None:
+                    evidence.append(f"duration={int(movie_signals.get('duration_minutes') or 0)}")
+                if movie_signals.get("genres"):
+                    evidence.append("genres=" + ", ".join(list(movie_signals.get("genres") or [])[:3]))
+                if movie_signals.get("year") is not None:
+                    evidence.append(f"year={int(movie_signals.get('year') or 0)}")
+            if page_match and entity_type == "movie":
+                current_title = str(movie_signals.get("title") or "")
+                current_duration = movie_signals.get("duration_minutes")
+                current_year = movie_signals.get("year")
+                current_genres = [str(item).lower() for item in list(movie_signals.get("genres") or [])]
+                exclude_title = _candidate_text(constraints.get("exclude_title"))
+                if exclude_title and _constraint_value_matches(exclude_title, current_title):
+                    return {"satisfied": False, "reason": "excluded_title_on_page", "content": "", "evidence": evidence}
+                title_equals = _candidate_text(constraints.get("title_equals"))
+                if title_equals and not _constraint_value_matches(title_equals, current_title):
+                    return {"satisfied": False, "reason": "title_mismatch", "content": "", "evidence": evidence}
+                title_contains = _candidate_text(constraints.get("title_contains"))
+                if title_contains and title_contains.lower() not in current_title.lower():
+                    return {"satisfied": False, "reason": "title_contains_mismatch", "content": "", "evidence": evidence}
+                max_duration = constraints.get("max_duration_minutes")
+                if isinstance(max_duration, int) and current_duration is not None and int(current_duration) > max_duration:
+                    return {"satisfied": False, "reason": "duration_above_limit", "content": "", "evidence": evidence}
+                min_duration = constraints.get("min_duration_minutes")
+                if isinstance(min_duration, int) and current_duration is not None and int(current_duration) < min_duration:
+                    return {"satisfied": False, "reason": "duration_below_limit", "content": "", "evidence": evidence}
+                year_exact = constraints.get("year_exact")
+                if isinstance(year_exact, int) and current_year is not None and int(current_year) != year_exact:
+                    return {"satisfied": False, "reason": "year_mismatch", "content": "", "evidence": evidence}
+                exclude_genres = [str(item).lower() for item in list(constraints.get("exclude_genres") or [])]
+                if exclude_genres and any(any(excluded in genre for genre in current_genres) for excluded in exclude_genres):
+                    return {"satisfied": False, "reason": "excluded_genre_present", "content": "", "evidence": evidence}
+                genre_any_of = [str(item).lower() for item in list(constraints.get("genre_any_of") or [])]
+                if genre_any_of and current_genres and not any(any(allowed in genre for genre in current_genres) for allowed in genre_any_of):
+                    return {"satisfied": False, "reason": "genre_not_allowed", "content": "", "evidence": evidence}
+                pieces = [_candidate_text(current_title, title, (headings[0] if headings else ""))]
+                if current_duration is not None:
+                    pieces.append(f"{int(current_duration)} min")
+                if movie_signals.get("genres"):
+                    pieces.append(", ".join(list(movie_signals.get("genres") or [])[:3]))
+                if current_year is not None:
+                    pieces.append(str(int(current_year)))
+                return {
+                    "satisfied": True,
+                    "reason": "matching_movie_detail_page",
+                    "content": "Opened matching movie page: " + " | ".join([piece for piece in pieces if piece])[:220],
+                    "evidence": evidence,
+                }
+        else:
+            page_match = any(token in page_blob.lower() for token in [target_page_type]) or target_page_type in path
+        if not page_match:
+            return {"satisfied": False, "reason": "target_page_not_reached", "content": "", "evidence": evidence}
+        summary = _candidate_text(title, (headings[0] if headings else ""), path)
+        return {
+            "satisfied": True,
+            "reason": "target_page_reached",
+            "content": f"Opened the target {target_page_type or 'page'}: {summary}"[:240],
+            "evidence": evidence[:6],
+        }
+
     def _candidate_action_tags(self, cand: Candidate) -> set[str]:
         blob = " ".join([cand.text, cand.href, cand.field_hint, cand.field_kind, cand.group_label]).lower()
         tags: set[str] = set()
@@ -2354,6 +2677,27 @@ class ObsBuilder:
             state.memory.history_summary = history_summary
         parsed_url = urlsplit(str(url or ""))
         task_constraints = _task_constraints(prompt)
+        goal_state = self.build_goal_state(
+            prompt=prompt,
+            web_project_id=web_project_id,
+            use_case=use_case,
+            url=url,
+            flags=flags,
+            text_ir=text_ir,
+            state=state,
+        )
+        goal_evaluation = self.evaluate_goal_state(
+            prompt=prompt,
+            url=url,
+            text_ir=text_ir,
+            flags=flags,
+            goal_state=goal_state,
+        )
+        goal_state["route_hint"] = str(state.execution_profile or goal_state.get("route_hint") or "general_web")
+        if isinstance(state.goal_state, dict):
+            goal_state["route_reason"] = _candidate_text(state.goal_state.get("route_reason"), goal_state.get("route_reason"))
+            goal_state["route_confidence"] = float(state.goal_state.get("route_confidence") or goal_state.get("route_confidence") or 0.0)
+        goal_state["last_evaluation"] = goal_evaluation
         page_observations = self._page_observations(
             prompt=prompt,
             flags=flags,
@@ -2461,7 +2805,10 @@ class ObsBuilder:
             "web_project_id": _candidate_text(web_project_id),
             "use_case": _normalize_use_case_info(use_case),
             "prompt": str(prompt or "")[:1200],
+            "execution_profile": str(state.execution_profile or "general_web"),
             "task_constraints": task_constraints,
+            "goal_state": goal_state,
+            "goal_evaluation": goal_evaluation,
             "step_index": int(step_index),
             "url": str(url or "")[:800],
             "url_parts": {
