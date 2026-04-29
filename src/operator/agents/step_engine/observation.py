@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 
+from . import site_knowledge as site_knowledge_module
 from .candidates import *
 from .site_knowledge import *
 from .state import *
@@ -1902,7 +1903,7 @@ class ObsBuilder:
         recent_failures = self._recent_failures(history_recent, limit=4)
         progress_brief = self._progress_brief(state=state)
         site_knowledge = (
-            _build_site_knowledge(
+            site_knowledge_module._build_site_knowledge(
                 _candidate_text(web_project_id),
                 _normalize_use_case_info(use_case),
                 prompt,
@@ -1910,7 +1911,7 @@ class ObsBuilder:
                 snapshot_html=snapshot_html,
                 candidates=candidates,
             )
-            if _env_bool("FSM_USE_SITE_KNOWLEDGE", False)
+            if _env_bool("FSM_USE_SITE_KNOWLEDGE", True)
             else {}
         )
         active_subgoal = {}
@@ -2444,7 +2445,7 @@ class ObsBuilder:
         )
         indexed_policy_candidates = self._indexed_candidate_obs(policy_candidates, limit=self.POLICY_SHORTLIST_LIMIT)
         site_knowledge = (
-            _build_site_knowledge(
+            site_knowledge_module._build_site_knowledge(
                 _candidate_text(web_project_id),
                 _normalize_use_case_info(use_case),
                 prompt,
@@ -2452,7 +2453,7 @@ class ObsBuilder:
                 snapshot_html=snapshot_html,
                 candidates=policy_candidates,
             )
-            if _env_bool("FSM_USE_SITE_KNOWLEDGE", False)
+            if _env_bool("FSM_USE_SITE_KNOWLEDGE", True)
             else {}
         )
         return {

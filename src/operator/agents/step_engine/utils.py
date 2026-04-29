@@ -903,6 +903,17 @@ def _digit_tokens(text: str) -> set[str]:
 
 def _best_page_evidence(prompt: str, text_ir: dict[str, Any]) -> str:
     text_ir = text_ir if isinstance(text_ir, dict) else {}
+    prompt_text = str(prompt or "").lower()
+
+    def _homepage_summary_fallback() -> str:
+        if not (re.search(r"\b(summary|summarize|describe)\b", prompt_text) and re.search(r"\b(homepage|home page|landing page)\b", prompt_text)):
+            return ""
+        title = _candidate_text(text_ir.get("title"))
+        headings = text_ir.get("headings") if isinstance(text_ir.get("headings"), list) else []
+        visible_text = _norm_ws(str(text_ir.get("visible_text") or ""))
+        summary_parts = [part for part in [title, *(str(x) for x in headings[:2]), visible_text[:180]] if _norm_ws(part)]
+        return _norm_ws(" - ".join(summary_parts))[:220]
+
     page_facts = text_ir.get("page_facts") if isinstance(text_ir.get("page_facts"), list) else []
     value_lines = text_ir.get("value_lines") if isinstance(text_ir.get("value_lines"), list) else []
     relevant_lines = text_ir.get("relevant_lines") if isinstance(text_ir.get("relevant_lines"), list) else []
@@ -911,7 +922,7 @@ def _best_page_evidence(prompt: str, text_ir: dict[str, Any]) -> str:
         24,
     )
     if not candidates:
-        return ""
+        return _homepage_summary_fallback()
     ranked: list[tuple[int, str]] = []
     for fact in candidates:
         clean = _norm_ws(fact)
@@ -942,7 +953,7 @@ def _best_page_evidence(prompt: str, text_ir: dict[str, Any]) -> str:
         raw_overlap = 0
         anchor_overlap = 0
     if raw_overlap <= 0 and anchor_overlap <= 0:
-        return ""
+        return _homepage_summary_fallback()
     return best_fact[:220]
 
 
@@ -950,6 +961,17 @@ def _content_supported_by_page_evidence(prompt: str, content: str, text_ir: dict
     answer = _norm_ws(content)
     if not answer:
         return False
+    prompt_text = str(prompt or "").lower()
+    if re.search(r"\b(summary|summarize|describe)\b", prompt_text) and re.search(r"\b(homepage|home page|landing page)\b", prompt_text):
+        homepage_haystack = " ".join(
+            [
+                str(text_ir.get("title") or ""),
+                " ".join(str(x) for x in (text_ir.get("headings") if isinstance(text_ir.get("headings"), list) else [])[:4]),
+                str(text_ir.get("visible_text") or ""),
+            ]
+        )
+        if _fact_overlap_score(answer, homepage_haystack) >= 2:
+            return True
     page_facts = text_ir.get("page_facts") if isinstance(text_ir.get("page_facts"), list) else []
     likely = []
     if page_facts:
@@ -1033,6 +1055,9 @@ def _runtime_page_evidence_ready(prompt: str, url: str, text_ir: dict[str, Any],
     best_fact = _best_page_evidence(prompt, text_ir)
     if not best_fact:
         return False
+    prompt_text = str(prompt or "").lower()
+    if re.search(r"\b(summary|summarize|describe)\b", prompt_text) and re.search(r"\b(homepage|home page|landing page)\b", prompt_text):
+        return True
     return bool(_fact_overlap_score(prompt, best_fact) >= 1 and _anchor_overlap_score(prompt, best_fact) >= 1)
 
 

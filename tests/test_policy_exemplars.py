@@ -68,6 +68,46 @@ def test_autocinema_example_block_includes_matching_examples(monkeypatch: object
     assert "use_case=CONTACT" not in joined
 
 
+def test_example_block_uses_project_specific_trace_examples(monkeypatch: object) -> None:
+    monkeypatch.setattr(
+        policy_module,
+        "_project_success_examples",
+        lambda project_id: [
+            {
+                "web_project_id": project_id,
+                "use_case": "LOGIN_BOOK",
+                "url_path": "/login",
+                "step_index": 1,
+                "prompt": "Log in to the library.",
+                "tool_calls": [{"name": "browser.input", "arguments": {"index": 0, "text": "<username>"}}],
+            },
+            {
+                "web_project_id": project_id,
+                "use_case": "SEARCH_BOOK",
+                "url_path": "/search",
+                "step_index": 1,
+                "prompt": "Search for a book.",
+                "tool_calls": [{"name": "browser.click", "arguments": {"index": 1}}],
+            },
+        ],
+    )
+
+    block = policy_module._autocinema_example_block(
+        "Log in to the library with the provided credentials.",
+        {
+            "web_project_id": "autobooks",
+            "url": "https://books.example/login",
+            "step_index": 1,
+            "use_case": {"name": "LOGIN_BOOK"},
+        },
+    )
+
+    joined = "\n".join(block)
+    assert "RETRIEVED SUCCESSFUL TRACE EXAMPLES:" in joined
+    assert "use_case=LOGIN_BOOK" in joined
+    assert "use_case=SEARCH_BOOK" not in joined
+
+
 def test_obs_candidate_intent_tags_treat_active_watchlist_toggle_as_remove() -> None:
     tags = policy_module._obs_candidate_intent_tags(
         {
@@ -177,6 +217,29 @@ def test_preferred_seed_navigation_uses_login_for_watchlist_when_detail_page_is_
     tool_call = action["tool_call"]
     assert tool_call["name"] == "browser.navigate"
     assert tool_call["arguments"]["url"].endswith("/login?seed=31000")
+
+
+def test_preferred_seed_navigation_uses_site_knowledge_section_route() -> None:
+    action = policy_module._preferred_seed_stable_navigation(
+        "Log in to the site.",
+        {
+            "url": "https://books.example/about",
+            "site_knowledge": {
+                "current_task_routing": {"likely_best_section": "auth"},
+                "routes": [
+                    {"section_id": "info", "path": "/about", "label": "About"},
+                    {"section_id": "auth", "path": "/login", "label": "Login"},
+                ],
+            },
+            "page_observations": {"capability_gap": {}},
+            "use_case": {"name": "LOGIN_BOOK"},
+        },
+        allowed_tools={"browser.navigate"},
+    )
+    assert action is not None
+    tool_call = action["tool_call"]
+    assert tool_call["name"] == "browser.navigate"
+    assert tool_call["arguments"]["url"] == "https://books.example/login"
 
 
 def test_preferred_prompt_navigation_opens_domain_from_blank_page() -> None:

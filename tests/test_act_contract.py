@@ -210,6 +210,38 @@ def test_act_http_response_passthroughs_metrics_and_usage(monkeypatch) -> None:
     assert body.get("metrics", {}).get("llm", {}).get("helper_models") == ["gpt-4o-mini-2024-07-18"]
 
 
+def test_act_http_response_passthroughs_failure_reason(monkeypatch) -> None:
+    async def _fake_act_from_payload(payload):
+        return {
+            "protocol_version": "1.0",
+            "tool_calls": [],
+            "done": True,
+            "content": "Unable to continue safely after repeated recovery attempts.",
+            "error": "no_progress_after_recovery",
+            "failure_reason": "no_progress_after_recovery",
+        }
+
+    monkeypatch.setattr(agent.OPERATOR, "act_from_payload", _fake_act_from_payload)
+    client = TestClient(agent.app)
+
+    resp = client.post(
+        "/act",
+        json={
+            "task_id": "t-fail",
+            "prompt": "complete the task",
+            "url": "https://example.com",
+            "snapshot_html": "<html></html>",
+            "step_index": 3,
+            "history": [],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["done"] is True
+    assert body["failure_reason"] == "no_progress_after_recovery"
+    assert body["error"] == "no_progress_after_recovery"
+
+
 def test_capabilities_exposes_protocol_and_tools() -> None:
     client = TestClient(agent.app)
     resp = client.get("/capabilities")

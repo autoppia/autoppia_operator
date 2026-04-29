@@ -247,6 +247,22 @@ Capture screenshots into the debug trace bundle:
 python src/eval/debugger/run_debug.py --web-project-id autocinema --use-case LOGIN --capture-screenshot
 ```
 
+Debug flaky or looping runs with step-engine traces:
+
+```bash
+export FSM_TRACE_JSON=1
+export FSM_POLICY_DEBUG_DIR=/tmp/autoppia_fsm_debug
+export AGENT_LOG_DECISIONS=1
+```
+
+Reliability-focused defaults and knobs:
+
+- `FSM_USE_SITE_KNOWLEDGE=1` keeps section and route hints enabled for semi-structured sites.
+- `FSM_DIRECT_LOOP=0` switches to the richer routed/meta loop when you want stronger recovery and planning behavior.
+- `FSM_MAX_CONSECUTIVE_WAITS` caps repeated `browser.wait` recovery steps.
+- `FSM_MAX_RECOVERY_ATTEMPTS` caps generic wait/back/scroll recovery attempts before the operator returns a bounded failure.
+- `/act` responses may now include `failure_reason` values such as `blocked_by_auth`, `popup_not_resolved`, `target_not_found`, `state_not_understood`, or `no_progress_after_recovery` when the operator stops early instead of looping.
+
 Task generation helper (writes the cache consumed by `src/eval/runner.py`):
 
 ```bash

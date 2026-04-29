@@ -188,6 +188,39 @@ def test_stuck_recovery_triggers_with_loop_signals(monkeypatch: Any) -> None:
     assert isinstance(blocked, list)
 
 
+def test_wait_budget_terminal_failure_stops_direct_loop(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "1")
+    monkeypatch.setenv("FSM_MAX_CONSECUTIVE_WAITS", "1")
+    monkeypatch.setenv("FSM_MAX_RECOVERY_ATTEMPTS", "2")
+
+    def _llm_wait(**_: Any) -> dict[str, Any]:
+        return {
+            "choices": [{"message": {"content": '{"type":"browser","tool_call":{"name":"browser.wait","arguments":{"time_seconds":1}}}'}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            "model": "gpt-5.2",
+        }
+
+    engine = FSMOperator(llm_call=_llm_wait)
+    out = engine.run(
+        payload={
+            **_base_payload(),
+            "step_index": 3,
+            "allowed_tools": [{"name": "browser.wait"}],
+            "history": [{"action": {"type": "WaitAction"}, "exec_ok": True}],
+            "internal_state": {
+                "mode": "DIRECT",
+                "counters": {
+                    "consecutive_wait_count": 1,
+                    "recovery_attempt_count": 2,
+                },
+            },
+        }
+    )
+    assert out.get("done") is True
+    assert out.get("failure_reason") == "no_progress_after_recovery"
+    assert "Unable to continue safely" in str(out.get("content") or "")
+
+
 def test_done_and_content_emitted_without_report_result_action() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_final)
     payload = _base_payload()
@@ -3799,6 +3832,28 @@ def test_policy_obs_includes_site_knowledge_when_enabled(monkeypatch: Any) -> No
     routes = site_knowledge.get("routes") if isinstance(site_knowledge.get("routes"), list) else []
     assert any(str(route.get("path") or "") == "/search" for route in routes if isinstance(route, dict))
     assert any(str(route.get("path") or "") == "/movies/123" for route in routes if isinstance(route, dict))
+
+
+def test_policy_obs_includes_site_knowledge_by_default() -> None:
+    builder = ObsBuilder()
+    policy_obs = builder.build_policy_obs(
+        task_id="default-site-knowledge",
+        prompt="Log in to the site",
+        web_project_id="autocinema",
+        use_case={"name": "LOGIN", "description": "Authenticate into the site."},
+        snapshot_html="<html><body><a href='/login'>Login</a></body></html>",
+        step_index=0,
+        url="https://example.com",
+        mode="NAV",
+        flags={},
+        state=AgentState(mode="NAV"),
+        text_ir={"title": "Home", "visible_text": "Login", "headings": []},
+        candidates=[],
+        history=[],
+        screenshot_available=False,
+    )
+    site_knowledge = policy_obs.get("site_knowledge") if isinstance(policy_obs.get("site_knowledge"), dict) else {}
+    assert site_knowledge.get("project_id") == "autocinema"
 
 
 def test_policy_obs_does_not_expose_browser_evaluate() -> None:

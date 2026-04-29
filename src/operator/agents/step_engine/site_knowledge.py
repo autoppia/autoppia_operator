@@ -24,13 +24,14 @@ from .utils import (
 
 
 def _package_helper(name: str, default: Any) -> Any:
-    try:
-        package = import_module("src.operator.agents.fsm")
-        helper = getattr(package, name, default)
-        if callable(helper):
-            return helper
-    except Exception:
-        pass
+    for module_name in ("src.operator.fsm_operator", "src.operator.agents.fsm"):
+        try:
+            package = import_module(module_name)
+            helper = getattr(package, name, default)
+            if callable(helper):
+                return helper
+        except Exception:
+            continue
     return default
 
 
@@ -381,6 +382,34 @@ def _merge_site_routes(
     return out
 
 
+def _default_site_routes(*, base_url: str, section_sources: dict[str, list[str]]) -> list[dict[str, Any]]:
+    route_specs = {
+        "auth": [("Login", "/login"), ("Register", "/register")],
+        "catalog": [("Search", "/search"), ("Browse", "/browse")],
+        "form": [("Contact", "/contact")],
+        "account": [("Profile", "/profile")],
+        "info": [("About", "/about"), ("Contact", "/contact")],
+    }
+    out: list[dict[str, Any]] = []
+    normalized_sections = set(section_sources)
+    if normalized_sections.intersection({"detail", "form", "account"}) and "catalog" not in normalized_sections:
+        normalized_sections.add("catalog")
+    for section_id, specs in route_specs.items():
+        if section_id not in normalized_sections:
+            continue
+        for label, href in specs:
+            out.append(
+                {
+                    "label": label,
+                    "href": _safe_url(href, base=base_url),
+                    "path": href,
+                    "section_id": section_id,
+                    "source": "default",
+                }
+            )
+    return out
+
+
 def _build_site_knowledge(
     project_id: str,
     use_case: dict[str, str],
@@ -457,9 +486,13 @@ def _build_site_knowledge(
             ]
         except Exception:
             crawled_routes = []
+    default_routes = _default_site_routes(
+        base_url=str(current_url or ""),
+        section_sources=section_sources,
+    )
     merged_routes = _merge_site_routes(
         static_routes,
-        list(discovered_routes) + list(crawled_routes),
+        list(default_routes) + list(discovered_routes) + list(crawled_routes),
         base_url=str(current_url or ""),
     )
     route_sections: dict[str, list[str]] = {}

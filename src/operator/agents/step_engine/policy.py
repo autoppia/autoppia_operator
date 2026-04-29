@@ -8,52 +8,76 @@ from .utils import *
 
 
 @lru_cache(maxsize=1)
-def _autocinema_success_examples() -> list[dict[str, Any]]:
-    manifest_path = _REPO_ROOT / "data" / "autocinema_trajectory_harvest" / "sft" / "manifest.json"
-    if not manifest_path.exists():
-        return []
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-    examples: list[dict[str, Any]] = []
-    for trace_file in list(manifest.get("trace_files") or [])[:64]:
-        trace_path = Path(str(trace_file)).expanduser()
-        if not trace_path.exists():
+def _success_examples_by_project() -> dict[str, list[dict[str, Any]]]:
+    manifests = sorted((_REPO_ROOT / "data").glob("*_trajectory_harvest/sft/manifest.json"))
+    out: dict[str, list[dict[str, Any]]] = {}
+    for manifest_path in manifests[:24]:
+        project_dir = manifest_path.parent.parent.name
+        project_id = project_dir[: -len("_trajectory_harvest")] if project_dir.endswith("_trajectory_harvest") else project_dir
+        project_id = str(project_id or "").strip().lower()
+        if not project_id:
             continue
         try:
-            trace = json.loads(trace_path.read_text(encoding="utf-8"))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        episode = trace.get("episode") if isinstance(trace.get("episode"), dict) else {}
-        use_case = str(episode.get("use_case") or "")[:64]
-        for step in list(trace.get("steps") or [])[:6]:
-            if not isinstance(step, dict):
+        examples = out.setdefault(project_id, [])
+        for trace_file in list(manifest.get("trace_files") or [])[:64]:
+            trace_path = Path(str(trace_file)).expanduser()
+            if not trace_path.exists():
                 continue
-            request = step.get("act_request") if isinstance(step.get("act_request"), dict) else {}
-            response = step.get("act_response") if isinstance(step.get("act_response"), dict) else {}
-            tool_calls = response.get("tool_calls") if isinstance(response.get("tool_calls"), list) else []
-            if not tool_calls:
+            try:
+                trace = json.loads(trace_path.read_text(encoding="utf-8"))
+            except Exception:
                 continue
-            url = str(request.get("url") or trace.get("task_url") or "")
-            examples.append(
-                {
-                    "use_case": use_case,
-                    "url_path": str(urlsplit(url).path or "/").rstrip("/") or "/",
-                    "step_index": int(step.get("step_index") or 0),
-                    "prompt": str(request.get("prompt") or trace.get("task_prompt") or "")[:280],
-                    "tool_calls": tool_calls[:3],
-                }
-            )
-    return examples
+            episode = trace.get("episode") if isinstance(trace.get("episode"), dict) else {}
+            episode_project = str(episode.get("web_project_id") or episode.get("project_id") or project_id).strip().lower() or project_id
+            if episode_project != project_id:
+                continue
+            use_case = str(episode.get("use_case") or "")[:64]
+            for step in list(trace.get("steps") or [])[:6]:
+                if not isinstance(step, dict):
+                    continue
+                request = step.get("act_request") if isinstance(step.get("act_request"), dict) else {}
+                response = step.get("act_response") if isinstance(step.get("act_response"), dict) else {}
+                tool_calls = response.get("tool_calls") if isinstance(response.get("tool_calls"), list) else []
+                if not tool_calls:
+                    continue
+                url = str(request.get("url") or trace.get("task_url") or "")
+                examples.append(
+                    {
+                        "web_project_id": project_id,
+                        "use_case": use_case,
+                        "url_path": str(urlsplit(url).path or "/").rstrip("/") or "/",
+                        "step_index": int(step.get("step_index") or 0),
+                        "prompt": str(request.get("prompt") or trace.get("task_prompt") or "")[:280],
+                        "tool_calls": tool_calls[:3],
+                    }
+                )
+    return out
 
 
-def _infer_autocinema_use_case(prompt: str, policy_obs: Dict[str, Any]) -> str:
+def _project_success_examples(project_id: str) -> list[dict[str, Any]]:
+    pid = str(project_id or "").strip().lower()
+    if not pid:
+        return []
+    return list((_success_examples_by_project().get(pid) or [])[:128])
+
+
+def _autocinema_success_examples() -> list[dict[str, Any]]:
+    return _project_success_examples("autocinema")
+
+
+def _policy_use_case_name(prompt: str, policy_obs: Dict[str, Any]) -> str:
     explicit = policy_obs.get("use_case") or policy_obs.get("active_objective", {}).get("use_case") or policy_obs.get("working_state", {}).get("active_workflow")
     if isinstance(explicit, dict):
         explicit = explicit.get("name")
     explicit_text = str(explicit or "").strip().upper().replace(" ", "_")
+    return explicit_text
+
+
+def _infer_autocinema_use_case(prompt: str, policy_obs: Dict[str, Any]) -> str:
+    explicit_text = _policy_use_case_name(prompt, policy_obs)
     if explicit_text:
         return explicit_text
 
@@ -111,15 +135,19 @@ def _related_autocinema_use_cases(use_case: str) -> set[str]:
 
 
 def _autocinema_example_block(prompt: str, policy_obs: Dict[str, Any]) -> list[str]:
-    examples = _autocinema_success_examples()
+    project_id = str(policy_obs.get("web_project_id") or "").strip().lower() or "autocinema"
+    examples = _autocinema_success_examples() if project_id == "autocinema" else _project_success_examples(project_id)
     if not examples:
         return []
 
-    inferred_use_case = _infer_autocinema_use_case(prompt, policy_obs)
-    related_use_cases = _related_autocinema_use_cases(inferred_use_case)
+    inferred_use_case = _policy_use_case_name(prompt, policy_obs)
+    if not inferred_use_case and project_id == "autocinema":
+        inferred_use_case = _infer_autocinema_use_case(prompt, policy_obs)
+    related_use_cases = _related_autocinema_use_cases(inferred_use_case) if project_id == "autocinema" else {inferred_use_case} if inferred_use_case else set()
     current_url = str(policy_obs.get("url") or "")
     current_path = str(urlsplit(current_url).path or "/").rstrip("/") or "/"
     current_step = int(policy_obs.get("step_index") or 0)
+    prompt_tokens = _tokenize(prompt)
 
     ranked: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
     for example in examples:
@@ -132,9 +160,15 @@ def _autocinema_example_block(prompt: str, policy_obs: Dict[str, Any]) -> list[s
             use_case_score = 2
         path_score = 0 if current_path != "/" and example.get("url_path") == current_path else 1
         step_score = abs(int(example.get("step_index") or 0) - current_step)
+        prompt_score = 0
+        if prompt_tokens:
+            prompt_score = max(
+                0,
+                8 - len(prompt_tokens.intersection(_tokenize(str(example.get("prompt") or "").lower()))),
+            )
         if use_case_score >= 2 and path_score == 1:
             continue
-        ranked.append(((use_case_score, path_score, step_score), example))
+        ranked.append(((use_case_score, path_score, prompt_score, step_score), example))
     ranked.sort(key=lambda item: item[0])
 
     selected: list[dict[str, Any]] = []
@@ -151,7 +185,7 @@ def _autocinema_example_block(prompt: str, policy_obs: Dict[str, Any]) -> list[s
         return []
 
     lines = [
-        "RETRIEVED SUCCESSFUL AUTOCINEMA EXAMPLES:",
+        "RETRIEVED SUCCESSFUL AUTOCINEMA EXAMPLES:" if project_id == "autocinema" else "RETRIEVED SUCCESSFUL TRACE EXAMPLES:",
         "- These are short action snippets from successful harvest traces. Reuse the same local workflow only when the current page state matches.",
     ]
     for idx, example in enumerate(selected, start=1):
@@ -165,6 +199,72 @@ def _autocinema_example_block(prompt: str, policy_obs: Dict[str, Any]) -> list[s
         )
     lines.append("")
     return lines
+
+
+def _site_knowledge_route_for_section(policy_obs: Dict[str, Any], *, section_id: str, current_path: str) -> str:
+    site_knowledge = policy_obs.get("site_knowledge") if isinstance(policy_obs.get("site_knowledge"), dict) else {}
+    routes = site_knowledge.get("routes") if isinstance(site_knowledge.get("routes"), list) else []
+    preferred: list[tuple[int, str]] = []
+    for route in routes[:16]:
+        if not isinstance(route, dict):
+            continue
+        if str(route.get("section_id") or "").strip().lower() != section_id:
+            continue
+        path = str(route.get("path") or "").strip() or "/"
+        if path == current_path:
+            continue
+        label = str(route.get("label") or "").strip().lower()
+        score = 0
+        if (
+            (section_id == "auth" and any(token in path for token in ("/login", "/signin", "/register", "/signup")))
+            or (section_id == "catalog" and any(token in path for token in ("/search", "/browse", "/catalog")))
+            or (section_id == "account" and any(token in path for token in ("/profile", "/account", "/watchlist", "/wishlist")))
+            or (section_id == "form" and any(token in path for token in ("/contact", "/create", "/add", "/edit")))
+        ):
+            score -= 3
+        if label and ("login" in label or "search" in label or "profile" in label or "contact" in label):
+            score -= 1
+        preferred.append((score, path))
+    preferred.sort(key=lambda item: (item[0], len(item[1])))
+    return preferred[0][1] if preferred else ""
+
+
+def _preferred_site_knowledge_navigation(
+    prompt: str,
+    policy_obs: Dict[str, Any],
+    *,
+    current_url: str,
+    current_path: str,
+) -> Dict[str, Any] | None:
+    site_knowledge = policy_obs.get("site_knowledge") if isinstance(policy_obs.get("site_knowledge"), dict) else {}
+    current_task = site_knowledge.get("current_task_routing") if isinstance(site_knowledge.get("current_task_routing"), dict) else {}
+    best_section = str(current_task.get("likely_best_section") or "").strip().lower()
+    if best_section not in {"auth", "catalog", "form", "account", "info"}:
+        return None
+    if best_section == "auth" and current_path.startswith(("/login", "/register", "/signup", "/signin", "/auth")):
+        return None
+    if best_section == "catalog" and current_path.startswith(("/search", "/browse", "/catalog")):
+        return None
+    if best_section == "account" and current_path.startswith(("/profile", "/account", "/watchlist", "/wishlist", "/saved")):
+        return None
+    if best_section == "form" and re.search(r"/(contact|create|add|edit|delete|checkout|reserve|booking)", current_path):
+        return None
+    if best_section == "info" and re.search(r"/(about|help|support|faq|policy|contact)", current_path):
+        return None
+    route_path = _site_knowledge_route_for_section(policy_obs, section_id=best_section, current_path=current_path)
+    if not route_path:
+        return None
+    return {
+        "type": "browser",
+        "tool_call": {
+            "name": "browser.navigate",
+            "arguments": {
+                "url": _safe_url(route_path, base=current_url),
+                "go_back": False,
+                "go_forward": False,
+            },
+        },
+    }
 
 
 def _prompt_prefers_text_input(prompt: str, policy_obs: Dict[str, Any]) -> bool:
@@ -625,6 +725,14 @@ def _preferred_seed_stable_navigation(
                 "arguments": {"url": _seeded_search_url(current_url, seed, title_literal), "go_back": False, "go_forward": False},
             },
         }
+    generic_route = _preferred_site_knowledge_navigation(
+        prompt,
+        policy_obs,
+        current_url=current_url,
+        current_path=current_path,
+    )
+    if generic_route is not None:
+        return generic_route
     return None
 
 
@@ -1699,7 +1807,11 @@ class Policy:
         loop_level = str(flags.get("loop_level") or "none")
         stall_count = int(counters.get("stall_count") or 0)
         repeat_count = int(counters.get("repeat_action_count") or 0)
+        recovery_attempt_count = int(counters.get("recovery_attempt_count") or 0)
+        consecutive_wait_count = int(counters.get("consecutive_wait_count") or 0)
         route_like_stuck = mode in {"STUCK", "PLAN"} or loop_level == "high" or stall_count >= 4 or repeat_count >= 4
+        max_consecutive_waits = max(0, min(_env_int("FSM_MAX_CONSECUTIVE_WAITS", 1), 4))
+        max_recovery_attempts = max(1, min(_env_int("FSM_MAX_RECOVERY_ATTEMPTS", 3), 8))
         prefer_text_input = _prompt_prefers_text_input(prompt, policy_obs)
         preferred_title_result = _preferred_title_result_action(
             prompt,
@@ -1844,7 +1956,7 @@ class Policy:
             sel = first.get("selector") if isinstance(first.get("selector"), dict) else None
             if sel:
                 return {"type": "browser", "tool_call": {"name": "browser.click", "arguments": {"selector": sel}}}
-        if allow("browser.wait"):
+        if allow("browser.wait") and consecutive_wait_count < max_consecutive_waits and recovery_attempt_count < max_recovery_attempts:
             return {"type": "browser", "tool_call": {"name": "browser.wait", "arguments": {"time_seconds": 1.0}}}
         if allow("browser.scroll"):
             return {"type": "browser", "tool_call": {"name": "browser.scroll", "arguments": {"direction": "down", "amount": 600}}}

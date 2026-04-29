@@ -108,6 +108,8 @@ class AgentCounters(BaseModel):
     stall_count: int = 0
     repeat_action_count: int = 0
     meta_steps_used: int = 0
+    recovery_attempt_count: int = 0
+    consecutive_wait_count: int = 0
 
 
 class AgentBlocklist(BaseModel):
@@ -131,6 +133,7 @@ class AgentState(BaseModel):
     last_action_sig: str = ""
     last_action_element_id: str = ""
     escalated_once: bool = False
+    failure_reason: str = ""
     session_query: dict[str, str] = Field(default_factory=dict)
     score_feedback: dict[str, Any] = Field(default_factory=dict)
 
@@ -311,7 +314,10 @@ class AgentState(BaseModel):
         self.counters.stall_count = max(0, int(self.counters.stall_count or 0))
         self.counters.repeat_action_count = max(0, int(self.counters.repeat_action_count or 0))
         self.counters.meta_steps_used = max(0, int(self.counters.meta_steps_used or 0))
+        self.counters.recovery_attempt_count = max(0, int(self.counters.recovery_attempt_count or 0))
+        self.counters.consecutive_wait_count = max(0, int(self.counters.consecutive_wait_count or 0))
         self.blocklist.until_step = max(0, int(self.blocklist.until_step or 0))
+        self.failure_reason = str(self.failure_reason or "").strip().lower().replace(" ", "_")[:80]
         self.plan.subgoals = self.plan.subgoals[:8]
         for sg in self.plan.subgoals:
             sg.id = str(sg.id or "")[:40]

@@ -47,6 +47,7 @@ from .utils import (
     _obs_meta_tools,
     _page_context_ready_for_informational_answer,
     _query_map,
+    _reasoning_trace_summary,
     _runtime_page_evidence_ready,
     _safe_url,
     _sanitize_selector,
@@ -572,6 +573,171 @@ class StepEngine:
         if no_progress_score >= 7 and state.mode in {"NAV", "EXTRACT"}:
             state.mode = "PLAN"
 
+    def _max_recovery_attempts(self) -> int:
+        return max(1, min(_env_int("FSM_MAX_RECOVERY_ATTEMPTS", 3), 8))
+
+    def _max_consecutive_waits(self) -> int:
+        return max(0, min(_env_int("FSM_MAX_CONSECUTIVE_WAITS", 1), 4))
+
+    def _failure_no_progress_score(self) -> int:
+        return max(4, min(_env_int("FSM_FAILURE_NO_PROGRESS_SCORE", 8), 16))
+
+    def _failure_stall_count(self) -> int:
+        return max(4, min(_env_int("FSM_FAILURE_STALL_COUNT", 6), 12))
+
+    def _clear_failure_reason(self, *, state: AgentState) -> None:
+        state.failure_reason = ""
+
+    def _set_failure_reason(self, *, state: AgentState, reason: str) -> None:
+        normalized = str(reason or "").strip().lower().replace(" ", "_")
+        if not normalized:
+            return
+        state.failure_reason = normalized[:80]
+        state.memory.checkpoints = _dedupe_keep_order(
+            [*state.memory.checkpoints, f"failure:{state.failure_reason}"],
+            MAX_CHECKPOINTS,
+        )
+
+    def _reset_recovery_budget_if_progressed(self, *, state: AgentState, flags: dict[str, Any]) -> None:
+        if bool(flags.get("url_changed")) or bool(flags.get("dom_changed")) or not bool(flags.get("no_visual_progress")):
+            state.counters.recovery_attempt_count = 0
+            state.counters.consecutive_wait_count = 0
+            self._clear_failure_reason(state=state)
+
+    def _record_recovery_action(self, *, state: AgentState, action: dict[str, Any] | None) -> None:
+        action_type = str((action or {}).get("type") or "").strip().lower()
+        if action_type == "waitaction":
+            state.counters.consecutive_wait_count = int(state.counters.consecutive_wait_count or 0) + 1
+            state.counters.recovery_attempt_count = int(state.counters.recovery_attempt_count or 0) + 1
+            return
+        state.counters.consecutive_wait_count = 0
+        if action_type in {"gobackaction", "scrollaction"}:
+            state.counters.recovery_attempt_count = int(state.counters.recovery_attempt_count or 0) + 1
+
+    def _bounded_failure_payload(
+        self,
+        *,
+        state: AgentState,
+        flags: dict[str, Any],
+        policy_obs: dict[str, Any],
+    ) -> tuple[str, str, str]:
+        page_obs = policy_obs.get("page_observations") if isinstance(policy_obs.get("page_observations"), dict) else {}
+        capability_gap = page_obs.get("capability_gap") if isinstance(page_obs.get("capability_gap"), dict) else {}
+        current_url = str(policy_obs.get("url") or "")
+        if bool(flags.get("cookie_banner")) or bool(flags.get("modal_dialog")):
+            return (
+                "popup_not_resolved",
+                "Unable to continue safely because a popup or modal keeps blocking progress on the current page.",
+                "popup_not_resolved",
+            )
+        if bool(flags.get("login_form")) or bool(capability_gap.get("read_only_for_task")):
+            preferred = str(capability_gap.get("preferred_transition") or "").strip().lower()
+            detail = f" Suggested next section: {preferred}." if preferred else ""
+            return (
+                "blocked_by_auth",
+                f"Unable to continue safely because this task appears blocked by authentication or a read-only page.{detail}",
+                "blocked_by_auth",
+            )
+        if int(state.counters.recovery_attempt_count or 0) >= self._max_recovery_attempts():
+            return (
+                "no_progress_after_recovery",
+                f"Unable to continue safely after {int(state.counters.recovery_attempt_count or 0)} recovery attempts without visible progress at {current_url or 'the current page'}.",
+                "no_progress_after_recovery",
+            )
+        candidate_count = int(page_obs.get("candidate_count") or 0)
+        if candidate_count <= 0:
+            return (
+                "state_not_understood",
+                "Unable to continue safely because the current page does not expose enough reliable interactive structure.",
+                "state_not_understood",
+            )
+        if int(state.progress.no_progress_score or 0) >= self._failure_no_progress_score():
+            return (
+                "no_progress_after_recovery",
+                f"Unable to continue safely after multiple recovery attempts without visible progress at {current_url or 'the current page'}.",
+                "no_progress_after_recovery",
+            )
+        return (
+            "target_not_found",
+            "Unable to continue safely because the target control could not be found with enough confidence on the current page.",
+            "target_not_found",
+        )
+
+    def _should_emit_bounded_failure(
+        self,
+        *,
+        state: AgentState,
+        flags: dict[str, Any],
+    ) -> bool:
+        consecutive_waits = int(state.counters.consecutive_wait_count or 0)
+        if consecutive_waits > 0 and consecutive_waits >= self._max_consecutive_waits():
+            return True
+        if int(state.counters.recovery_attempt_count or 0) >= self._max_recovery_attempts():
+            return True
+        if int(state.progress.no_progress_score or 0) >= self._failure_no_progress_score():
+            return True
+        if int(state.counters.stall_count or 0) >= self._failure_stall_count():
+            return True
+        return bool(str(flags.get("loop_level") or "none") == "high" and bool(state.escalated_once))
+
+    def _maybe_emit_bounded_failure(
+        self,
+        *,
+        state: AgentState,
+        flags: dict[str, Any],
+        policy_obs: dict[str, Any],
+    ) -> tuple[bool, str, str]:
+        if not self._should_emit_bounded_failure(state=state, flags=flags):
+            return False, "", ""
+        reason, content, error = self._bounded_failure_payload(
+            state=state,
+            flags=flags,
+            policy_obs=policy_obs,
+        )
+        self._set_failure_reason(state=state, reason=reason)
+        state.mode = "DONE"
+        return True, content, error
+
+    def _enforce_recovery_budget_on_action(
+        self,
+        *,
+        chosen_actions: list[dict[str, Any]],
+        prompt: str,
+        url: str,
+        step_index: int,
+        state: AgentState,
+        flags: dict[str, Any],
+        policy_obs: dict[str, Any],
+        allowed: set[str],
+    ) -> tuple[list[dict[str, Any]], bool, str, str]:
+        if not chosen_actions:
+            return [], False, "", ""
+        action = chosen_actions[-1] if isinstance(chosen_actions[-1], dict) else {}
+        action_type = str(action.get("type") or "").strip().lower()
+        if action_type != "waitaction":
+            return chosen_actions, False, "", ""
+        if int(state.counters.consecutive_wait_count or 0) < self._max_consecutive_waits():
+            return chosen_actions, False, "", ""
+        stripped_allowed = {tool for tool in allowed if _canonical_allowed_tool_name(tool) != "browser.wait"}
+        if stripped_allowed:
+            alt_action, _, _, alt_note = self._stuck_recovery(
+                prompt=prompt,
+                url=url,
+                step_index=step_index,
+                state=state,
+                allowed=stripped_allowed,
+            )
+            if alt_action is not None and str(alt_action.get("type") or "").strip().lower() != "waitaction":
+                return [alt_action], False, "", alt_note
+        should_fail, content, error = self._maybe_emit_bounded_failure(
+            state=state,
+            flags=flags,
+            policy_obs=policy_obs,
+        )
+        if should_fail:
+            return [], True, content, error
+        return chosen_actions, False, "", ""
+
     def _maybe_promote_to_plan_from_capability_gap(
         self,
         *,
@@ -795,6 +961,14 @@ class StepEngine:
             for raw_call in raw_calls[:max_actions_per_step]:
                 if not isinstance(raw_call, dict):
                     continue
+                if str(raw_call.get("name") or "").strip() == "browser.done":
+                    final_content = _candidate_text((raw_call.get("arguments") if isinstance(raw_call.get("arguments"), dict) else {}).get("content"))
+                    if final_content:
+                        done = True
+                        content = final_content
+                        state.mode = "DONE"
+                        chosen_actions = []
+                        break
                 action = self._browser_action_from_tool_call(
                     tool_call=raw_call,
                     ranked_candidates=action_candidates,
@@ -1075,6 +1249,14 @@ class StepEngine:
                     for raw_call in raw_calls[:max_actions_per_step]:
                         if not isinstance(raw_call, dict):
                             continue
+                        if str(raw_call.get("name") or "").strip() == "browser.done":
+                            final_content = _candidate_text((raw_call.get("arguments") if isinstance(raw_call.get("arguments"), dict) else {}).get("content"))
+                            if final_content:
+                                done = True
+                                content = final_content
+                                state.mode = "DONE"
+                                chosen_actions = []
+                                break
                         action = self._browser_action_from_tool_call(
                             tool_call=raw_call,
                             ranked_candidates=ranked,
@@ -1085,7 +1267,7 @@ class StepEngine:
                         )
                         if action is not None:
                             chosen_actions.append(action)
-                    if chosen_actions:
+                    if done or chosen_actions:
                         break
                 if dtype == "meta":
                     if state.counters.meta_steps_used >= MAX_INTERNAL_META_STEPS:
@@ -1317,6 +1499,8 @@ class StepEngine:
         chosen_action = actions[-1] if actions else None
         if chosen_action is None:
             return [], "", None
+        self._clear_failure_reason(state=state)
+        self._record_recovery_action(state=state, action=chosen_action)
         sig = self._action_signature(chosen_action)
         state.counters.repeat_action_count = state.counters.repeat_action_count + 1 if sig == state.last_action_sig else 0
         state.last_action_sig = sig
@@ -1368,6 +1552,7 @@ class StepEngine:
             else:
                 best_fact = _best_page_evidence(prompt, text_ir)
                 goal = _candidate_text(prompt) or "Complete the task."
+                trace_summary = _reasoning_trace_summary(state.memory.reasoning_trace if isinstance(state.memory.reasoning_trace, dict) else {})
                 if done and final_content:
                     current_page = final_content
                     decision_text = f"Return final answer now: {final_content}"
@@ -1379,7 +1564,10 @@ class StepEngine:
                     decision_text = f"Take browser action sequence ending with: {browser_tool_name or str(chosen_action.get('type') or 'action')}"
                 elif not done:
                     decision_text = "No safe browser action selected."
-                reasoning = (f"Goal: {goal}. Current page: {current_page}. Decision: {decision_text}.")[:600]
+                reasoning = _candidate_text(
+                    trace_summary,
+                    f"Goal: {goal}. Current page: {current_page}. Decision: {decision_text}.",
+                )[:600]
 
         selected_candidate = None
         if chosen_action is not None:
@@ -1393,6 +1581,9 @@ class StepEngine:
             "content": final_content if done else None,
             "internal_state": state.to_internal_state(),
         }
+        if done and str(state.failure_reason or "").strip():
+            out["failure_reason"] = str(state.failure_reason or "").strip()
+            out["error"] = str(state.failure_reason or "").strip()
         if isinstance(reasoning, str) and reasoning:
             out["reasoning"] = reasoning
         if include_reasoning and isinstance(state.memory.reasoning_trace, dict) and state.memory.reasoning_trace:
@@ -1441,6 +1632,7 @@ class StepEngine:
                 "browser_tool": browser_tool_name,
                 "done": bool(done),
                 "content": _candidate_text(content)[:260] if done else "",
+                "failure_reason": str(state.failure_reason or "")[:80],
                 "state_delta": self._state_delta(state_before, state),
                 "active_region": self._active_region_debug(state=state),
                 "last_effect": last_effect,
@@ -1545,6 +1737,7 @@ class StepEngine:
             state=state,
             flags=flags,
         )
+        self._reset_recovery_budget_if_progressed(state=state, flags=flags)
         if bool(flags.get("url_changed")) or bool(flags.get("dom_changed")):
             state.memory.visual_notes = []
             state.memory.visual_element_hints = []
@@ -1816,6 +2009,34 @@ class StepEngine:
                 route_reason=route_reason,
             )
 
+        if not done and chosen_actions:
+            chosen_actions, fail_done, fail_content, recovery_note = self._enforce_recovery_budget_on_action(
+                chosen_actions=chosen_actions,
+                prompt=prompt,
+                url=url,
+                step_index=step_index,
+                state=state,
+                flags=flags,
+                policy_obs=policy_obs,
+                allowed=browser_allowed,
+            )
+            if recovery_note:
+                meta_exec_trace.append(f"RECOVERY_GUARD:{recovery_note}")
+            if fail_done:
+                done = True
+                content = fail_content
+        if not done and not chosen_actions:
+            fail_done, fail_content, fail_error = self._maybe_emit_bounded_failure(
+                state=state,
+                flags=flags,
+                policy_obs=policy_obs,
+            )
+            if fail_done:
+                done = True
+                content = fail_content
+                if fail_error:
+                    meta_exec_trace.append(f"FAIL:{fail_error}")
+
         actions, browser_tool_name, chosen_action = self._finalize_chosen_action(
             done=done,
             direct_loop=direct_loop,
@@ -1916,6 +2137,8 @@ class StepEngine:
             and last_action_type in {"clickaction", "typeaction", "selectdropdownoptionaction"}
             and allow("browser.wait")
             and int(state.counters.stall_count or 0) <= 2
+            and int(state.counters.consecutive_wait_count or 0) < self._max_consecutive_waits()
+            and int(state.counters.recovery_attempt_count or 0) < self._max_recovery_attempts()
         ):
             checkpoint = "post_action_async_wait"
             recent = state.memory.checkpoints[-1] if state.memory.checkpoints else ""
@@ -3434,7 +3657,13 @@ class StepEngine:
             state.blocklist.until_step = max(state.blocklist.until_step, int(step_index) + 2)
 
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
-        if last_action_type in {"clickaction", "typeaction", "selectdropdownoptionaction"} and allow("browser.wait") and int(state.counters.stall_count or 0) <= 3:
+        if (
+            last_action_type in {"clickaction", "typeaction", "selectdropdownoptionaction"}
+            and allow("browser.wait")
+            and int(state.counters.stall_count or 0) <= 3
+            and int(state.counters.consecutive_wait_count or 0) < self._max_consecutive_waits()
+            and int(state.counters.recovery_attempt_count or 0) < self._max_recovery_attempts()
+        ):
             return (
                 {"type": "WaitAction", "time_seconds": 1.2},
                 False,
