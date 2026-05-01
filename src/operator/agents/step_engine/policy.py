@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from .candidates import *
 from .meta_tools import *
 from .observation import *
 from .state import *
 from .utils import *
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -288,6 +292,21 @@ def _prompt_prefers_text_input(prompt: str, policy_obs: Dict[str, Any]) -> bool:
     )
 
 
+def _strip_trailing_url_chars(url: str) -> str:
+    t = str(url or "").strip()
+    while len(t) > 1 and t[-1] in "),.;:!?]}'\">":
+        t = t[:-1]
+    return t
+
+
+def _first_http_url_in_prompt(prompt: str) -> str:
+    """Return first absolute http(s) URL in the task text (for navigate-from-blank)."""
+    m = re.search(r"https?://[^\s\]}\"'<>\]]+", str(prompt or ""), flags=re.I)
+    if not m:
+        return ""
+    return _strip_trailing_url_chars(m.group(0))
+
+
 def _preferred_prompt_navigation(
     prompt: str,
     policy_obs: Dict[str, Any],
@@ -301,7 +320,53 @@ def _preferred_prompt_navigation(
         return None
     prompt_text = str(prompt or "").strip()
     lowered = prompt_text.lower()
-    if not re.search(r"\b(open|visit|go to|navigate to)\b", lowered):
+
+    def _navigate_tool(url: str) -> Dict[str, Any]:
+        return {
+            "type": "browser",
+            "tool_call": {
+                "name": "browser.navigate",
+                "arguments": {
+                    "url": url,
+                    "go_back": False,
+                    "go_forward": False,
+                },
+            },
+        }
+
+    # 1) Any explicit absolute URL: navigate first (no "open"/"go to" wording required).
+    explicit = _first_http_url_in_prompt(prompt_text)
+    if explicit:
+        safe = _safe_url(explicit)
+        if safe.startswith(("http://", "https://")):
+            return _navigate_tool(safe)
+
+    # 2) Popular sites by name (e.g. "search for X on Google") — earliest mention wins.
+    named_sites: tuple[tuple[str, str], ...] = (
+        ("wikipedia", "https://www.wikipedia.org"),
+        ("stackoverflow", "https://stackoverflow.com"),
+        ("youtube", "https://www.youtube.com"),
+        ("github", "https://github.com"),
+        ("google", "https://www.google.com"),
+    )
+    site_hits: list[tuple[int, str]] = []
+    for label, target_url in named_sites:
+        m = re.search(rf"\b{re.escape(label)}\b", lowered)
+        if m:
+            site_hits.append((m.start(), target_url))
+    if site_hits:
+        site_hits.sort(key=lambda item: item[0])
+        return _navigate_tool(site_hits[0][1])
+
+    # 3) Verbs + hostname / path in natural-language tasks.
+    if not re.search(
+        r"\b("
+        r"open|visit|go to|goto|navigate to|navigate|load|browse|head to|surf to|"
+        r"check out|take me to|show me|enter (?:the )?site|"
+        r"search (?:for|the web|online|on)|look up|lookup|find"
+        r")\b",
+        lowered,
+    ):
         return None
     match = re.search(
         r"\b((?:https?://)?(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:/[^\s]*)?)",
@@ -312,31 +377,9 @@ def _preferred_prompt_navigation(
     if match is not None:
         target = str(match.group(1) or "").rstrip(".,);:]!?")
         safe_target = _safe_url(target)
-    if not safe_target:
-        named_sites = {
-            "wikipedia": "https://www.wikipedia.org",
-            "google": "https://www.google.com",
-            "github": "https://github.com",
-            "youtube": "https://www.youtube.com",
-            "stackoverflow": "https://stackoverflow.com",
-        }
-        for label, target_url in named_sites.items():
-            if re.search(rf"\b{re.escape(label)}\b", lowered):
-                safe_target = target_url
-                break
     if not safe_target.startswith(("http://", "https://")):
         return None
-    return {
-        "type": "browser",
-        "tool_call": {
-            "name": "browser.navigate",
-            "arguments": {
-                "url": safe_target,
-                "go_back": False,
-                "go_forward": False,
-            },
-        },
-    }
+    return _navigate_tool(safe_target)
 
 
 def _autocinema_task_intent_tags(prompt: str, policy_obs: Dict[str, Any]) -> set[str]:
@@ -942,6 +985,8 @@ class Policy:
         execution_profile = _effective_execution_profile(policy_obs)
         goal_state = policy_obs.get("goal_state") if isinstance(policy_obs.get("goal_state"), dict) else {}
         goal_evaluation = policy_obs.get("goal_evaluation") if isinstance(policy_obs.get("goal_evaluation"), dict) else {}
+        current_url_lc = str(policy_obs.get("url") or "").strip().lower()
+        blank_document = current_url_lc in {"", "about:blank"}
         extra_rules: list[str] = []
         if bool(goal_state.get("stop_on_page_match")):
             extra_rules.append("- If GOAL STATE is already satisfied on the current page, finish immediately.")
@@ -949,6 +994,16 @@ class Policy:
         if execution_profile == "demo_catalog_navigation":
             extra_rules.append("- On demo catalog tasks, prefer visible search/filter controls before opening result cards.")
             extra_rules.append("- Stop as soon as the matching detail page is open; do not continue into trailer/share/comment/watchlist actions.")
+        if blank_document:
+            extra_rules.extend(
+                [
+                    "- BLANK DOCUMENT (empty URL or about:blank): No real page is loaded. You MUST respond with browser.navigate using a full http(s) URL.",
+                    "- BLANK DOCUMENT: Copy any https:// or http:// substring from TASK verbatim into browser.navigate.arguments.url; if TASK only names a host (example.com), use https://example.com/ .",
+                    "- BLANK DOCUMENT: Do NOT return type final, browser.done, browser.click, browser.input, browser.scroll, browser.wait, or browser.extract until a navigation has occurred on a later step.",
+                    "- BLANK DOCUMENT: Ignore INTERACTIVE ELEMENT SHORTLIST for click targets; treat listed indices as unreliable on an empty document.",
+                    "- BLANK DOCUMENT: Do not claim the task is complete or invent answers; navigate first.",
+                ]
+            )
         if mode == "POPUP":
             return {"type": "meta", "name": "META.SOLVE_POPUPS", "arguments": {}}, {"source": "deterministic"}
         if mode == "REPORT":
@@ -959,6 +1014,11 @@ class Policy:
 
         meta_enabled = any(str(tool or "").startswith("META.") for tool in allowed_tools)
         direct_mode = mode == "DIRECT"
+        first_loaded_page_rule_direct = (
+            "- CURRENT URL is blank or about:blank: there is no document. Output ONLY browser.navigate with a full URL from TASK (never final or browser.done on this step).\n"
+            if blank_document
+            else "- First decide whether the current page already satisfies the task. If yes, finish immediately with final or browser.done.\n"
+        )
         if direct_mode:
             system = (
                 "You are a browser-use-style web operator.\n"
@@ -971,30 +1031,35 @@ class Policy:
                 '3) {"type":"final","done":true,"content":"..."}\n'
                 "Rules:\n"
                 f"- This runtime allows up to {max_actions_per_step} browser actions per step.\n"
-                "- First decide whether the current page already satisfies the task. If yes, finish immediately with final or browser.done.\n"
-                "- content must be the actual user-facing answer, result, or extracted value.\n"
-                "- Do not keep exploring when the current page already satisfies the task.\n"
-                f"- Never return more than {max_actions_per_step} browser actions.\n"
-                "- If you return multiple actions, they must belong to the same local workflow and be safe to execute consecutively without re-observing.\n"
-                "- Prefer arguments.index that refers to INTERACTIVE ELEMENT SHORTLIST.\n"
-                "- For browser.select_dropdown, include a non-empty arguments.text.\n"
-                "- browser.done is the standard way to finish once the page already satisfies the task.\n"
-                "- Never emit unavailable tools.\n"
-                "- If the task includes filters or explicit constraints, use visible controls first before opening result items.\n"
-                "- Preserve placeholders such as <username>, <password>, <signup_email> exactly when typing.\n"
-                "- When useful, include reasoning as a short human-readable operator note grounded in visible page evidence.\n"
-                "- reasoning must be 1-2 short sentences, concrete, and suitable for product UI.\n"
-                "- reasoning must say what is visible now and why the chosen next action or final answer follows.\n"
-                "- reasoning must not contain chain-of-thought, filler, generic status text, or speculation without visible support.\n"
-                "- Before choosing actions, infer one short local workflow plan for the current page and keep it stable until that workflow is completed or visibly blocked.\n"
-                "- Update reasoning_trace.current_subgoal and reasoning_trace.plan to reflect the current local milestone, not the whole task from scratch.\n"
-                "- Do not replan the whole task every step unless the page changed materially or the current workflow clearly failed.\n"
-                "- If SCORE FEEDBACK is present in state and marks success=true or score=1.0, treat it as strong completion evidence and prefer final/browser.done unless visible evidence clearly contradicts it.\n"
-                "- If a login or registration form is visible, do not submit until the visible credential fields are filled.\n"
-                "- If the task shows empty quoted credentials, replace them with placeholders such as <username>, <password>, <signup_username>, <signup_email>, or <signup_password> instead of empty strings.\n"
+                + first_loaded_page_rule_direct
+                + (
+                    "- content must be the actual user-facing answer, result, or extracted value.\n"
+                    "- Do not keep exploring when the current page already satisfies the task.\n"
+                    f"- Never return more than {max_actions_per_step} browser actions.\n"
+                    "- If you return multiple actions, they must belong to the same local workflow and be safe to execute consecutively without re-observing.\n"
+                    "- Prefer arguments.index that refers to INTERACTIVE ELEMENT SHORTLIST.\n"
+                    "- For browser.select_dropdown, include a non-empty arguments.text.\n"
+                    "- browser.done is the standard way to finish once the page already satisfies the task.\n"
+                    "- Never emit unavailable tools.\n"
+                    "- If the task includes filters or explicit constraints, use visible controls first before opening result items.\n"
+                    "- Preserve placeholders such as <username>, <password>, <signup_email> exactly when typing.\n"
+                    "- When useful, include reasoning as a short human-readable operator note grounded in visible page evidence.\n"
+                    "- reasoning must be 1-2 short sentences, concrete, and suitable for product UI.\n"
+                    "- reasoning must say what is visible now and why the chosen next action or final answer follows.\n"
+                    "- reasoning must not contain chain-of-thought, filler, generic status text, or speculation without visible support.\n"
+                    "- Before choosing actions, infer one short local workflow plan for the current page and keep it stable until that workflow is completed or visibly blocked.\n"
+                    "- Update reasoning_trace.current_subgoal and reasoning_trace.plan to reflect the current local milestone, not the whole task from scratch.\n"
+                    "- Do not replan the whole task every step unless the page changed materially or the current workflow clearly failed.\n"
+                    "- If SCORE FEEDBACK is present in state and marks success=true or score=1.0, treat it as strong completion evidence and prefer final/browser.done unless visible evidence clearly contradicts it.\n"
+                    "- If a login or registration form is visible, do not submit until the visible credential fields are filled.\n"
+                    "- If the task shows empty quoted credentials, replace them with placeholders such as <username>, <password>, <signup_username>, <signup_email>, or <signup_password> instead of empty strings.\n"
+                )
                 + ("\n".join(extra_rules) + "\n" if extra_rules else "")
             )
         else:
+            first_loaded_page_rule_plan = (
+                "- CURRENT URL is blank or about:blank: output ONLY browser.navigate with a full URL derived from TASK before any click or final answer.\n" if blank_document else ""
+            )
             system = (
                 "You are a browser-use-style web automation policy.\n"
                 "Given the task and the current browser state, choose the next browser step sequence.\n"
@@ -1003,36 +1068,67 @@ class Policy:
                 "1) browser tool_call or browser tool_calls\n" + ("2) meta_tool\n" if meta_enabled else "") + f"{'3' if meta_enabled else '2'}) final (done=true + content)\n\n"
                 "Rules:\n"
                 f"- This runtime allows up to {max_actions_per_step} browser actions per step.\n"
-                "- Prefer a concrete browser action when there is a reasonable actionable target.\n"
-                + ("- Use a meta_tool only when inspection/disambiguation materially improves the next browser action.\n" if meta_enabled else "")
+                + first_loaded_page_rule_plan
+                + (
+                    "- Prefer a concrete browser action when there is a reasonable actionable target.\n"
+                    if not blank_document
+                    else "- On a blank document the only reasonable action is browser.navigate to the URL implied by TASK.\n"
+                )
+                + ("- Use a meta_tool only when inspection/disambiguation materially improves the next browser action.\n" if meta_enabled and not blank_document else "")
                 + f"- Never return more than {max_actions_per_step} browser actions.\n"
                 + "- If you return multiple browser actions, they must stay within the same local workflow and should usually be a short form-filling or commit sequence.\n"
-                "- If the current page already contains the answer, return final immediately.\n"
-                "- For question-answering and data-extraction tasks, DONE is the correct action once the answer is visible on the current page.\n"
-                "- Do NOT keep exploring once the current page already answers the task.\n"
-                "- Use final/done or browser.done with a concrete content string when the task is satisfied.\n"
-                "- content must be the actual answer for the user, not a status message.\n"
-                "- Avoid repeating low-value actions when the page did not materially change.\n"
-                "- Prefer arguments.index that refers to INTERACTIVE ELEMENT SHORTLIST.\n"
-                "- For browser.select_dropdown, provide arguments.text with the option text/value to choose.\n"
-                "- Never emit unavailable tools.\n"
-                "- Preserve placeholders such as <username>, <password>, <signup_email> exactly when typing.\n"
-                "- For informational tasks, use the current visible content before navigating more.\n"
-                "- When useful, include reasoning as a short human-readable operator note grounded in visible page evidence.\n"
-                "- reasoning must be 1-2 short sentences, concrete, and suitable for product UI.\n"
-                "- reasoning must say what is visible now and why the chosen next action or final answer follows.\n"
-                "- reasoning must not contain chain-of-thought, filler, generic status text, or speculation without visible support.\n"
-                "- Before choosing actions, infer one short local workflow plan for the current page and keep it stable until that workflow is completed or visibly blocked.\n"
-                "- Update reasoning_trace.current_subgoal and reasoning_trace.plan to reflect the current local milestone, not the whole task from scratch.\n"
-                "- Do not replan the whole task every step unless the page changed materially or the current workflow clearly failed.\n"
-                "- If SCORE FEEDBACK is present in state and marks success=true or score=1.0, treat it as strong completion evidence and prefer final/browser.done unless visible evidence clearly contradicts it.\n"
-                "- If a login or registration form is visible, do not submit until the visible credential fields are filled.\n"
-                "- If the task shows empty quoted credentials, replace them with placeholders such as <username>, <password>, <signup_username>, <signup_email>, or <signup_password> instead of empty strings.\n"
+                + (
+                    (
+                        "- If the current page already contains the answer, return final immediately.\n"
+                        "- For question-answering and data-extraction tasks, DONE is the correct action once the answer is visible on the current page.\n"
+                        "- Do NOT keep exploring once the current page already answers the task.\n"
+                    )
+                    if not blank_document
+                    else (
+                        "- Do NOT return final on a blank document; navigate first.\n- Do NOT oscillate on about:blank; emit browser.navigate with a concrete URL every step until a real page loads.\n"
+                    )
+                )
+                + (
+                    "- Use final/done or browser.done with a concrete content string when the task is satisfied.\n"
+                    "- content must be the actual answer for the user, not a status message.\n"
+                    "- Avoid repeating low-value actions when the page did not materially change.\n"
+                    "- Prefer arguments.index that refers to INTERACTIVE ELEMENT SHORTLIST.\n"
+                    "- For browser.select_dropdown, provide arguments.text with the option text/value to choose.\n"
+                    "- Never emit unavailable tools.\n"
+                    "- Preserve placeholders such as <username>, <password>, <signup_email> exactly when typing.\n"
+                    + (
+                        "- For informational tasks, use the current visible content before navigating more.\n"
+                        if not blank_document
+                        else "- For informational tasks on a blank document, navigate to the site that holds the answer before extracting.\n"
+                    )
+                    + (
+                        "- When useful, include reasoning as a short human-readable operator note grounded in visible page evidence.\n"
+                        "- reasoning must be 1-2 short sentences, concrete, and suitable for product UI.\n"
+                        "- reasoning must say what is visible now and why the chosen next action or final answer follows.\n"
+                        "- reasoning must not contain chain-of-thought, filler, generic status text, or speculation without visible support.\n"
+                        "- Before choosing actions, infer one short local workflow plan for the current page and keep it stable until that workflow is completed or visibly blocked.\n"
+                        "- Update reasoning_trace.current_subgoal and reasoning_trace.plan to reflect the current local milestone, not the whole task from scratch.\n"
+                        "- Do not replan the whole task every step unless the page changed materially or the current workflow clearly failed.\n"
+                        "- If SCORE FEEDBACK is present in state and marks success=true or score=1.0, treat it as strong completion evidence and prefer final/browser.done unless visible evidence clearly contradicts it.\n"
+                        "- If a login or registration form is visible, do not submit until the visible credential fields are filled.\n"
+                        "- If the task shows empty quoted credentials, replace them with placeholders such as <username>, <password>, <signup_username>, <signup_email>, or <signup_password> instead of empty strings.\n"
+                    )
+                )
                 + ("\n".join(extra_rules) + "\n" if extra_rules else "")
             )
         autoplay_examples = _autocinema_example_block(prompt, policy_obs) if _is_demo_execution_profile(execution_profile) else []
+        blank_user_banner: list[str] = []
+        if blank_document:
+            blank_user_banner = [
+                "=== BLANK DOCUMENT — NAVIGATION REQUIRED ===",
+                "CURRENT_URL is empty or about:blank. No page is loaded; do not click or finish the task.",
+                'Output JSON: {"type":"browser","tool_call":{"name":"browser.navigate","arguments":{"url":"https://..."}}}',
+                "Set url from TASK (copy any https:// or http:// substring), or https:// + hostname mentioned in TASK.",
+                "",
+            ]
         if direct_mode:
             user_parts = [
+                *blank_user_banner,
                 "Choose the next browser step sequence.",
                 f"TASK: {str(policy_obs.get('prompt') or '')[:1600]}",
                 *autoplay_examples,
@@ -1125,6 +1221,15 @@ class Policy:
                 "PREVIOUS REASONING TRACE (JSON):",
                 json.dumps(policy_obs.get("reasoning_trace") if isinstance(policy_obs.get("reasoning_trace"), dict) else {}, ensure_ascii=False),
                 "",
+                *(
+                    [
+                        "BLANK DOCUMENT OVERRIDE:",
+                        "- Ignore completion rules in this section until after browser.navigate loads a real page.",
+                        "",
+                    ]
+                    if blank_document
+                    else []
+                ),
                 "DONE / CONTENT CONTRACT:",
                 "- If the answer or completed result is already visible on the current page, return final now.",
                 "- final.content or browser.done.arguments.content must be the concrete answer for the user.",
@@ -1187,6 +1292,7 @@ class Policy:
             ]
         else:
             user_parts = [
+                *blank_user_banner,
                 "You have a task and must choose the next browser step sequence.",
                 f"TASK: {str(policy_obs.get('prompt') or '')[:1600]}",
                 *autoplay_examples,
@@ -1273,6 +1379,15 @@ class Policy:
                 "PREVIOUS REASONING TRACE (JSON):",
                 json.dumps(policy_obs.get("reasoning_trace") if isinstance(policy_obs.get("reasoning_trace"), dict) else {}, ensure_ascii=False),
                 "",
+                *(
+                    [
+                        "BLANK DOCUMENT OVERRIDE:",
+                        "- Ignore completion rules in this section until after browser.navigate loads a real page.",
+                        "",
+                    ]
+                    if blank_document
+                    else []
+                ),
                 "DONE / CONTENT CONTRACT:",
                 "- If the task is already answered by the current page, return final now.",
                 "- final.content must contain the user-facing answer.",
@@ -1441,13 +1556,17 @@ class Policy:
                     "- For browser.select_dropdown, include a non-empty arguments.text.",
                     "- If the task is about narrowing results, use current-page controls before opening result items.",
                     "- Preserve placeholders exactly when typing.",
-                    "- For informational tasks, prefer answering from what is already visible on the current page before opening more pages.",
-                    "- If the current page is sufficient, finish now.",
+                    (
+                        "- For informational tasks, prefer answering from what is already visible on the current page before opening more pages."
+                        if not blank_document
+                        else "- On a blank document, navigate to the target site first; do not answer from an empty page."
+                    ),
+                    "- If the current page is sufficient, finish now." if not blank_document else "- On about:blank, never treat the page as sufficient; navigate first.",
                     "- Never emit unavailable tools.",
                     "- Do not return content like 'task completed'; return the actual answer.",
                 ]
             )
-            if meta_enabled:
+            if meta_enabled and not blank_document:
                 user_parts.insert(-5, '{"type":"meta","meta_tool":{"name":"META.FIND_ELEMENTS","arguments":{"role":"input","text":"search","limit":6}}}')
                 if "META.VISION_QA" in _obs_meta_tools():
                     user_parts.insert(-5, '{"type":"meta","meta_tool":{"name":"META.VISION_QA","arguments":{"question":"Which visible control best applies the current filters?"}}}')
@@ -1531,6 +1650,7 @@ class Policy:
                 "model": str((raw or {}).get("model") or model),
             }
         except Exception as e:
+            logger.warning("Policy LLM failed; using deterministic fallback (mode=%s): %s", mode, str(e))
             self._debug_log(
                 str(task_id or "task"),
                 {
@@ -1886,10 +2006,32 @@ class Policy:
         repeat_count = int(counters.get("repeat_action_count") or 0)
         recovery_attempt_count = int(counters.get("recovery_attempt_count") or 0)
         consecutive_wait_count = int(counters.get("consecutive_wait_count") or 0)
+        current_url = str(policy_obs.get("url") or "").strip()
+        blank_document = current_url.lower() in {"", "about:blank"}
         route_like_stuck = mode in {"STUCK", "PLAN"} or loop_level == "high" or stall_count >= 4 or repeat_count >= 4
         max_consecutive_waits = max(0, min(_env_int("FSM_MAX_CONSECUTIVE_WAITS", 1), 4))
         max_recovery_attempts = max(1, min(_env_int("FSM_MAX_RECOVERY_ATTEMPTS", 3), 8))
         prefer_text_input = _prompt_prefers_text_input(prompt, policy_obs)
+        if blank_document:
+            preferred_prompt_navigation = _preferred_prompt_navigation(
+                prompt,
+                policy_obs,
+                allowed_tools=allowed_tools,
+            )
+            if preferred_prompt_navigation is not None:
+                logger.info(
+                    "Blank-page fallback inferred navigate target: %s",
+                    str((((preferred_prompt_navigation.get("tool_call") or {}).get("arguments") or {}).get("url")) or ""),
+                )
+                return preferred_prompt_navigation
+            logger.warning("Blank-page fallback could not infer a navigation target from task: %s", str(prompt or "")[:200])
+            return {
+                "type": "final",
+                "done": True,
+                "content": "Unable to continue because no target URL or recognizable site could be inferred from the task while the browser is still on a blank page.",
+                "error": "blank_page_no_navigation_target",
+                "failure_reason": "blank_page_no_navigation_target",
+            }
         if _is_demo_execution_profile(execution_profile):
             preferred_title_result = _preferred_title_result_action(
                 prompt,

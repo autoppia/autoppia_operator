@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
 
 from infra import llm_gateway
@@ -96,3 +97,17 @@ def test_openai_vision_chat_completions_uses_openai_gateway(
     assert isinstance(seen["body"].get("messages"), list)
     usage = out.get("usage") if isinstance(out.get("usage"), dict) else {}
     assert int(usage.get("total_tokens") or 0) == 15
+
+
+def test_llm_retry_backoff_respects_retry_after_header() -> None:
+    req = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    resp = httpx.Response(429, request=req, headers={"retry-after": "3"})
+    wait = llm_gateway._llm_retry_backoff_seconds(response=resp, attempt=0)
+    assert 2.99 <= wait <= 3.0
+
+
+def test_llm_http_max_retries_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_HTTP_MAX_RETRIES", "12")
+    assert llm_gateway._llm_http_max_retries() == 12
+    monkeypatch.setenv("LLM_HTTP_MAX_RETRIES", "999")
+    assert llm_gateway._llm_http_max_retries() == 15

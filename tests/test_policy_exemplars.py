@@ -223,7 +223,7 @@ def test_preferred_seed_navigation_uses_site_knowledge_section_route() -> None:
     action = policy_module._preferred_seed_stable_navigation(
         "Log in to the site.",
         {
-            "url": "https://books.example/about",
+            "url": "https://autocinema.example/about?seed=42",
             "site_knowledge": {
                 "current_task_routing": {"likely_best_section": "auth"},
                 "routes": [
@@ -239,7 +239,7 @@ def test_preferred_seed_navigation_uses_site_knowledge_section_route() -> None:
     assert action is not None
     tool_call = action["tool_call"]
     assert tool_call["name"] == "browser.navigate"
-    assert tool_call["arguments"]["url"] == "https://books.example/login"
+    assert tool_call["arguments"]["url"].rstrip("/") == "https://autocinema.example/login"
 
 
 def test_preferred_prompt_navigation_opens_domain_from_blank_page() -> None:
@@ -254,6 +254,53 @@ def test_preferred_prompt_navigation_opens_domain_from_blank_page() -> None:
     tool_call = action["tool_call"]
     assert tool_call["name"] == "browser.navigate"
     assert tool_call["arguments"]["url"] == "https://autoppia.com"
+
+
+def test_preferred_prompt_navigation_explicit_https_without_open_verb() -> None:
+    action = policy_module._preferred_prompt_navigation(
+        "Read https://docs.example.com/guide.html and list the headings.",
+        {"url": "about:blank"},
+        allowed_tools={"browser.navigate"},
+    )
+    assert action is not None
+    assert action["tool_call"]["arguments"]["url"] == "https://docs.example.com/guide.html"
+
+
+def test_preferred_prompt_navigation_named_site_without_open_verb() -> None:
+    action = policy_module._preferred_prompt_navigation(
+        "Search for alpine marmots on Wikipedia.",
+        {"url": "about:blank"},
+        allowed_tools={"browser.navigate"},
+    )
+    assert action is not None
+    assert action["tool_call"]["arguments"]["url"] == "https://www.wikipedia.org"
+
+
+def test_fallback_navigates_from_blank_page_for_general_web_task() -> None:
+    policy = policy_module.Policy(llm_call=lambda **_: {})
+    action = policy._fallback(
+        prompt="Go to google.com and search for weather in Tokyo.",
+        mode="DIRECT",
+        policy_obs={"url": "about:blank"},
+        allowed_tools={"browser.navigate", "browser.click"},
+    )
+    assert action["type"] == "browser"
+    assert action["tool_call"]["name"] == "browser.navigate"
+    assert action["tool_call"]["arguments"]["url"] == "https://www.google.com"
+
+
+def test_fallback_fails_fast_on_blank_page_without_inferable_target() -> None:
+    policy = policy_module.Policy(llm_call=lambda **_: {})
+    action = policy._fallback(
+        prompt="Continue with the task.",
+        mode="DIRECT",
+        policy_obs={"url": "about:blank"},
+        allowed_tools={"browser.navigate", "browser.click"},
+    )
+    assert action["type"] == "final"
+    assert action["done"] is True
+    assert action["error"] == "blank_page_no_navigation_target"
+    assert action["failure_reason"] == "blank_page_no_navigation_target"
 
 
 def test_preferred_title_result_action_anchors_to_matching_movie_card() -> None:

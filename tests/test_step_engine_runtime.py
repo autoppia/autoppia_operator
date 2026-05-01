@@ -5,6 +5,7 @@ from src.operator.agents import StepEngine
 from src.operator.agents.step_engine import CanonicalBrowserState
 from src.operator.agents.step_engine.candidates import Candidate, CandidateExtractor
 from src.operator.agents.step_engine.state import AgentState
+from src.operator.agents.step_engine.utils import clean_snapshot_html_for_llm
 
 
 def test_step_engine_is_canonical_runtime() -> None:
@@ -139,3 +140,50 @@ def test_direct_loop_login_prefers_seeded_login_navigation() -> None:
     first = actions[0]
     assert first["type"] == "NavigateAction"
     assert first["url"].endswith("/login?seed=252")
+
+
+def test_blank_page_fallback_failure_sets_error_and_failure_reason() -> None:
+    engine = StepEngine(llm_call=lambda **_: {})
+    out = engine.run(
+        payload={
+            "task_id": "blank-fail",
+            "prompt": "Continue with the task.",
+            "url": "about:blank",
+            "snapshot_html": "<html><body></body></html>",
+            "step_index": 0,
+            "history": [],
+            "include_reasoning": True,
+        }
+    )
+    assert out["done"] is True
+    assert out["error"] == "blank_page_no_navigation_target"
+    assert out["failure_reason"] == "blank_page_no_navigation_target"
+    assert "blank page" in str(out["content"]).lower()
+
+
+def test_clean_snapshot_html_strips_scripts_styles_and_comments() -> None:
+    raw = """<!-- meta -->
+    <html><head><style>.x{color:red}</style></head><body>
+    <script>alert(1)</script><p id="ok">Hi</p></body></html>"""
+    out = clean_snapshot_html_for_llm(raw)
+    assert "alert" not in out
+    assert ".x{" not in out
+    assert "<!--" not in out
+    assert 'id="ok"' in out
+
+
+def test_clean_snapshot_html_truncates_long_data_uri_in_src() -> None:
+    blob = "data:image/png;base64," + ("A" * 1200)
+    raw = f'<html><body><img src="{blob}" /><button id="go">Go</button></body></html>'
+    out = clean_snapshot_html_for_llm(raw)
+    assert "[data-uri-truncated]" in out
+    assert "AAAA" not in out
+    assert 'id="go"' in out
+
+
+def test_clean_snapshot_html_truncates_total_length(monkeypatch) -> None:
+    monkeypatch.setenv("FSM_SNAPSHOT_HTML_MAX_CHARS", "9000")
+    raw = "<html><body>" + ("x" * 20_000) + "</body></html>"
+    out = clean_snapshot_html_for_llm(raw)
+    assert len(out) <= 9500
+    assert "fsm:snapshot_html_truncated" in out

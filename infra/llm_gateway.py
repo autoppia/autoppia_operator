@@ -1,10 +1,49 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
+import random
+import time
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
+
+
+def _llm_http_max_retries() -> int:
+    try:
+        n = int(os.getenv("LLM_HTTP_MAX_RETRIES", "5") or "5")
+    except Exception:
+        n = 5
+    return max(1, min(n, 15))
+
+
+def _llm_retry_backoff_seconds(*, response: httpx.Response, attempt: int) -> float:
+    """Seconds to wait before retrying after a retryable HTTP status."""
+    for key in ("retry-after", "Retry-After"):
+        raw = response.headers.get(key)
+        if raw:
+            try:
+                return min(120.0, max(0.05, float(str(raw).strip())))
+            except ValueError:
+                break
+    try:
+        base = float(os.getenv("LLM_HTTP_RETRY_BASE_SECONDS", "1.0") or "1.0")
+    except Exception:
+        base = 1.0
+    try:
+        cap = float(os.getenv("LLM_HTTP_RETRY_MAX_SECONDS", "45.0") or "45.0")
+    except Exception:
+        cap = 45.0
+    exp = base * (2**attempt)
+    jitter = random.uniform(0.0, exp * 0.2)
+    return min(cap, max(0.05, exp + jitter))
+
+
+def _llm_status_is_retryable(status_code: int) -> bool:
+    return status_code in (429, 502, 503, 504)
 
 
 def is_sandbox_gateway_base_url(base_url: str) -> bool:
@@ -56,12 +95,26 @@ class OpenAIGateway:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
+        url = f"{self.base_url}/chat/completions"
+        max_retries = _llm_http_max_retries()
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            resp = client.post(
-                f"{self.base_url}/chat/completions",
-                json=body,
-                headers=headers,
-            )
+            resp: httpx.Response | None = None
+            for attempt in range(max_retries):
+                resp = client.post(url, json=body, headers=headers)
+                if _llm_status_is_retryable(resp.status_code) and attempt < max_retries - 1:
+                    wait_s = _llm_retry_backoff_seconds(response=resp, attempt=attempt)
+                    logger.info(
+                        "OpenAI-compatible POST %s returned %s; sleeping %.2fs then retry %s/%s",
+                        url,
+                        resp.status_code,
+                        wait_s,
+                        attempt + 2,
+                        max_retries,
+                    )
+                    time.sleep(wait_s)
+                    continue
+                break
+            assert resp is not None
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as e:
@@ -118,12 +171,26 @@ class AnthropicGateway:
             "IWA-Task-ID": str(task_id),
         }
 
+        url = f"{self.base_url}/v1/messages"
+        max_retries = _llm_http_max_retries()
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            resp = client.post(
-                f"{self.base_url}/v1/messages",
-                json=body,
-                headers=headers,
-            )
+            resp: httpx.Response | None = None
+            for attempt in range(max_retries):
+                resp = client.post(url, json=body, headers=headers)
+                if _llm_status_is_retryable(resp.status_code) and attempt < max_retries - 1:
+                    wait_s = _llm_retry_backoff_seconds(response=resp, attempt=attempt)
+                    logger.info(
+                        "Anthropic POST %s returned %s; sleeping %.2fs then retry %s/%s",
+                        url,
+                        resp.status_code,
+                        wait_s,
+                        attempt + 2,
+                        max_retries,
+                    )
+                    time.sleep(wait_s)
+                    continue
+                break
+            assert resp is not None
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as e:

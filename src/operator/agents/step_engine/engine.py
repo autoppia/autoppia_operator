@@ -59,6 +59,7 @@ from .utils import (
     _utc_now,
     _vision_signature,
     _with_query,
+    clean_snapshot_html_for_llm,
 )
 
 _TEXT_INPUT_ACTION_TYPES = {"TypeAction", "FillAction", "InputAction"}
@@ -1112,6 +1113,9 @@ class StepEngine:
         policy_reasoning = _candidate_text(decision.get("reasoning"), policy_reasoning)
         dtype = str(decision.get("type") or "").strip().lower()
         if dtype == "final":
+            final_error = _candidate_text(decision.get("error"), decision.get("failure_reason"))
+            if final_error:
+                self._set_failure_reason(state=state, reason=final_error)
             final_content = _candidate_text(decision.get("content"), "")
             lowered = final_content.lower()
             generic = {
@@ -1381,6 +1385,9 @@ class StepEngine:
                 policy_reasoning = _candidate_text(decision.get("reasoning"), policy_reasoning)
                 dtype = str(decision.get("type") or "").strip().lower()
                 if dtype == "final":
+                    final_error = _candidate_text(decision.get("error"), decision.get("failure_reason"))
+                    if final_error:
+                        self._set_failure_reason(state=state, reason=final_error)
                     final_content = _candidate_text(decision.get("content"), "Task completed.")
                     can_early_finish = bool(state.memory.facts) and state.mode in {"REPORT", "DONE"}
                     ok, done_reason = self._pre_done_verification(
@@ -1598,6 +1605,9 @@ class StepEngine:
             if str(fallback.get("type") or "") == "final":
                 done = True
                 content = _candidate_text(fallback.get("content"), "Task complete.")
+                fallback_error = _candidate_text(fallback.get("error"), fallback.get("failure_reason"))
+                if fallback_error:
+                    self._set_failure_reason(state=state, reason=fallback_error)
                 state.mode = "DONE"
             else:
                 fallback_action = self._browser_action_from_tool_call(
@@ -2113,7 +2123,7 @@ class StepEngine:
         web_project_id = _candidate_text(payload_dict.get("web_project_id"))
         use_case = _normalize_use_case_info(payload_dict.get("use_case"))
         url = str(payload_dict.get("url") or "")
-        html = str(payload_dict.get("snapshot_html") or "")
+        html = clean_snapshot_html_for_llm(str(payload_dict.get("snapshot_html") or ""))
         screenshot = payload_dict.get("screenshot")
         task_id = str(payload_dict.get("task_id") or "")
         step_index = int(payload_dict.get("step_index") or 0)

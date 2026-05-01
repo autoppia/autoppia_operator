@@ -340,6 +340,9 @@ def _act_http_response(
         out["action_rationales"] = raw_resp.get("action_rationales")
     if isinstance(raw_resp.get("failure_reason"), str) and str(raw_resp.get("failure_reason")).strip():
         out["failure_reason"] = str(raw_resp.get("failure_reason")).strip()[:80]
-    validated = StepResponse.model_validate({k: out[k] for k in ("protocol_version", "tool_calls", "content", "reasoning", "done", "error") if k in out})
-    out.update(validated.model_dump())
+    # When autoppia_iwa is not importable, StepResponse is typing.Any and has no model_validate.
+    _validate_response = getattr(StepResponse, "model_validate", None)
+    if callable(_validate_response):
+        validated = _validate_response({k: out[k] for k in ("protocol_version", "tool_calls", "content", "reasoning", "done", "error") if k in out})
+        out.update(validated.model_dump())
     return out
