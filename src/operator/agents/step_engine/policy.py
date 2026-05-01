@@ -550,6 +550,14 @@ def _seeded_search_url(current_url: str, seed: str, title_literal: str) -> str:
     return _safe_url(f"/?{query}" if query else "/", base=current_url)
 
 
+def _is_autocinema_context(policy_obs: Dict[str, Any]) -> bool:
+    project_id = str(policy_obs.get("web_project_id") or "").strip().lower()
+    if project_id:
+        return project_id == "autocinema"
+    current_url = str(policy_obs.get("url") or "").strip().lower()
+    return "autocinema" in current_url
+
+
 def _candidate_mentions_title(item: Dict[str, Any], title_literal: str) -> bool:
     needle = str(title_literal or "").strip().lower()
     if not needle:
@@ -660,6 +668,8 @@ def _preferred_seed_stable_navigation(
     *,
     allowed_tools: set[str],
 ) -> Dict[str, Any] | None:
+    if not _is_autocinema_context(policy_obs):
+        return None
     if allowed_tools and "browser.navigate" not in allowed_tools:
         return None
     current_url = str(policy_obs.get("url") or "")

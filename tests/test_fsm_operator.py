@@ -517,6 +517,49 @@ def test_wikipedia_homepage_prefers_local_search_input_in_meta_mode(monkeypatch:
     assert actions[0].get("text") == "elexander the great"
 
 
+def test_wikipedia_clicks_search_after_inputaction_history(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    payload = _base_payload()
+    payload["prompt"] = "Go to wikipedia and search for 'elexander the great'"
+    payload["url"] = "https://www.wikipedia.org/"
+    payload["step_index"] = 2
+    payload["history"] = [
+        {
+            "action": {
+                "type": "InputAction",
+                "selector": {
+                    "type": "attributeValueSelector",
+                    "attribute": "id",
+                    "value": "searchInput",
+                    "case_sensitive": False,
+                },
+                "_element_id": "el_search_input",
+                "text": "elexander the great",
+            },
+            "exec_ok": True,
+            "url": "https://www.wikipedia.org/",
+        }
+    ]
+    payload["snapshot_html"] = """
+    <html><body>
+      <form>
+        <input id="searchInput" type="search" placeholder="Search Wikipedia" />
+        <button id="searchButton">Search</button>
+        <input type="hidden" name="family" value="wikipedia" />
+        <input type="hidden" name="go" value="Go" />
+      </form>
+    </body></html>
+    """
+    out = engine.run(payload=payload)
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert len(actions) == 1
+    assert actions[0].get("type") == "ClickAction"
+    selector = actions[0].get("selector") or {}
+    assert selector.get("attribute") == "id"
+    assert selector.get("value") == "searchButton"
+
+
 def test_obs_builder_compacts_history_and_provides_tagged_input() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     payload = _base_payload()

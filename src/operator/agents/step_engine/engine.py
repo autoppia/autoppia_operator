@@ -61,6 +61,8 @@ from .utils import (
     _with_query,
 )
 
+_TEXT_INPUT_ACTION_TYPES = {"TypeAction", "FillAction", "InputAction"}
+
 
 class StepEngine:
     def __init__(
@@ -264,8 +266,11 @@ class StepEngine:
             if cand.disabled:
                 continue
             role = str(cand.role or "").strip().lower()
+            input_type = str(cand.input_type or "").strip().lower()
             blob = " ".join([cand.text, cand.field_hint, cand.field_kind, cand.placeholder, cand.aria_label, cand.context]).lower()
             if role not in {"button", "link", "input"}:
+                continue
+            if role == "input" and input_type not in {"submit", "button", "image"}:
                 continue
             if not any(token in blob for token in ("search", "find", "go", "submit")):
                 continue
@@ -518,7 +523,7 @@ class StepEngine:
         candidate: Candidate | None,
     ) -> str:
         action_type = str(action.get("type") or "").strip()
-        if action_type in {"TypeAction", "FillAction"}:
+        if action_type in _TEXT_INPUT_ACTION_TYPES:
             return "field_filled"
         if action_type == "SelectDropDownOptionAction":
             return "selection_changed"
@@ -2411,7 +2416,7 @@ class StepEngine:
             action_type = str(action.get("type") or "")
             if not action_type and isinstance(action_raw, str):
                 action_type = str(action_raw)
-            if action_type in {"TypeAction", "FillAction"}:
+            if action_type in _TEXT_INPUT_ACTION_TYPES:
                 nested = action.get("raw") if isinstance(action.get("raw"), dict) else {}
                 val = _candidate_text(
                     item.get("text"),
@@ -2493,7 +2498,7 @@ class StepEngine:
             action_type = str(action.get("type") or "")
             if not action_type and isinstance(action_raw, str):
                 action_type = action_raw
-            if action_type not in {"TypeAction", "FillAction"}:
+            if action_type not in _TEXT_INPUT_ACTION_TYPES:
                 continue
             nested = action.get("raw") if isinstance(action.get("raw"), dict) else {}
             item_candidate_id = _candidate_text(
@@ -2932,7 +2937,7 @@ class StepEngine:
             action_type = str(action.get("type") or action.get("name") or "")
             if not action_type and isinstance(action_raw, str):
                 action_type = action_raw
-            if action_type not in {"TypeAction", "FillAction"}:
+            if action_type not in _TEXT_INPUT_ACTION_TYPES:
                 continue
             sel = action.get("selector")
             if not isinstance(sel, dict):
@@ -2974,7 +2979,7 @@ class StepEngine:
             action_type = str(action.get("type") or action.get("name") or "")
             if not action_type and isinstance(action_raw, str):
                 action_type = action_raw
-            if action_type not in {"TypeAction", "FillAction"}:
+            if action_type not in _TEXT_INPUT_ACTION_TYPES:
                 continue
             nested = action.get("raw") if isinstance(action.get("raw"), dict) else {}
             candidate_id = _candidate_text(
@@ -3256,7 +3261,7 @@ class StepEngine:
         ranked_candidates: list[Candidate],
         state: AgentState,
     ) -> dict[str, Any] | None:
-        if not isinstance(action, dict) or str(action.get("type") or "") != "TypeAction":
+        if not isinstance(action, dict) or str(action.get("type") or "") not in _TEXT_INPUT_ACTION_TYPES:
             return action
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
         if target is None:
@@ -4032,11 +4037,11 @@ class StepEngine:
             return
         action_type = str(action.get("type") or "").strip()
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
-        if target is not None and target.context and action_type in {"TypeAction", "ClickAction", "SelectDropDownOptionAction"}:
+        if target is not None and target.context and action_type in (_TEXT_INPUT_ACTION_TYPES | {"ClickAction", "SelectDropDownOptionAction"}):
             self._remember_active_group(target=target, ranked_candidates=ranked_candidates, state=state)
             self._record_constraint_progress(prompt=prompt, action=action, target=target, state=state)
         element_id = str(action.get("_element_id") or action.get("element_id") or "").strip()
-        if action_type == "TypeAction":
+        if action_type in _TEXT_INPUT_ACTION_TYPES:
             cand_id = element_id
             sel = action.get("selector") if isinstance(action.get("selector"), dict) else None
             sel_sig = self._selector_signature(sel if isinstance(sel, dict) else None)
