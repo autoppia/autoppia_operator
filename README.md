@@ -1,4 +1,28 @@
-# autoppia_operator (Miner Example)
+# autoppia_operator
+
+`autoppia_operator` is the main Autoppia trajectory-discovery operator.
+
+The operator is an offline Claude/IWA agent that can inspect a task, use browser
+and JavaScript-capable tooling, run IWA/evaluator checks, diagnose failures, and
+iterate until it discovers a verified successful trajectory. That discovered
+trajectory is then used as training data for a separate distilled `/act` model.
+
+The distilled `/act` model is a deployment artifact, not the operator itself.
+See `docs/autoppia_operator_architecture.md` for the split.
+
+Canonical operator entrypoint:
+
+```bash
+python -m training.autoppia_operator.claude_operator \
+  --web-project-id autocinema \
+  --use-case LOGIN \
+  --seed 1 \
+  --task-cache data/task_cache/autocinema_tasks.json \
+  --output-dir data
+```
+
+Legacy `harvester` modules are compatibility backends while the repo migrates to
+the `training.autoppia_operator` namespace.
 
 This repo is a minimal FastAPI web-agent service intended to run as a **miner** in the Autoppia web-agents subnet.
 

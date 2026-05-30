@@ -1,13 +1,22 @@
 # Training Package
 
-`training/` is now centered on one clean path: harvest a single use case against the
-real `84.247.180.192` evaluator, distill it into SFT data, fine-tune a LoRA adapter,
-serve it, and evaluate it again.
+`training/` has two separate responsibilities:
+
+1. `training.autoppia_operator`: the Claude/IWA trajectory-discovery operator.
+   This is the main web agent for finding verified successful trajectories on
+   never-seen tasks. It is not constrained by `/act`.
+2. Distillation/fine-tuning modules: consume verified operator trajectories,
+   export SFT/RL data, fine-tune a Qwen/LoRA adapter, serve it, and evaluate the
+   resulting `/act` runtime.
+
+Do not mix the operator with the distilled model. The operator creates gold
+trajectories; the distilled model learns to imitate them.
 
 Kept modules:
+- `training/autoppia_operator/`: canonical Autoppia Operator namespace and artifact contract.
 - `training/claude_code_harvester.py`: Claude-focused harvesting entrypoint.
 - `training/claude_guided_harvester.py`: teacher-guided action hints for focused harvests.
-- `training/harvester.py`: unified harvest orchestration for baseline, code-aware, and guided collection.
+- `training/harvester.py`: legacy compatibility backend for baseline, code-aware, and guided collection.
 - `training/focus_pipeline.py`: compatibility wrapper around the unified harvester and eval helpers.
 - `training/layout.py`: canonical `data/<web_project>/<use_case>/...` layout.
 - `training/dagger.py`: generic DAgger correction loop across use cases.
@@ -18,12 +27,23 @@ Kept modules:
 - `training/post_finetune_eval.py`: post-train evaluation against the real evaluator.
 
 Current supported workflow:
-1. collect gold trajectories with evaluator `score=1.0`
-2. add DAgger or rule corrections if needed
-3. export SFT
-4. fine-tune
-5. serve the adapter
+1. run the Autoppia Operator until IWA verifies `success=true` and `score=1.0`
+2. save canonical operator artifacts under `data/operator_runs/...`
+3. export verified trajectories to SFT/RL data
+4. fine-tune a Qwen/LoRA distilled agent
+5. serve the adapter behind `/act`
 6. evaluate on holdout seeds
+
+Canonical operator CLI:
+
+```bash
+python -m training.autoppia_operator.claude_operator \
+  --web-project-id autocinema \
+  --use-case LOGIN \
+  --seed 1 \
+  --task-cache data/task_cache/autocinema_tasks.json \
+  --output-dir data
+```
 
 Canonical data rule:
 - only trace-backed, replayable trajectories count as canonical gold
