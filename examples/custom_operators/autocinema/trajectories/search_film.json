@@ -1,0 +1,8 @@
+{
+  "id": "search_film.v1",
+  "task_id": "search_film",
+  "source": "iwa_seed_template",
+  "actions": [
+    {"type": "NavigateAction", "url": "{base_url}/search?search={search_term}"}
+  ]
+}

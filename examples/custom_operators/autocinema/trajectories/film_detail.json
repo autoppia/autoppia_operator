@@ -1,0 +1,8 @@
+{
+  "id": "film_detail.v1",
+  "task_id": "film_detail",
+  "source": "iwa_seed_template",
+  "actions": [
+    {"type": "NavigateAction", "url": "{base_url}/movies/real-movie-011"}
+  ]
+}

@@ -1,0 +1,29 @@
+[
+  {
+    "id": "login",
+    "name": "Login",
+    "prompt": "Log in to Autocinema with the configured credentials.",
+    "success_criteria": "The user is authenticated and the page shows an authenticated session.",
+    "keywords": ["login", "log in", "authenticate", "sign in"],
+    "prompts": ["log in to autocinema", "login in autocinema"],
+    "trajectory": "trajectories/login.json"
+  },
+  {
+    "id": "search_film",
+    "name": "Search Film",
+    "prompt": "Search for a film by title.",
+    "success_criteria": "The search page is open with the requested search term.",
+    "keywords": ["search", "find", "movie", "film"],
+    "prompts": ["search for a film"],
+    "trajectory": "trajectories/search_film.json"
+  },
+  {
+    "id": "film_detail",
+    "name": "Film Detail",
+    "prompt": "Open a film detail page.",
+    "success_criteria": "A movie detail page is open.",
+    "keywords": ["detail", "details", "film detail", "movie detail"],
+    "prompts": ["open a film detail page"],
+    "trajectory": "trajectories/film_detail.json"
+  }
+]

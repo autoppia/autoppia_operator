@@ -1,0 +1,12 @@
+{
+  "id": "autocinema",
+  "name": "Autocinema",
+  "version": "0.1.0",
+  "base_url": "http://84.247.180.192:8000",
+  "instructions": "You are operating the Autocinema website. Use available skills for known workflows, then continue with normal browser reasoning for any task not covered by a skill.",
+  "defaults": {
+    "username": "user1",
+    "password": "Passw0rd!",
+    "search_term": "The Matrix"
+  }
+}

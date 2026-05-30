@@ -1,0 +1,11 @@
+{
+  "id": "login.v1",
+  "task_id": "login",
+  "source": "iwa_seed_template",
+  "actions": [
+    {"type": "NavigateAction", "url": "{base_url}/login"},
+    {"type": "TypeAction", "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "login-username-input", "case_sensitive": false}, "text": "{username}"},
+    {"type": "TypeAction", "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "login-password-input", "case_sensitive": false}, "text": "{password}"},
+    {"type": "ClickAction", "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "login-sign-in-button", "case_sensitive": false}}
+  ]
+}
