@@ -1825,7 +1825,7 @@ class StepEngine:
             if isinstance(item, dict) and str(item.get("error") or "").strip()
         ]
         current_url = str(url or "").strip().lower()
-        if current_url in {"", "about:blank"} and not ranked_candidates:
+        if current_url in {"", "about:blank"}:
             return (
                 None,
                 True,
