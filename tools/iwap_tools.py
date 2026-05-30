@@ -9,13 +9,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import datetime, timezone
+from collections import defaultdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from collections import defaultdict
 import httpx
-
 
 DEFAULT_MOCK_DATA = {
     "current_season": 36,
@@ -27,9 +26,27 @@ DEFAULT_MOCK_DATA = {
             "started_at": "2026-02-20T00:00:00Z",
             "finished_at": "2026-02-21T00:00:00Z",
             "runs": [
-                {"uid": 11, "tasks": 10, "success_rate": 0.72, "avg_score": 0.61, "total_cost_usd": 0.45},
-                {"uid": 12, "tasks": 10, "success_rate": 0.84, "avg_score": 0.77, "total_cost_usd": 0.39},
-                {"uid": 18, "tasks": 10, "success_rate": 0.55, "avg_score": 0.41, "total_cost_usd": 0.31},
+                {
+                    "uid": 11,
+                    "tasks": 10,
+                    "success_rate": 0.72,
+                    "avg_score": 0.61,
+                    "total_cost_usd": 0.45,
+                },
+                {
+                    "uid": 12,
+                    "tasks": 10,
+                    "success_rate": 0.84,
+                    "avg_score": 0.77,
+                    "total_cost_usd": 0.39,
+                },
+                {
+                    "uid": 18,
+                    "tasks": 10,
+                    "success_rate": 0.55,
+                    "avg_score": 0.41,
+                    "total_cost_usd": 0.31,
+                },
             ],
             "task_logs": [
                 {"task_id": "ts-001", "uid": 11, "score": 0.63},
@@ -43,9 +60,27 @@ DEFAULT_MOCK_DATA = {
             "started_at": "2026-02-19T00:00:00Z",
             "finished_at": "2026-02-20T00:00:00Z",
             "runs": [
-                {"uid": 11, "tasks": 10, "success_rate": 0.68, "avg_score": 0.57, "total_cost_usd": 0.54},
-                {"uid": 12, "tasks": 10, "success_rate": 0.79, "avg_score": 0.71, "total_cost_usd": 0.33},
-                {"uid": 18, "tasks": 10, "success_rate": 0.50, "avg_score": 0.38, "total_cost_usd": 0.28},
+                {
+                    "uid": 11,
+                    "tasks": 10,
+                    "success_rate": 0.68,
+                    "avg_score": 0.57,
+                    "total_cost_usd": 0.54,
+                },
+                {
+                    "uid": 12,
+                    "tasks": 10,
+                    "success_rate": 0.79,
+                    "avg_score": 0.71,
+                    "total_cost_usd": 0.33,
+                },
+                {
+                    "uid": 18,
+                    "tasks": 10,
+                    "success_rate": 0.50,
+                    "avg_score": 0.38,
+                    "total_cost_usd": 0.28,
+                },
             ],
             "task_logs": [
                 {"task_id": "ts-003", "uid": 11, "score": 0.54},
@@ -57,7 +92,7 @@ DEFAULT_MOCK_DATA = {
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _to_dict(payload: Any) -> dict[str, Any]:
@@ -201,11 +236,13 @@ def cmd_top_uids(args: argparse.Namespace) -> int:
     for uid, scores in bucket.items():
         if not scores:
             continue
-        leaderboard.append({
-            "uid": uid,
-            "run_count": len(scores),
-            "avg_score": sum(scores) / len(scores),
-        })
+        leaderboard.append(
+            {
+                "uid": uid,
+                "run_count": len(scores),
+                "avg_score": sum(scores) / len(scores),
+            }
+        )
 
     leaderboard.sort(key=lambda item: item["avg_score"], reverse=True)
     payload = {
@@ -224,14 +261,17 @@ def cmd_rounds(args: argparse.Namespace) -> int:
     if args.limit:
         rounds = rounds[: int(args.limit)]
 
-    payload = {"ok": True, "source": "mock", "round_count": len(rounds), "rounds": rounds}
+    payload = {
+        "ok": True,
+        "source": "mock",
+        "round_count": len(rounds),
+        "rounds": rounds,
+    }
     _print(payload)
     return 0
 
 
-def _fetch_iwap_season_tasks(
-    base_url: str, headers: dict[str, str], season_id: int | None
-) -> list[dict[str, Any]]:
+def _fetch_iwap_season_tasks(base_url: str, headers: dict[str, str], season_id: int | None) -> list[dict[str, Any]]:
     if not base_url:
         return []
 
@@ -274,7 +314,13 @@ def cmd_season_tasks(args: argparse.Namespace) -> int:
     data = _load_mock(args.mock_data)
     season_id = args.season_id or data.get("current_season")
     if not season_id:
-        print(json.dumps({"ok": False, "error": "No season id available."}, indent=2, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"ok": False, "error": "No season id available."},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
         return 1
 
     base_url = (args.base_url or os.getenv("IWAP_BASE_URL", "")).strip()
@@ -322,7 +368,11 @@ def cmd_season_tasks(args: argparse.Namespace) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="IWAP tooling for sn36 operator iteration (mock-first)")
-    parser.add_argument("--mock-data", default=os.getenv("IWAP_MOCK_DATA", ""), help="JSON file override for mock IWAP data")
+    parser.add_argument(
+        "--mock-data",
+        default=os.getenv("IWAP_MOCK_DATA", ""),
+        help="JSON file override for mock IWAP data",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     p_last = subparsers.add_parser("last-round", help="get latest IWAP round summary")
@@ -343,12 +393,26 @@ def _build_parser() -> argparse.ArgumentParser:
     p_season_tasks = subparsers.add_parser("season-tasks", help="get season-level task rows from IWAP (or mock fallback)")
     p_season_tasks.add_argument("--season-id", type=int, default=None)
     p_season_tasks.add_argument("--uid", type=int, default=None, help="Filter tasks for one UID")
-    p_season_tasks.add_argument("--min-score", type=float, default=None, help="Filter tasks with score >= min-score")
-    p_season_tasks.add_argument("--max-score", type=float, default=None, help="Filter tasks with score <= max-score")
+    p_season_tasks.add_argument(
+        "--min-score",
+        type=float,
+        default=None,
+        help="Filter tasks with score >= min-score",
+    )
+    p_season_tasks.add_argument(
+        "--max-score",
+        type=float,
+        default=None,
+        help="Filter tasks with score <= max-score",
+    )
     p_season_tasks.add_argument("--limit", type=int, default=0, help="0 = all")
     p_season_tasks.add_argument("--base-url", default=os.getenv("IWAP_BASE_URL", ""), help="IWAP API base URL")
     p_season_tasks.add_argument("--token", default=os.getenv("IWAP_API_TOKEN", ""), help="Optional Bearer token")
-    p_season_tasks.add_argument("--prefer-live", action="store_true", help="Try live IWAP endpoint before mock fallback")
+    p_season_tasks.add_argument(
+        "--prefer-live",
+        action="store_true",
+        help="Try live IWAP endpoint before mock fallback",
+    )
     p_season_tasks.set_defaults(func=cmd_season_tasks)
 
     return parser

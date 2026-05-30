@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
-from typing import Any, Dict, List, Tuple
+from dataclasses import dataclass
+from typing import Any
 
 from infra.llm_gateway import openai_chat_completions
 
@@ -17,7 +17,7 @@ class CompletionCheckResult:
     usage: dict[str, int] | None = None
 
 
-def _parse_json_obj(text: str) -> Dict[str, Any]:
+def _parse_json_obj(text: str) -> dict[str, Any]:
     s = (text or "").strip()
     if not s:
         return {}
@@ -41,10 +41,7 @@ def _to_history_lines(history: list[dict[str, Any]] | None) -> str:
     out: list[str] = []
     for idx, h in enumerate((history or [])[-5:]):
         action = h.get("action")
-        if isinstance(action, dict):
-            at = str(action.get("type") or "")
-        else:
-            at = str(h.get("action") or "")
+        at = str(action.get("type") or "") if isinstance(action, dict) else str(h.get("action") or "")
         ok = bool(h.get("success", h.get("exec_ok", True)))
         out.append(f"{idx + 1}. action={at} success={ok}")
     return "\n".join(out)
@@ -58,21 +55,14 @@ def run_completion_check(
     page_summary: str,
     history: list[dict[str, Any]] | None,
     page_ir_text: str = "",
-) -> Tuple[CompletionCheckResult, Dict[str, Any]]:
+) -> tuple[CompletionCheckResult, dict[str, Any]]:
     model = str(os.getenv("AGENT_COMPLETION_MODEL", "gpt-4o-mini")).strip()
     temperature = float(os.getenv("AGENT_COMPLETION_TEMPERATURE", "0.0"))
     max_tokens = int(os.getenv("AGENT_COMPLETION_MAX_TOKENS", "120"))
 
-    system_msg = (
-        "You are a strict task completion checker for web automation.\n"
-        "Determine whether the user's objective is already completed in the CURRENT page state.\n"
-        "Return JSON only with keys: is_complete (bool), confidence (0..1), reason (short string).\n"
-        "If uncertain, return is_complete=false."
-    )
+    system_msg = "You are a strict task completion checker for web automation.\nDetermine whether the user's objective is already completed in the CURRENT page state.\nReturn JSON only with keys: is_complete (bool), confidence (0..1), reason (short string).\nIf uncertain, return is_complete=false."
     user_msg = (
-        f"TASK: {task}\n"
-        f"CURRENT_URL: {url}\n"
-        f"PAGE_SUMMARY: {page_summary[:2500]}\n"
+        f"TASK: {task}\nCURRENT_URL: {url}\nPAGE_SUMMARY: {page_summary[:2500]}\n"
         + (f"PAGE_IR: {page_ir_text[:2500]}\n" if page_ir_text else "")
         + (f"HISTORY:\n{_to_history_lines(history)}\n" if history else "")
     )

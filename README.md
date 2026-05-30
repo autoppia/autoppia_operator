@@ -2,6 +2,11 @@
 
 This repo is a minimal FastAPI web-agent service intended to run as a **miner** in the Autoppia web-agents subnet.
 
+Current state of the local training assets:
+- the only trusted fine-tuning dataset kept in-repo is `data/autocinema/login`
+- the only trusted local adapter path kept in-repo is `models/bu-30b-login-500-lora`
+- old multi-use-case harvests, reward-model experiments, and demo-seedpack-derived data were removed
+
 ## What the validator runs
 
 The validator starts your container with:
@@ -128,6 +133,44 @@ Runtime constraints for the planner:
 - `AGENT_COMPLETION_MODEL=gpt-4o-mini` (smaller than typical planner model)
 - `AGENT_COMPLETION_MIN_CONFIDENCE=0.82`
 
+## Local OpenAI-compatible model serve
+
+For local `automata -> operator -> model server` testing, the operator does not
+read `BU_POLICY_ENDPOINT` / `BU_POLICY_MODEL` in the live `/act` path. The
+runtime uses `infra/llm_gateway.py`, so the canonical local wiring is:
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:8000/v1
+export OPENAI_MODEL=autoppia
+export AGENT_COMPLETION_MODEL=autoppia
+```
+
+Then start the operator:
+
+```bash
+export PYTHONPATH=/data/autoppia/autoppia_iwa:$PYTHONPATH
+uvicorn main:app --host 127.0.0.1 --port 5060
+```
+
+### Start the local model server
+
+`training/serve_model.py` launches an OpenAI-compatible endpoint on `/v1`.
+Before starting it, make sure the adapter directory contains real LoRA files:
+
+- `adapter_config.json`
+- `adapter_model.safetensors`
+- optional but recommended: `train_metrics.json`
+
+The serve helper can preflight both adapter files and Python dependencies:
+
+```bash
+python -m training.serve_model --preflight
+```
+
+The local serving stack is intentionally separate from `requirements.txt`. For
+HF serving you need local ML dependencies such as `torch`, `transformers`, and
+`peft` in the environment that launches `training/serve_model.py`.
+
 Planner reliability/cost behavior is now opinionated by default (not env-tuned):
 - candidate extraction/ranking budgeted internally
 - deterministic repair path (no extra planner call)
@@ -204,6 +247,22 @@ Capture screenshots into the debug trace bundle:
 python src/eval/debugger/run_debug.py --web-project-id autocinema --use-case LOGIN --capture-screenshot
 ```
 
+Debug flaky or looping runs with step-engine traces:
+
+```bash
+export FSM_TRACE_JSON=1
+export FSM_POLICY_DEBUG_DIR=/tmp/autoppia_fsm_debug
+export AGENT_LOG_DECISIONS=1
+```
+
+Reliability-focused defaults and knobs:
+
+- `FSM_USE_SITE_KNOWLEDGE=1` keeps section and route hints enabled for semi-structured sites.
+- `FSM_DIRECT_LOOP=0` switches to the richer routed/meta loop when you want stronger recovery and planning behavior.
+- `FSM_MAX_CONSECUTIVE_WAITS` caps repeated `browser.wait` recovery steps.
+- `FSM_MAX_RECOVERY_ATTEMPTS` caps generic wait/back/scroll recovery attempts before the operator returns a bounded failure.
+- `/act` responses may now include `failure_reason` values such as `blocked_by_auth`, `popup_not_resolved`, `target_not_found`, `state_not_understood`, or `no_progress_after_recovery` when the operator stops early instead of looping.
+
 Task generation helper (writes the cache consumed by `src/eval/runner.py`):
 
 ```bash
@@ -211,6 +270,50 @@ python scripts/eval/generate_tasks.py --project-id autocinema --prompts-per-use-
 ```
 
 Outputs are written to `data/` (gitignored).
+
+## Autocinema Trajectory Harvest
+
+For fine-tuning, treat old score-only eval JSONs as weak evidence. The preferred
+dataset is a fresh, replayable harvest with persisted per-episode trace files.
+
+Recommended fresh collection flow:
+
+```bash
+python scripts/autocinema_harvest.py \
+  --run-eval \
+  --project-id autocinema \
+  --provider openai \
+  --model gpt-5.2 \
+  --repeat 3 \
+  --seed-start 7000 \
+  --task-concurrency 2 \
+  --include-reasoning \
+  --use-site-knowledge \
+  --use-local-html-context \
+  --out-dir data/autocinema_trajectory_harvest
+```
+
+This writes:
+- `data/autocinema_trajectory_harvest/summary.json`
+- `data/autocinema_trajectory_harvest/episodes.jsonl`
+- `data/autocinema_trajectory_harvest/collection_manifest.json`
+- `data/autocinema_trajectory_harvest/golden_seeds.json`
+- `data/autocinema_trajectory_harvest/raw_eval_runs/...`
+
+Important:
+- The harvest script now defaults to `--require-trace-files`.
+- If an old eval result has no persisted trace bundle, it will be excluded from the replayable dataset.
+- `golden_seeds.json` lists the observed `score=1.0` seeds by use case, but those are historical winners, not guarantees. Re-verify them with a fresh eval before treating them as stable training goldens.
+
+If you already have a fresh eval result plus a matching trace root, aggregate them explicitly:
+
+```bash
+python scripts/autocinema_harvest.py \
+  --project-id autocinema \
+  --result-glob data/autocinema_trajectory_harvest/raw_eval_runs/eval_autocinema_*.json \
+  --trace-root data/autocinema_trajectory_harvest/raw_eval_runs/traces_autocinema_20260326T120000Z \
+  --out-dir data/autocinema_trajectory_harvest
+```
 
 
 ## Model comparison
@@ -482,3 +585,58 @@ python scripts/sn36_ops.py deploy-smoke
 This clones the configured repo using subnet clone rules, starts `uvicorn main:app`, and checks `/health`, `/capabilities`, and `/act`.
 
 If `SUBNET_MINER_GITHUB_URL` or `SN36_GITHUB_URL` is set, `python scripts/sn36_ops.py preflight` will run this deploy smoke automatically.
+
+## Reward Data Pipeline
+
+Reward-model artifacts should be derived from the harvested trajectories, not rebuilt ad hoc in `/tmp`.
+
+Canonical layout:
+
+```text
+data/autocinema_trajectory_harvest/
+  episodes.jsonl
+  collection_manifest.json
+  sft/
+  reward/
+    manifest.json
+    dataset/
+      step_reward.jsonl
+      step_reward_dense.jsonl
+      preference_pairs.jsonl
+      dense_label_candidates.jsonl
+      manifest.json
+    judges/
+      benchmark_report.json
+      trained_reward_mlp/
+        model.pt
+        manifest.json
+        train_rows.jsonl
+        val_rows.jsonl
+```
+
+Prepare or refresh the organized reward pipeline with:
+
+```bash
+python scripts/eval/prepare_reward_pipeline.py \
+  --episodes data/autocinema_trajectory_harvest/episodes.jsonl
+```
+
+This command:
+- reuses existing reward artifacts when the harvest source signature has not changed
+- writes all reward data under `data/autocinema_trajectory_harvest/reward/`
+- trains the structured reward baseline on an episode-group holdout split
+- writes a benchmark report for the heuristic and structured judges
+- exports `dense_label_candidates.jsonl` for future teacher relabel / LLM judge passes
+
+To add an LLM judge benchmark on top of the prepared artifacts:
+
+```bash
+OPENAI_API_KEY=... python scripts/eval/benchmark_reward_pipeline.py \
+  --episodes data/autocinema_trajectory_harvest/episodes.jsonl \
+  --out-dir data/autocinema_trajectory_harvest/reward \
+  --llm-model gpt-5.2 \
+  --llm-sample-per-label 6
+```
+
+Current caveat:
+- the harvested reward dataset still has no `local_progress` rows, so it is good for plumbing and judge comparison, but not yet good enough for dense reward shaping.

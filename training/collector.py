@@ -1,4 +1,5 @@
 """Trajectory collector that hooks into the FSM engine to produce EpisodeRecords."""
+
 from __future__ import annotations
 
 import atexit
@@ -6,8 +7,8 @@ import json
 import os
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from .schema import (
     CandidateRecord,
@@ -29,7 +30,7 @@ class TrajectoryCollector:
 
     def __init__(self, output_dir: str = "data/trajectories") -> None:
         self.output_dir = output_dir
-        self._current_episode: Optional[EpisodeRecord] = None
+        self._current_episode: EpisodeRecord | None = None
         self._episode_start_time: float = 0.0
         self._step_start_time: float = 0.0
         self._cumulative_reward: float = 0.0
@@ -64,7 +65,7 @@ class TrajectoryCollector:
             ranker_type=ranker_type,
             verifier_type=verifier_type,
             agent_version=agent_version,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
         )
         self._episode_start_time = time.monotonic()
         self._cumulative_reward = 0.0
@@ -82,15 +83,15 @@ class TrajectoryCollector:
         step_index: int,
         url: str = "",
         page_title: str = "",
-        page_graph_summary: Optional[Dict[str, Any]] = None,
+        page_graph_summary: dict[str, Any] | None = None,
         dom_node_count: int = 0,
-        candidates: Optional[List[Dict[str, Any]]] = None,
-        chosen_action: Optional[Dict[str, Any]] = None,
+        candidates: list[dict[str, Any]] | None = None,
+        chosen_action: dict[str, Any] | None = None,
         chosen_action_type: str = "",
         chosen_candidate_id: str = "",
-        expert_action: Optional[Dict[str, Any]] = None,
-        expert_candidate_id: Optional[str] = None,
-        validation_events: Optional[List[Dict[str, Any]]] = None,
+        expert_action: dict[str, Any] | None = None,
+        expert_candidate_id: str | None = None,
+        validation_events: list[dict[str, Any]] | None = None,
         score_delta: float = 0.0,
         verifier_status: str = "",
         verifier_confidence: float = 0.0,
@@ -124,39 +125,43 @@ class TrajectoryCollector:
             step_duration_ms = (time.monotonic() - self._step_start_time) * 1000
 
         # Build candidate records
-        candidate_records: List[CandidateRecord] = []
-        for c in (candidates or []):
+        candidate_records: list[CandidateRecord] = []
+        for c in candidates or []:
             if not isinstance(c, dict):
                 continue
-            candidate_records.append(CandidateRecord(
-                candidate_id=str(c.get("candidate_id", "")),
-                element_type=str(c.get("element_type", "")),
-                role=str(c.get("role", "")),
-                text=str(c.get("text", ""))[:200],
-                features=c.get("features", {}),
-                score=float(c.get("score", 0.0)),
-                was_chosen=str(c.get("candidate_id", "")) == chosen_candidate_id,
-            ))
+            candidate_records.append(
+                CandidateRecord(
+                    candidate_id=str(c.get("candidate_id", "")),
+                    element_type=str(c.get("element_type", "")),
+                    role=str(c.get("role", "")),
+                    text=str(c.get("text", ""))[:200],
+                    features=c.get("features", {}),
+                    score=float(c.get("score", 0.0)),
+                    was_chosen=str(c.get("candidate_id", "")) == chosen_candidate_id,
+                )
+            )
 
         # Build validation event records
-        ve_records: List[ValidationEvent] = []
-        for ve in (validation_events or []):
+        ve_records: list[ValidationEvent] = []
+        for ve in validation_events or []:
             if not isinstance(ve, dict):
                 continue
-            ve_records.append(ValidationEvent(
-                source=str(ve.get("source", "")),
-                event_type=str(ve.get("event_type", "")),
-                success=bool(ve.get("success", False)),
-                details=ve.get("details", {}),
-                timestamp=str(ve.get("timestamp", "")),
-            ))
+            ve_records.append(
+                ValidationEvent(
+                    source=str(ve.get("source", "")),
+                    event_type=str(ve.get("event_type", "")),
+                    success=bool(ve.get("success", False)),
+                    details=ve.get("details", {}),
+                    timestamp=str(ve.get("timestamp", "")),
+                )
+            )
 
         step = FullStepRecord(
             task_id=self._current_episode.task_id,
             task_text=self._current_episode.task_text,
             task_type=self._current_episode.task_type,
             step_index=step_index,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             url=url,
             page_title=page_title,
             page_graph_summary=page_graph_summary or {},
@@ -192,7 +197,7 @@ class TrajectoryCollector:
         self,
         success: bool = False,
         final_score: float = 0.0,
-    ) -> Optional[EpisodeRecord]:
+    ) -> EpisodeRecord | None:
         """Finalize and return the current episode. Optionally writes to disk."""
         if self._current_episode is None:
             return None

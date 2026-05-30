@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from training.exporters import export_ppo_bootstrap, export_sft, load_cleaned_trajectories
+from training.exporters import (
+    export_ppo_bootstrap,
+    export_sft,
+    load_cleaned_trajectories,
+)
 from training.models import TrajectoryRecord
 
 
@@ -29,12 +33,24 @@ def _record() -> TrajectoryRecord:
                 "steps_total": 1,
                 "steps_success": 1,
             },
-            "actions": [{"type": "ClickAction", "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "go"}}],
+            "actions": [
+                {
+                    "type": "ClickAction",
+                    "selector": {
+                        "type": "attributeValueSelector",
+                        "attribute": "id",
+                        "value": "go",
+                    },
+                }
+            ],
             "steps": [
                 {
                     "step_index": 0,
                     "success": True,
-                    "agent_input": {"prompt": "Do thing", "current_url": "https://example.com"},
+                    "agent_input": {
+                        "prompt": "Do thing",
+                        "current_url": "https://example.com",
+                    },
                     "post_execute_output": {"current_url": "https://example.com/next"},
                     "llm_calls": [],
                     "agent_output": {"action": {"type": "ClickAction"}},
@@ -54,7 +70,13 @@ def test_exporters_roundtrip(tmp_path: Path) -> None:
     loaded = load_cleaned_trajectories(cleaned)
     assert len(loaded) == 1
 
-    sft_out = export_sft(records=loaded, out_dir=tmp_path / "sft", val_ratio=0.2, seed=42, system_prompt="sys")
+    sft_out = export_sft(
+        records=loaded,
+        out_dir=tmp_path / "sft",
+        val_ratio=0.2,
+        seed=42,
+        system_prompt="sys",
+    )
     assert Path(sft_out["sft_all"]).exists()
     assert Path(sft_out["sft_train"]).exists()
     assert Path(sft_out["sft_val"]).exists()

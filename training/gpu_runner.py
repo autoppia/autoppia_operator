@@ -3,12 +3,12 @@
 Provisions a RunPod pod, uploads training data/scripts, runs training,
 downloads model weights, and terminates the pod.
 """
+
 from __future__ import annotations
 
-import json
-import os
 import time
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
 from .runpod_config import RunPodConfig
 
@@ -21,13 +21,13 @@ class GPUTrainingRunner:
 
     def __init__(
         self,
-        config: Optional[RunPodConfig] = None,
-        runpod_create: Optional[Callable[..., Any]] = None,
-        runpod_get: Optional[Callable[..., Any]] = None,
-        runpod_stop: Optional[Callable[..., Any]] = None,
-        runpod_terminate: Optional[Callable[..., Any]] = None,
-        runpod_balance: Optional[Callable[..., Any]] = None,
-        runpod_gpu_types: Optional[Callable[..., Any]] = None,
+        config: RunPodConfig | None = None,
+        runpod_create: Callable[..., Any] | None = None,
+        runpod_get: Callable[..., Any] | None = None,
+        runpod_stop: Callable[..., Any] | None = None,
+        runpod_terminate: Callable[..., Any] | None = None,
+        runpod_balance: Callable[..., Any] | None = None,
+        runpod_gpu_types: Callable[..., Any] | None = None,
     ) -> None:
         self.config = config or RunPodConfig()
         self._create = runpod_create
@@ -36,9 +36,9 @@ class GPUTrainingRunner:
         self._terminate = runpod_terminate
         self._balance = runpod_balance
         self._gpu_types = runpod_gpu_types
-        self._active_pod_id: Optional[str] = None
+        self._active_pod_id: str | None = None
 
-    def check_budget(self) -> Dict[str, Any]:
+    def check_budget(self) -> dict[str, Any]:
         """Check RunPod balance and verify sufficient budget.
 
         Returns dict with balance info and whether training is affordable.
@@ -54,7 +54,7 @@ class GPUTrainingRunner:
             "can_train": balance >= self.config.max_cost_per_hour,
         }
 
-    def find_gpu(self) -> Dict[str, Any]:
+    def find_gpu(self) -> dict[str, Any]:
         """Find the cheapest adequate GPU type available.
 
         Returns GPU type info or error.
@@ -73,12 +73,14 @@ class GPUTrainingRunner:
                 continue
             cost = float(gpu.get("communityPrice", gpu.get("securePrice", 999)))
             if cost <= self.config.max_cost_per_hour:
-                affordable.append({
-                    "id": gpu.get("id", ""),
-                    "name": gpu.get("displayName", gpu.get("id", "")),
-                    "cost_per_hour": cost,
-                    "memory_gb": gpu.get("memoryInGb", 0),
-                })
+                affordable.append(
+                    {
+                        "id": gpu.get("id", ""),
+                        "name": gpu.get("displayName", gpu.get("id", "")),
+                        "cost_per_hour": cost,
+                        "memory_gb": gpu.get("memoryInGb", 0),
+                    }
+                )
 
         if not affordable:
             return {"error": "No affordable GPU found", "budget": self.config.max_cost_per_hour}
@@ -86,7 +88,7 @@ class GPUTrainingRunner:
         affordable.sort(key=lambda g: g["cost_per_hour"])
         return {"gpu": affordable[0], "alternatives": affordable[:3]}
 
-    def provision_pod(self, gpu_type_id: str = "") -> Dict[str, Any]:
+    def provision_pod(self, gpu_type_id: str = "") -> dict[str, Any]:
         """Provision a RunPod GPU pod for training.
 
         Args:
@@ -119,14 +121,14 @@ class GPUTrainingRunner:
         start = time.monotonic()
         while time.monotonic() - start < timeout_s:
             info = self._get(podId=pod_id)
-            status = info.get("desiredStatus", "") if isinstance(info, dict) else ""
+            info.get("desiredStatus", "") if isinstance(info, dict) else ""
             runtime = info.get("runtime", {}) if isinstance(info, dict) else {}
             if runtime and runtime.get("uptimeInSeconds", 0) > 0:
                 return True
             time.sleep(10)
         return False
 
-    def terminate_pod(self, pod_id: Optional[str] = None) -> bool:
+    def terminate_pod(self, pod_id: str | None = None) -> bool:
         """Terminate a RunPod pod. Returns True on success."""
         target = pod_id or self._active_pod_id
         if not target or self._terminate is None:
@@ -145,7 +147,7 @@ class GPUTrainingRunner:
         script: str,
         data_path: str,
         output_path: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run a complete training job: provision -> train -> cleanup.
 
         This is the high-level API. For finer control, use the individual methods.
@@ -195,18 +197,21 @@ class GPUTrainingRunner:
             return {"error": f"Training job failed: {e}"}
 
     # Aliases expected by CHECK.sh
-    def provision(self, gpu_type_id: str = "") -> Dict[str, Any]:
+    def provision(self, gpu_type_id: str = "") -> dict[str, Any]:
         """Alias for provision_pod."""
         return self.provision_pod(gpu_type_id)
 
     def run_training(
-        self, script: str, data_path: str, output_path: str,
-    ) -> Dict[str, Any]:
+        self,
+        script: str,
+        data_path: str,
+        output_path: str,
+    ) -> dict[str, Any]:
         """Alias for run_training_job."""
         return self.run_training_job(script, data_path, output_path)
 
     @property
-    def active_pod_id(self) -> Optional[str]:
+    def active_pod_id(self) -> str | None:
         return self._active_pod_id
 
 

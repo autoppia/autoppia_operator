@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -22,25 +22,25 @@ from training import (
     ingest_from_s3,
 )
 
-
-SYSTEM_PROMPT_DEFAULT = (
-    "You are a web automation planner. Given a target URL and a natural-language task, "
-    "return only a JSON array of actions to complete the task."
-)
+SYSTEM_PROMPT_DEFAULT = "You are a web automation planner. Given a target URL and a natural-language task, return only a JSON array of actions to complete the task."
 
 
 def _parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(
-        description=(
-            "Build training datasets from IWAP trajectories. "
-            "Supports IWAP API run logs and direct S3 task-log ingestion."
-        )
+    ap = argparse.ArgumentParser(description=("Build training datasets from IWAP trajectories. Supports IWAP API run logs and direct S3 task-log ingestion."))
+
+    ap.add_argument(
+        "--source",
+        choices=["iwap-api", "s3"],
+        default="iwap-api",
+        help="Trajectory source backend",
     )
 
-    ap.add_argument("--source", choices=["iwap-api", "s3"], default="iwap-api", help="Trajectory source backend")
-
     # IWAP API mode
-    ap.add_argument("--base-url", default=None, help="IWAP API base URL (required for --source iwap-api)")
+    ap.add_argument(
+        "--base-url",
+        default=None,
+        help="IWAP API base URL (required for --source iwap-api)",
+    )
     ap.add_argument("--token", default=None, help="Optional bearer token (or set IWAP_API_TOKEN)")
     ap.add_argument("--max-runs", type=int, default=None, help="Optional cap on number of runs")
     ap.add_argument("--page-limit", type=int, default=50, help="Run list page size")
@@ -51,25 +51,68 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--s3-prefix", default="", help="S3 key prefix for --source s3")
     ap.add_argument("--s3-region", default=None, help="Optional S3 region")
     ap.add_argument("--s3-profile", default=None, help="Optional AWS profile name")
-    ap.add_argument("--s3-endpoint-url", default=None, help="Optional custom S3 endpoint (MinIO, etc.)")
-    ap.add_argument("--s3-max-objects", type=int, default=None, help="Optional cap on S3 objects to ingest")
+    ap.add_argument(
+        "--s3-endpoint-url",
+        default=None,
+        help="Optional custom S3 endpoint (MinIO, etc.)",
+    )
+    ap.add_argument(
+        "--s3-max-objects",
+        type=int,
+        default=None,
+        help="Optional cap on S3 objects to ingest",
+    )
 
     # Normalization/filtering
     ap.add_argument("--out-dir", default="data/training/iwap", help="Output directory")
-    ap.add_argument("--min-eval-score", type=float, default=0.5, help="Success threshold when status is unavailable")
-    ap.add_argument("--min-actions", type=int, default=1, help="Minimum actions required to keep a trajectory")
+    ap.add_argument(
+        "--min-eval-score",
+        type=float,
+        default=0.5,
+        help="Success threshold when status is unavailable",
+    )
+    ap.add_argument(
+        "--min-actions",
+        type=int,
+        default=1,
+        help="Minimum actions required to keep a trajectory",
+    )
     ap.add_argument("--max-actions", type=int, default=80, help="Max actions to keep per trajectory")
     ap.add_argument("--max-steps", type=int, default=300, help="Max steps to keep per trajectory")
-    ap.add_argument("--keep-html", action="store_true", help="Keep HTML in step snapshots (can be very large)")
-    ap.add_argument("--include-failed", action="store_true", help="Include failed trajectories (default keeps only successful)")
-    ap.add_argument("--no-dedupe-actions", action="store_true", help="Do not dedupe consecutive duplicate actions")
-    ap.add_argument("--no-dedupe-trajectories", action="store_true", help="Do not dedupe semantically duplicate trajectories")
+    ap.add_argument(
+        "--keep-html",
+        action="store_true",
+        help="Keep HTML in step snapshots (can be very large)",
+    )
+    ap.add_argument(
+        "--include-failed",
+        action="store_true",
+        help="Include failed trajectories (default keeps only successful)",
+    )
+    ap.add_argument(
+        "--no-dedupe-actions",
+        action="store_true",
+        help="Do not dedupe consecutive duplicate actions",
+    )
+    ap.add_argument(
+        "--no-dedupe-trajectories",
+        action="store_true",
+        help="Do not dedupe semantically duplicate trajectories",
+    )
 
     # Export settings
     ap.add_argument("--val-ratio", type=float, default=0.05, help="Validation split ratio")
     ap.add_argument("--seed", type=int, default=42, help="Random seed for train/val split")
-    ap.add_argument("--system-prompt", default=SYSTEM_PROMPT_DEFAULT, help="System prompt for SFT records")
-    ap.add_argument("--no-system-prompt", action="store_true", help="Do not add system prompt to SFT records")
+    ap.add_argument(
+        "--system-prompt",
+        default=SYSTEM_PROMPT_DEFAULT,
+        help="System prompt for SFT records",
+    )
+    ap.add_argument(
+        "--no-system-prompt",
+        action="store_true",
+        help="Do not add system prompt to SFT records",
+    )
 
     return ap.parse_args()
 
@@ -122,7 +165,7 @@ def main() -> None:
             max_objects=args.s3_max_objects,
         )
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     out_dir = Path(args.out_dir).resolve() / stamp
     artifacts = export_training_bundle(
         out_dir=out_dir,

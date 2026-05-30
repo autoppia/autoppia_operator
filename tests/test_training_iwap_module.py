@@ -7,11 +7,18 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from training.normalize import dedupe_trajectories, extract_task_payload, normalize_trajectory
+from training.normalize import (
+    dedupe_trajectories,
+    extract_task_payload,
+    normalize_trajectory,
+)
 
 
 def test_extract_task_payload_accepts_wrapped_and_plain() -> None:
-    wrapped = {"task_id": "t-1", "payload": {"schema_version": "1.0", "task_id": "t-1", "steps": []}}
+    wrapped = {
+        "task_id": "t-1",
+        "payload": {"schema_version": "1.0", "task_id": "t-1", "steps": []},
+    }
     plain = {"schema_version": "1.0", "task_id": "t-2", "steps": []}
 
     got_wrapped = extract_task_payload(wrapped)
@@ -45,14 +52,24 @@ def test_normalize_trajectory_strips_html_and_extracts_actions() -> None:
             {
                 "step_index": 0,
                 "timestamp": "2026-03-01T10:00:00Z",
-                "agent_input": {"current_url": "https://example.com/login", "html": "<html>...</html>", "prompt": "Login"},
+                "agent_input": {
+                    "current_url": "https://example.com/login",
+                    "html": "<html>...</html>",
+                    "prompt": "Login",
+                },
                 "agent_output": {
                     "action": {
                         "type": "TypeAction",
-                        "attributes": {"selector": {"value": "#email"}, "value": "user@example.com"},
+                        "attributes": {
+                            "selector": {"value": "#email"},
+                            "value": "user@example.com",
+                        },
                     }
                 },
-                "post_execute_output": {"current_url": "https://example.com/login", "html": "<html>after...</html>"},
+                "post_execute_output": {
+                    "current_url": "https://example.com/login",
+                    "html": "<html>after...</html>",
+                },
                 "success": True,
                 "execution_time_ms": 500,
             },

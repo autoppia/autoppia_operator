@@ -10,7 +10,11 @@ from pathlib import Path
 import pytest
 
 from training.models import TrajectoryRecord
-from training.pipeline import TrajectoryBuildConfig, export_training_bundle, ingest_from_s3
+from training.pipeline import (
+    TrajectoryBuildConfig,
+    export_training_bundle,
+    ingest_from_s3,
+)
 from training.s3_source import S3ObjectRef, S3TrajectorySource, decode_json_blob, parse_s3_uri
 
 
@@ -37,13 +41,23 @@ def _sample_normalized() -> dict:
         },
         "actions": [
             {"type": "TypeAction", "text": "user@example.com"},
-            {"type": "ClickAction", "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "submit"}},
+            {
+                "type": "ClickAction",
+                "selector": {
+                    "type": "attributeValueSelector",
+                    "attribute": "id",
+                    "value": "submit",
+                },
+            },
         ],
         "steps": [
             {
                 "step_index": 0,
                 "success": True,
-                "agent_input": {"prompt": "Login", "current_url": "https://example.com/login"},
+                "agent_input": {
+                    "prompt": "Login",
+                    "current_url": "https://example.com/login",
+                },
                 "post_execute_output": {"current_url": "https://example.com/login"},
                 "llm_calls": [],
                 "agent_output": {"action": {"type": "TypeAction", "text": "user@example.com"}},
@@ -51,7 +65,10 @@ def _sample_normalized() -> dict:
             {
                 "step_index": 1,
                 "success": True,
-                "agent_input": {"prompt": "Login", "current_url": "https://example.com/login"},
+                "agent_input": {
+                    "prompt": "Login",
+                    "current_url": "https://example.com/login",
+                },
                 "post_execute_output": {"current_url": "https://example.com/dashboard"},
                 "llm_calls": [],
                 "agent_output": {"action": {"type": "ClickAction"}},
@@ -294,8 +311,7 @@ class _FakeS3Source:
         refs = [S3ObjectRef(bucket="fake", key=f"logs/{i}.json") for i in range(len(self._payloads))]
         if max_objects is not None:
             refs = refs[: int(max_objects)]
-        for ref in refs:
-            yield ref
+        yield from refs
 
     def fetch_json(self, ref: S3ObjectRef):
         idx = int(Path(ref.key).stem)
@@ -323,8 +339,20 @@ def test_ingest_from_s3_and_export_bundle(tmp_path: Path) -> None:
                 {
                     "step_index": 0,
                     "success": True,
-                    "agent_input": {"prompt": "Open profile", "current_url": "https://example.com"},
-                    "agent_output": {"action": {"type": "ClickAction", "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "profile"}}},
+                    "agent_input": {
+                        "prompt": "Open profile",
+                        "current_url": "https://example.com",
+                    },
+                    "agent_output": {
+                        "action": {
+                            "type": "ClickAction",
+                            "selector": {
+                                "type": "attributeValueSelector",
+                                "attribute": "id",
+                                "value": "profile",
+                            },
+                        }
+                    },
                     "post_execute_output": {"current_url": "https://example.com/profile"},
                 }
             ],

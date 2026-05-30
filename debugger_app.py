@@ -8,7 +8,7 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
@@ -52,7 +52,7 @@ def _resolve_trace_dir(raw: str | None = None) -> Path:
 
 
 def _load_json(path: Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, dict):
         raise HTTPException(status_code=500, detail=f"invalid_json_object:{path}")
@@ -75,7 +75,7 @@ def _unified_diff(before: str, after: str, *, from_label: str, to_label: str, li
         )
     )
     if len(lines) > limit:
-        lines = lines[:limit] + [f"... diff truncated ({len(lines) - limit} more lines)"]
+        lines = [*lines[:limit], f"... diff truncated ({len(lines) - limit} more lines)"]
     return "\n".join(lines)
 
 
@@ -112,7 +112,13 @@ def _scan_trace_dirs() -> list[dict[str, Any]]:
                         "source_root": str(root.resolve()),
                     }
                 )
-    items.sort(key=lambda item: (item.get("created_at_utc") or "", item.get("trace_dir") or ""), reverse=True)
+    items.sort(
+        key=lambda item: (
+            item.get("created_at_utc") or "",
+            item.get("trace_dir") or "",
+        ),
+        reverse=True,
+    )
     return items
 
 
@@ -152,7 +158,12 @@ def _annotate_step(step: dict[str, Any]) -> dict[str, Any]:
     out["before"]["screenshot"] = before_shot
     out["after"]["screenshot"] = after_shot
     out["diffs"] = {
-        "state": _unified_diff(_pretty_json(state_in), _pretty_json(state_out), from_label="state_in", to_label="state_out"),
+        "state": _unified_diff(
+            _pretty_json(state_in),
+            _pretty_json(state_out),
+            from_label="state_in",
+            to_label="state_out",
+        ),
         "html": _unified_diff(before_html, after_html, from_label="before.html", to_label="after.html"),
     }
     return out
@@ -214,6 +225,7 @@ def _load_episode(trace_dir: Path, episode_task_id: str) -> dict[str, Any]:
         return payload
     raise HTTPException(status_code=404, detail=f"episode_not_found:{episode_task_id}")
 
+
 STATIC_DIR = ROOT / "static"
 DEBUGGER_STATIC_DIR = STATIC_DIR / "debugger"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -245,7 +257,13 @@ class ReplayManager:
         payload["running"] = bool(self._task and not self._task.done())
         return payload
 
-    async def start(self, *, trace_dir: Path, episode_payload: dict[str, Any], step_index: int | None = None) -> dict[str, Any]:
+    async def start(
+        self,
+        *,
+        trace_dir: Path,
+        episode_payload: dict[str, Any],
+        step_index: int | None = None,
+    ) -> dict[str, Any]:
         async with self._lock:
             if self._task and not self._task.done():
                 raise HTTPException(status_code=409, detail="replay_already_running")
@@ -253,7 +271,7 @@ class ReplayManager:
             self._step_tokens = 0
             self._status = {
                 "state": "starting",
-                "episode_task_id": str(((episode_payload.get("episode") or {}).get("episode_task_id") or "")),
+                "episode_task_id": str((episode_payload.get("episode") or {}).get("episode_task_id") or ""),
                 "current_step_index": -1,
                 "current_action_index": -1,
                 "steps_total": len(episode_payload.get("steps") or []),
@@ -264,7 +282,13 @@ class ReplayManager:
                 "trace_dir": str(trace_dir),
                 "stop_after_step": (int(step_index) if step_index is not None else None),
             }
-            self._task = asyncio.create_task(self._run(trace_dir=trace_dir, episode_payload=episode_payload, stop_after_step=step_index))
+            self._task = asyncio.create_task(
+                self._run(
+                    trace_dir=trace_dir,
+                    episode_payload=episode_payload,
+                    stop_after_step=step_index,
+                )
+            )
             return self.status()
 
     async def pause(self) -> dict[str, Any]:
@@ -320,12 +344,20 @@ class ReplayManager:
         self._status.update(updates)
         self._status["updated_at"] = datetime.utcnow().isoformat() + "Z"
 
-    async def _run(self, *, trace_dir: Path, episode_payload: dict[str, Any], stop_after_step: int | None) -> None:
-        import eval as eval_mod
+    async def _run(
+        self,
+        *,
+        trace_dir: Path,
+        episode_payload: dict[str, Any],
+        stop_after_step: int | None,
+    ) -> None:
         from autoppia_iwa.src.data_generation.tasks.classes import Task
         from autoppia_iwa.src.execution.actions.base import BaseAction
 
-        previous_headless = getattr(eval_mod, "EVALUATOR_HEADLESS", True)
+        import eval as eval_mod
+        from src.operator.eval.session import build_task_execution_session
+
+        getattr(eval_mod, "EVALUATOR_HEADLESS", True)
         episode_meta = episode_payload.get("episode") if isinstance(episode_payload.get("episode"), dict) else {}
         episode_task_id = str(episode_meta.get("episode_task_id") or "")
         task_id = str(episode_meta.get("task_id") or "")
@@ -337,13 +369,13 @@ class ReplayManager:
             if not isinstance(task_payload, dict):
                 raise RuntimeError(f"task_not_found_in_cache:{task_id}")
             task = Task(**task_payload)
-            eval_mod.EVALUATOR_HEADLESS = False
-            evaluator = eval_mod._ScopedAsyncStatefulEvaluator(
+            evaluator = build_task_execution_session(
                 task=task,
                 web_agent_id=web_agent_id,
                 validator_id=validator_id,
                 enable_score_cheating=False,
                 capture_screenshot=False,
+                headless=False,
             )
             self._evaluator = evaluator
             step_result = await evaluator.reset()
@@ -360,7 +392,7 @@ class ReplayManager:
                     action = BaseAction.create_action(raw_action) if isinstance(raw_action, dict) else None
                     if action is None:
                         raise RuntimeError(f"action_rehydrate_failed step={idx} action={action_idx}")
-                    self._touch(current_step_index=int(idx), current_action_index=int(action_idx), current_url=str(step_result.snapshot.url), action_type=str(getattr(action, 'type', '')))
+                    self._touch(current_step_index=int(idx), current_action_index=int(action_idx), current_url=str(step_result.snapshot.url), action_type=str(getattr(action, "type", "")))
                     step_result = await evaluator.step(action)
                     self._touch(current_url=str(step_result.snapshot.url))
                 await asyncio.sleep(0.15)
@@ -375,7 +407,6 @@ class ReplayManager:
                 with contextlib.suppress(Exception):
                     await self._evaluator.close()
             self._evaluator = None
-            eval_mod.EVALUATOR_HEADLESS = previous_headless
 
 
 REPLAY = ReplayManager()
@@ -414,7 +445,10 @@ def api_replay_status() -> JSONResponse:
 
 
 @app.post("/api/replay/start")
-async def api_replay_start(payload: dict[str, Any] = Body(default_factory=dict), trace_dir: str | None = Query(default=None)) -> JSONResponse:
+async def api_replay_start(
+    payload: Annotated[dict[str, Any], Body(default_factory=dict)],
+    trace_dir: str | None = Query(default=None),
+) -> JSONResponse:
     path = _resolve_trace_dir(trace_dir)
     episode_task_id = str(payload.get("episode_task_id") or "").strip()
     if not episode_task_id:

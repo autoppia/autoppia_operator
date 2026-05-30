@@ -4,9 +4,7 @@ import json
 from typing import Any
 
 import pytest
-from bs4 import BeautifulSoup
 
-import src.operator.agents.fsm.state as fsm_state
 from src.operator.agents.fsm import (
     MAX_INTERNAL_META_STEPS,
     AgentFormProgress,
@@ -133,20 +131,20 @@ def _base_payload() -> dict[str, Any]:
     }
 
 
-def test_state_out_roundtrip_without_process_local_state() -> None:
+def test_internal_state_roundtrip_without_process_local_state() -> None:
     engine1 = FSMOperator(llm_call=_dummy_llm_invalid)
     first = engine1.run(payload=_base_payload())
-    st = first.get("state_out")
+    st = first.get("internal_state")
     assert isinstance(st, dict)
     assert st.get("visited", {}).get("urls") == ["https://example.com"]
 
-    # New instance: same decision context must still continue from state_in.
+    # New instance: same decision context must still continue from internal_state.
     engine2 = FSMOperator(llm_call=_dummy_llm_invalid)
     payload = dict(_base_payload())
     payload["step_index"] = 1
-    payload["state_in"] = st
+    payload["internal_state"] = st
     second = engine2.run(payload=payload)
-    st2 = second.get("state_out")
+    st2 = second.get("internal_state")
     assert isinstance(st2, dict)
     assert "https://example.com" in (st2.get("visited", {}).get("urls") or [])
 
@@ -166,7 +164,7 @@ def test_meta_tool_loop_is_capped(monkeypatch: Any) -> None:
     payload = _base_payload()
     payload["allowed_tools"] = [*list(payload["allowed_tools"]), {"name": "META.REPLAN"}]
     out = engine.run(payload=payload)
-    st = out.get("state_out") or {}
+    st = out.get("internal_state") or {}
     counters = st.get("counters") if isinstance(st.get("counters"), dict) else {}
     assert int(counters.get("meta_steps_used") or 0) == MAX_INTERNAL_META_STEPS
 
@@ -175,7 +173,7 @@ def test_stuck_recovery_triggers_with_loop_signals(monkeypatch: Any) -> None:
     monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     payload = _base_payload()
-    payload["state_in"] = {
+    payload["internal_state"] = {
         "mode": "NAV",
         "counters": {"stall_count": 3, "repeat_action_count": 2, "meta_steps_used": 0},
         "last_action_element_id": "el_repeat",
@@ -185,16 +183,155 @@ def test_stuck_recovery_triggers_with_loop_signals(monkeypatch: Any) -> None:
     actions = out.get("actions") if isinstance(out.get("actions"), list) else []
     assert len(actions) == 1
     assert actions[0].get("type") in {"NavigateAction", "GoBackAction", "WaitAction", "ScrollAction"}
-    st = out.get("state_out") or {}
+    st = out.get("internal_state") or {}
     blocked = st.get("blocklist", {}).get("element_ids") if isinstance(st.get("blocklist"), dict) else []
     assert isinstance(blocked, list)
+
+
+def test_wait_budget_terminal_failure_stops_direct_loop(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "1")
+    monkeypatch.setenv("FSM_MAX_CONSECUTIVE_WAITS", "1")
+    monkeypatch.setenv("FSM_MAX_RECOVERY_ATTEMPTS", "2")
+
+    def _llm_wait(**_: Any) -> dict[str, Any]:
+        return {
+            "choices": [{"message": {"content": '{"type":"browser","tool_call":{"name":"browser.wait","arguments":{"time_seconds":1}}}'}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            "model": "gpt-5.2",
+        }
+
+    engine = FSMOperator(llm_call=_llm_wait)
+    out = engine.run(
+        payload={
+            **_base_payload(),
+            "step_index": 3,
+            "allowed_tools": [{"name": "browser.wait"}],
+            "history": [{"action": {"type": "WaitAction"}, "exec_ok": True}],
+            "internal_state": {
+                "mode": "DIRECT",
+                "counters": {
+                    "consecutive_wait_count": 1,
+                    "recovery_attempt_count": 2,
+                },
+            },
+        }
+    )
+    assert out.get("done") is True
+    assert out.get("failure_reason") == "no_progress_after_recovery"
+    assert "Unable to continue safely" in str(out.get("content") or "")
+
+
+def test_execution_profile_defaults_to_general_web_for_general_task() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.run(payload=_base_payload())
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    assert internal_state.get("execution_profile") == "general_web"
+
+
+def test_movie_detail_goal_finishes_before_secondary_demo_action() -> None:
+    def _llm_trailer(**_: Any) -> dict[str, Any]:
+        return {
+            "choices": [{"message": {"content": '{"type":"browser","tool_call":{"name":"browser.click","arguments":{"index":0}}}'}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
+            "model": "gpt-5.2",
+        }
+
+    engine = FSMOperator(llm_call=_llm_trailer)
+    out = engine.run(
+        payload={
+            **_base_payload(),
+            "prompt": "Navigate to a movie page with a duration of 141 minutes or less that is NOT named 'Glass Onion: A Knives Out Mystery' and does NOT contain the genre 'Drama'",
+            "url": "http://localhost:8000/movies/arrival",
+            "step_index": 2,
+            "snapshot_html": ("<html><body><h1>Arrival</h1><div>Duration: 116 minutes</div><div>Genres: Sci-Fi, Mystery</div><button>View trailer</button></body></html>"),
+            "allowed_tools": [{"name": "browser.click"}, {"name": "browser.wait"}],
+        }
+    )
+    assert out.get("done") is True
+    assert out.get("actions") == []
+    assert "Opened matching movie page" in str(out.get("content") or "")
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    assert internal_state.get("execution_profile") == "demo_catalog_navigation"
+    goal_state = internal_state.get("goal_state") if isinstance(internal_state.get("goal_state"), dict) else {}
+    last_eval = goal_state.get("last_evaluation") if isinstance(goal_state.get("last_evaluation"), dict) else {}
+    assert last_eval.get("reason") == "matching_movie_detail_page"
+
+
+def test_demo_catalog_profile_uses_non_direct_routing_on_list_pages() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.run(
+        payload={
+            **_base_payload(),
+            "prompt": "Navigate to a movie page where the name contains 'Dune'",
+            "url": "http://localhost:8000/",
+            "snapshot_html": ("<html><body><h1>Movies</h1><div class='movie-card'>Dune</div><div class='movie-card'>Arrival</div><input placeholder='Search movies' /></body></html>"),
+            "step_index": 1,
+            "allowed_tools": [{"name": "browser.click"}, {"name": "browser.input"}, {"name": "browser.wait"}],
+        }
+    )
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    assert internal_state.get("execution_profile") == "demo_catalog_navigation"
+    assert internal_state.get("mode") != "DIRECT"
+
+
+def test_completion_only_uses_goal_state_for_matching_movie_page() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.run(
+        payload={
+            **_base_payload(),
+            "completion_only": True,
+            "prompt": "Navigate to a movie page where the name contains 'Arrival'",
+            "url": "http://localhost:8000/movies/arrival",
+            "snapshot_html": ("<html><body><h1>Arrival</h1><div>Duration: 116 minutes</div><div>Genres: Sci-Fi, Mystery</div></body></html>"),
+            "step_index": 2,
+        }
+    )
+    assert out.get("done") is True
+    assert "Opened matching movie page" in str(out.get("content") or "")
+    assert out.get("actions") == []
+
+
+def test_wait_only_history_does_not_auto_complete_general_search_task(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.run(
+        payload={
+            **_base_payload(),
+            "prompt": "Go to wikipedia and search for 'elexander the great'",
+            "url": "about:blank",
+            "snapshot_html": "<html><body></body></html>",
+            "step_index": 1,
+            "history": [{"action": {"type": "WaitAction"}, "exec_ok": True, "url": "about:blank"}],
+            "internal_state": {
+                "mode": "NAV",
+                "last_action_sig": "WaitAction|1",
+                "goal_state": {
+                    "kind": "act",
+                    "target_page_type": "",
+                    "entity_type": "",
+                    "stop_on_page_match": False,
+                    "last_evaluation": {"satisfied": False, "reason": "target_page_not_reached"},
+                },
+            },
+            "allowed_tools": [
+                {"name": "browser.navigate"},
+                {"name": "browser.click"},
+                {"name": "browser.wait"},
+                {"name": "browser.scroll"},
+                {"name": "browser.go_back"},
+            ],
+        }
+    )
+    assert out.get("done") is False
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert actions
 
 
 def test_done_and_content_emitted_without_report_result_action() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_final)
     payload = _base_payload()
     payload["step_index"] = 2
-    payload["state_in"] = {
+    payload["internal_state"] = {
         "mode": "REPORT",
         "memory": {"facts": ["Treasury value found: T 399,29"], "checkpoints": []},
     }
@@ -218,8 +355,8 @@ def test_reasoning_trace_is_persisted_in_state_and_response() -> None:
     assert "Next proof:" in str(out.get("reasoning") or "")
     working_state = out.get("working_state") if isinstance(out.get("working_state"), dict) else {}
     assert working_state.get("active_workflow") == "open pricing"
-    state_out = out.get("state_out") if isinstance(out.get("state_out"), dict) else {}
-    memory = state_out.get("memory") if isinstance(state_out.get("memory"), dict) else {}
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    memory = internal_state.get("memory") if isinstance(internal_state.get("memory"), dict) else {}
     stored_trace = memory.get("reasoning_trace") if isinstance(memory.get("reasoning_trace"), dict) else {}
     stored_working_state = memory.get("working_state") if isinstance(memory.get("working_state"), dict) else {}
     assert stored_trace.get("current_subgoal") == "Follow the visible pricing control."
@@ -246,7 +383,7 @@ def test_allowed_tools_parses_function_definitions_shape() -> None:
         {"type": "function", "function": {"name": "navigate"}},
         {"type": "function", "function": {"name": "wait"}},
     ]
-    payload["state_in"] = {
+    payload["internal_state"] = {
         "mode": "NAV",
         "counters": {"stall_count": 3, "repeat_action_count": 2, "meta_steps_used": 0},
     }
@@ -310,6 +447,119 @@ def test_prompt_domain_does_not_force_external_navigation() -> None:
             assert "gmail.com" not in str(action.get("url") or "")
 
 
+def test_about_blank_named_site_prompt_bootstraps_navigation() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    payload = _base_payload()
+    payload["prompt"] = "Go to wikipedia and search for 'elexander the great'"
+    payload["url"] = "about:blank"
+    payload["snapshot_html"] = "<html><body></body></html>"
+    out = engine.run(payload=payload)
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert len(actions) == 1
+    assert actions[0].get("type") == "NavigateAction"
+    assert "wikipedia.org" in str(actions[0].get("url") or "")
+
+
+def test_about_blank_named_site_prompt_bootstraps_navigation_in_meta_mode(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    payload = _base_payload()
+    payload["prompt"] = "Go to wikipedia and search for 'elexander the great'"
+    payload["url"] = "about:blank"
+    payload["snapshot_html"] = "<html><body></body></html>"
+    out = engine.run(payload=payload)
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert len(actions) == 1
+    assert actions[0].get("type") == "NavigateAction"
+    assert "wikipedia.org" in str(actions[0].get("url") or "")
+
+
+def test_wikipedia_homepage_prefers_local_search_input() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    payload = _base_payload()
+    payload["prompt"] = "Go to wikipedia and search for 'elexander the great'"
+    payload["url"] = "https://www.wikipedia.org/"
+    payload["step_index"] = 1
+    payload["snapshot_html"] = """
+    <html><body>
+      <form>
+        <input id="searchInput" type="search" placeholder="Search Wikipedia" />
+        <button id="searchButton">Search</button>
+      </form>
+    </body></html>
+    """
+    out = engine.run(payload=payload)
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert len(actions) == 1
+    assert actions[0].get("type") == "TypeAction"
+    assert actions[0].get("text") == "elexander the great"
+
+
+def test_wikipedia_homepage_prefers_local_search_input_in_meta_mode(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    payload = _base_payload()
+    payload["prompt"] = "Go to wikipedia and search for 'elexander the great'"
+    payload["url"] = "https://www.wikipedia.org/"
+    payload["step_index"] = 1
+    payload["snapshot_html"] = """
+    <html><body>
+      <form>
+        <input id="searchInput" type="search" placeholder="Search Wikipedia" />
+        <button id="searchButton">Search</button>
+      </form>
+    </body></html>
+    """
+    out = engine.run(payload=payload)
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert len(actions) == 1
+    assert actions[0].get("type") == "TypeAction"
+    assert actions[0].get("text") == "elexander the great"
+
+
+def test_wikipedia_clicks_search_after_inputaction_history(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    payload = _base_payload()
+    payload["prompt"] = "Go to wikipedia and search for 'elexander the great'"
+    payload["url"] = "https://www.wikipedia.org/"
+    payload["step_index"] = 2
+    payload["history"] = [
+        {
+            "action": {
+                "type": "InputAction",
+                "selector": {
+                    "type": "attributeValueSelector",
+                    "attribute": "id",
+                    "value": "searchInput",
+                    "case_sensitive": False,
+                },
+                "_element_id": "el_search_input",
+                "text": "elexander the great",
+            },
+            "exec_ok": True,
+            "url": "https://www.wikipedia.org/",
+        }
+    ]
+    payload["snapshot_html"] = """
+    <html><body>
+      <form>
+        <input id="searchInput" type="search" placeholder="Search Wikipedia" />
+        <button id="searchButton">Search</button>
+        <input type="hidden" name="family" value="wikipedia" />
+        <input type="hidden" name="go" value="Go" />
+      </form>
+    </body></html>
+    """
+    out = engine.run(payload=payload)
+    actions = out.get("actions") if isinstance(out.get("actions"), list) else []
+    assert len(actions) == 1
+    assert actions[0].get("type") == "ClickAction"
+    selector = actions[0].get("selector") or {}
+    assert selector.get("attribute") == "id"
+    assert selector.get("value") == "searchButton"
+
+
 def test_obs_builder_compacts_history_and_provides_tagged_input() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     payload = _base_payload()
@@ -326,7 +576,7 @@ def test_obs_builder_compacts_history_and_provides_tagged_input() -> None:
         )
     payload["history"] = long_history
     out = engine.run(payload=payload)
-    st = out.get("state_out") or {}
+    st = out.get("internal_state") or {}
     mem = st.get("memory") if isinstance(st.get("memory"), dict) else {}
     summary = str(mem.get("history_summary") or "")
     assert summary
@@ -424,7 +674,7 @@ def test_auth_flow_is_not_forced_by_pre_actions() -> None:
         """,
         "step_index": 0,
         "history": [],
-        "state_in": {"mode": "NAV"},
+        "internal_state": {"mode": "NAV"},
         "allowed_tools": [{"name": "browser.input"}, {"name": "browser.click"}],
     }
     out = engine.run(payload=payload)
@@ -570,7 +820,7 @@ def test_non_auth_prompt_on_login_page_does_not_trigger_auth_pre_actions() -> No
         """,
         "step_index": 1,
         "history": [],
-        "state_in": {"mode": "NAV"},
+        "internal_state": {"mode": "NAV"},
         "allowed_tools": [{"name": "browser.click"}, {"name": "browser.input"}, {"name": "browser.wait"}],
     }
     out = engine.run(payload=payload)
@@ -581,9 +831,7 @@ def test_non_auth_prompt_on_login_page_does_not_trigger_auth_pre_actions() -> No
 
 def test_extract_credentials_ignores_empty_quoted_values() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
-    ids, pwds = engine._extract_credentials(
-        "Please register using username equals '', email equals '' and password equals ''."
-    )
+    ids, pwds = engine._extract_credentials("Please register using username equals '', email equals '' and password equals ''.")
     assert ids == []
     assert pwds == []
 
@@ -889,13 +1137,13 @@ def test_repeated_same_element_is_added_to_blocklist() -> None:
     out1 = engine.run(payload=payload)
     payload2 = dict(payload)
     payload2["step_index"] = 1
-    payload2["state_in"] = out1.get("state_out")
+    payload2["internal_state"] = out1.get("internal_state")
     out2 = engine.run(payload=payload2)
     payload3 = dict(payload)
     payload3["step_index"] = 2
-    payload3["state_in"] = out2.get("state_out")
+    payload3["internal_state"] = out2.get("internal_state")
     out3 = engine.run(payload=payload3)
-    st3 = out3.get("state_out") or {}
+    st3 = out3.get("internal_state") or {}
     blocklist = st3.get("blocklist") if isinstance(st3.get("blocklist"), dict) else {}
     ids = blocklist.get("element_ids") if isinstance(blocklist.get("element_ids"), list) else []
     assert isinstance(ids, list)
@@ -963,6 +1211,78 @@ def test_submit_click_is_guarded_with_missing_form_inputs() -> None:
     assert isinstance(guarded, dict)
     assert guarded.get("type") == "TypeAction"
     assert guarded.get("_element_id") == "el_user"
+
+
+def test_auth_form_redirects_lateral_click_to_submit_once_credentials_are_filled() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    state = AgentState()
+    username = Candidate(
+        id="el_user",
+        role="input",
+        type="input",
+        text="Username",
+        href="",
+        context="Login form",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "login-username-input", "case_sensitive": False},
+        dom_path="html/body/form/input[1]",
+        field_kind="username",
+        bbox=None,
+    )
+    password = Candidate(
+        id="el_pass",
+        role="input",
+        type="input",
+        text="Password",
+        href="",
+        context="Login form",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "login-password-input", "case_sensitive": False},
+        dom_path="html/body/form/input[2]",
+        field_kind="password",
+        input_type="password",
+        bbox=None,
+    )
+    submit = Candidate(
+        id="el_submit",
+        role="button",
+        type="button",
+        text="Sign in",
+        href="",
+        context="Login form",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "login-sign-in-button", "case_sensitive": False},
+        dom_path="html/body/form/button[1]",
+        field_kind="auth_entry",
+        bbox=None,
+    )
+    about_link = Candidate(
+        id="el_about",
+        role="link",
+        type="a",
+        text="About",
+        href="/about?seed=1",
+        context="Primary nav",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/about?seed=1", "case_sensitive": False},
+        dom_path="html/body/nav/a[3]",
+        bbox=None,
+    )
+    state.form_progress.typed_candidate_ids = ["el_user", "el_pass"]
+    state.form_progress.typed_values_by_candidate = {"el_user": "user1", "el_pass": "Passw0rd!"}
+    guarded = engine._guard_submit_without_inputs(
+        action={"type": "ClickAction", "selector": about_link.selector, "_element_id": "el_about"},
+        prompt="Login to continue.",
+        history=[],
+        ranked_candidates=[about_link, username, password, submit],
+        state=state,
+    )
+    assert isinstance(guarded, dict)
+    assert guarded.get("type") == "ClickAction"
+    assert guarded.get("_element_id") == "el_submit"
+
+
+def test_extract_credentials_preserves_password_punctuation() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    identifiers, passwords = engine._extract_credentials("Login with username 'user1' and password 'Passw0rd!' to continue.")
+    assert "user1" in identifiers
+    assert "Passw0rd!" in passwords
 
 
 def test_group_guard_finishes_missing_required_input_before_select() -> None:
@@ -1287,7 +1607,7 @@ def test_redundant_type_action_uses_state_roundtrip_and_advances_input(monkeypat
     assert first_actions[0].get("type") == "TypeAction"
     first_selector = first_actions[0].get("selector") if isinstance(first_actions[0].get("selector"), dict) else {}
     assert first_selector.get("value") == "login-username"
-    state = AgentState.from_state_in(first.get("state_out"), prompt="Login to continue")
+    state = AgentState.from_internal_state(first.get("internal_state"), prompt="Login to continue")
     ranked = engine.ranker.rank(
         task="Login to continue",
         mode="NAV",
@@ -1747,7 +2067,7 @@ def test_auto_vision_on_loop_boosts_visual_target_for_fallback(monkeypatch: Any)
             "screenshot": "aGVsbG8=",
             "step_index": 2,
             "history": [],
-            "state_in": {
+            "internal_state": {
                 "mode": "NAV",
                 "counters": {"stall_count": 2, "repeat_action_count": 1, "meta_steps_used": 0},
                 "last_url": "https://example.com/movies",
@@ -1757,8 +2077,8 @@ def test_auto_vision_on_loop_boosts_visual_target_for_fallback(monkeypatch: Any)
             "allowed_tools": [{"name": "browser.click"}, {"name": "browser.wait"}],
         }
     )
-    state_out = out.get("state_out") if isinstance(out.get("state_out"), dict) else {}
-    memory = state_out.get("memory") if isinstance(state_out.get("memory"), dict) else {}
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    memory = internal_state.get("memory") if isinstance(internal_state.get("memory"), dict) else {}
     assert apply_candidate.id in (memory.get("visual_element_hints") or [])
     actions = out.get("actions") if isinstance(out.get("actions"), list) else []
     assert actions
@@ -1928,7 +2248,7 @@ def test_policy_obs_includes_focused_region_and_prioritizes_local_candidates() -
             text="Sign in",
             href="",
             context="Login form Email Password Sign in",
-            selector={"type": "xpathSelector", "value": "//button[contains(normalize-space(.), \"Sign in\")]", "case_sensitive": False},
+            selector={"type": "xpathSelector", "value": '//button[contains(normalize-space(.), "Sign in")]', "case_sensitive": False},
             dom_path="html/body/main/form/button[1]",
             field_kind="submit",
             region_id="region-form",
@@ -2049,7 +2369,7 @@ def test_fsm_done_defaults_content_and_respects_reasoning_flag() -> None:
     engine = FSMOperator(llm_call=_llm_empty_final)
     payload = _base_payload()
     payload["step_index"] = 2
-    payload["state_in"] = {"mode": "REPORT", "memory": {"facts": ["done"]}}
+    payload["internal_state"] = {"mode": "REPORT", "memory": {"facts": ["done"]}}
     out = engine.run(payload=payload)
     assert out.get("done") is True
     assert isinstance(out.get("content"), str) and str(out.get("content")).strip()
@@ -2058,6 +2378,7 @@ def test_fsm_done_defaults_content_and_respects_reasoning_flag() -> None:
 
 def test_wait_only_flow_completes_after_successful_wait(monkeypatch: Any) -> None:
     monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
+
     def _llm_wait(**_: Any) -> dict[str, Any]:
         return {
             "choices": [{"message": {"content": '{"type":"browser","tool_call":{"name":"browser.wait","arguments":{"time_seconds":1}}}'}}],
@@ -2078,7 +2399,7 @@ def test_wait_only_flow_completes_after_successful_wait(monkeypatch: Any) -> Non
         payload={
             **base,
             "step_index": 1,
-            "state_in": first.get("state_out"),
+            "internal_state": first.get("internal_state"),
             "history": [{"step": 0, "action": first.get("actions", [None])[0], "exec_ok": True, "url": "https://example.com"}],
         }
     )
@@ -2106,7 +2427,7 @@ def test_popup_pre_action_prefers_escape_after_overlay_intercept(monkeypatch: An
                     "url": "https://example.com/auth",
                 }
             ],
-            "state_in": {"last_action_sig": "ClickAction|same", "mode": "NAV"},
+            "internal_state": {"last_action_sig": "ClickAction|same", "mode": "NAV"},
             "allowed_tools": [{"name": "browser.send_keys"}, {"name": "browser.click"}],
         }
     )
@@ -2139,14 +2460,7 @@ def test_flag_detector_marks_modal_auth_form_as_interactive_not_popup() -> None:
 
 def test_flag_detector_marks_modal_auth_panel_as_interactive_not_popup() -> None:
     flags = FlagDetector().detect(
-        snapshot_html=(
-            "<html><body>"
-            "<div role='dialog' aria-modal='true'>"
-            "<a href='/auth/sign-in'>Sign in</a>"
-            "<a href='/auth/sign-up'>Sign up</a>"
-            "</div>"
-            "</body></html>"
-        ),
+        snapshot_html=("<html><body><div role='dialog' aria-modal='true'><a href='/auth/sign-in'>Sign in</a><a href='/auth/sign-up'>Sign up</a></div></body></html>"),
         url="https://example.com/auth",
         history=[],
         state=AgentState(),
@@ -2242,16 +2556,7 @@ def test_router_collapses_extract_like_modes_back_to_nav() -> None:
 def test_type_action_on_checkbox_is_converted_to_click() -> None:
     def _llm_type_checkbox(**_: Any) -> dict[str, Any]:
         return {
-            "choices": [
-                {
-                    "message": {
-                        "content": (
-                            '{"type":"browser","tool_call":{"name":"browser.input","arguments":{'
-                            '"element_id":"checkbox-1","text":"autoppia"}}}'
-                        )
-                    }
-                }
-            ],
+            "choices": [{"message": {"content": ('{"type":"browser","tool_call":{"name":"browser.input","arguments":{"element_id":"checkbox-1","text":"autoppia"}}}')}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             "model": "gpt-5.2",
         }
@@ -2264,7 +2569,7 @@ def test_type_action_on_checkbox_is_converted_to_click() -> None:
             "url": "https://example.com",
             "snapshot_html": "<html><body><input id='checkbox-1' type='checkbox' /><button>Continue</button></body></html>",
             "step_index": 1,
-            "state_in": {"mode": "NAV"},
+            "internal_state": {"mode": "NAV"},
             "allowed_tools": [{"name": "browser.input"}, {"name": "browser.click"}],
         }
     )
@@ -2428,6 +2733,219 @@ def test_ranker_prefers_local_mutation_control_over_unrelated_profile_fields() -
         top_k=2,
     )
     assert ranked[0].id == "el_delete"
+
+
+def test_capability_gap_prefers_login_for_auth_gated_watchlist_flow() -> None:
+    builder = ObsBuilder()
+    state = AgentState()
+    movie_link = Candidate(
+        id="el_movie",
+        role="link",
+        type="link",
+        text="The Incredibles",
+        href="/movies/the-incredibles?seed=11",
+        context="Movie card view detail",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/movies/the-incredibles?seed=11", "case_sensitive": False},
+        dom_path="html/body/main/section/a[1]",
+    )
+    login_link = Candidate(
+        id="el_login",
+        role="link",
+        type="link",
+        text="Login",
+        href="/login?seed=11",
+        context="Header navigation sign in to your account",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/login?seed=11", "case_sensitive": False},
+        dom_path="html/body/header/nav/a[1]",
+    )
+    register_link = Candidate(
+        id="el_register",
+        role="link",
+        type="link",
+        text="Register",
+        href="/register?seed=11",
+        context="Header navigation create account",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/register?seed=11", "case_sensitive": False},
+        dom_path="html/body/header/nav/a[2]",
+    )
+    policy_obs = builder.build_policy_obs(
+        task_id="watchlist-read-only",
+        prompt="Add to wishlist a movie where the name equals 'The Incredibles'",
+        step_index=0,
+        url="https://example.com/",
+        mode="NAV",
+        flags={},
+        state=state,
+        text_ir={"title": "Movies", "visible_text": "Movies", "headings": ["Movies"], "forms": []},
+        candidates=[movie_link, login_link, register_link],
+        history=[],
+    )
+    page_obs = policy_obs.get("page_observations") if isinstance(policy_obs.get("page_observations"), dict) else {}
+    capability_gap = page_obs.get("capability_gap") if isinstance(page_obs.get("capability_gap"), dict) else {}
+    assert capability_gap.get("read_only_for_task") is False
+    assert capability_gap.get("task_prefers_login_transition") is False
+    assert capability_gap.get("preferred_transition") == ""
+    memory = policy_obs.get("memory") if isinstance(policy_obs.get("memory"), dict) else {}
+    assert "sign-in" not in str(memory.get("strategy_summary") or "").lower()
+
+
+def test_ranker_prefers_login_link_over_register_for_watchlist_task() -> None:
+    ranker = CandidateRanker()
+    state = AgentState()
+    movie_link = Candidate(
+        id="el_movie",
+        role="link",
+        type="link",
+        text="The Incredibles",
+        href="/movies/the-incredibles?seed=11",
+        context="Movie card view detail",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/movies/the-incredibles?seed=11", "case_sensitive": False},
+        dom_path="html/body/main/section/a[1]",
+    )
+    login_link = Candidate(
+        id="el_login",
+        role="link",
+        type="link",
+        text="Login",
+        href="/login?seed=11",
+        context="Header navigation sign in to your account",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/login?seed=11", "case_sensitive": False},
+        dom_path="html/body/header/nav/a[1]",
+    )
+    register_link = Candidate(
+        id="el_register",
+        role="link",
+        type="link",
+        text="Register",
+        href="/register?seed=11",
+        context="Header navigation create account",
+        selector={"type": "attributeValueSelector", "attribute": "href", "value": "/register?seed=11", "case_sensitive": False},
+        dom_path="html/body/header/nav/a[2]",
+    )
+    ranked = ranker.rank(
+        task="Add to wishlist a movie where the name equals 'The Incredibles'",
+        mode="NAV",
+        flags={},
+        candidates=[movie_link, register_link, login_link],
+        state=state,
+        current_url="https://example.com/",
+        top_k=3,
+    )
+    assert ranked[0].id == "el_login"
+
+
+def test_ranker_prefers_watchlist_action_over_neighboring_detail_controls() -> None:
+    ranker = CandidateRanker()
+    state = AgentState()
+    comment_name = Candidate(
+        id="el_comment_name",
+        role="input",
+        type="input",
+        text="Your name",
+        href="",
+        context="Add a Note Share your thoughts about this film. Name Comment Share",
+        field_hint="Name",
+        field_kind="name",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "comment-name", "case_sensitive": False},
+        dom_path="html/body/main/section/form/input[1]",
+    )
+    comment_box = Candidate(
+        id="el_comment_box",
+        role="input",
+        type="input",
+        text="Message",
+        href="",
+        context="Add a Note Share your thoughts about this film. Name Comment Share",
+        field_hint="Comment",
+        field_kind="name",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "comment-body", "case_sensitive": False},
+        dom_path="html/body/main/section/form/input[2]",
+    )
+    watchlist_button = Candidate(
+        id="el_watchlist",
+        role="button",
+        type="button",
+        text="Add to Watchlist",
+        href="",
+        context="Watch trailer Add to watchlist Share",
+        field_hint="Add to Watchlist",
+        field_kind="button",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "watchlist-action", "case_sensitive": False},
+        dom_path="html/body/main/section/button[1]",
+    )
+    trailer_button = Candidate(
+        id="el_trailer",
+        role="button",
+        type="button",
+        text="Watch Trailer",
+        href="",
+        context="Watch trailer Add to watchlist Share",
+        field_hint="Watch Trailer",
+        field_kind="button",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "watch-trailer", "case_sensitive": False},
+        dom_path="html/body/main/section/button[2]",
+    )
+    ranked = ranker.rank(
+        task="Add to wishlist a movie with rating greater equal 4.6 that is NOT named 'Saving Private Ryan'",
+        mode="NAV",
+        flags={},
+        candidates=[comment_name, comment_box, trailer_button, watchlist_button],
+        state=state,
+        current_url="https://example.com/movies/real-movie-050?seed=999",
+        top_k=4,
+    )
+    assert ranked[0].id == "el_watchlist"
+
+
+def test_ranker_prefers_remove_watchlist_action_over_share_or_comment_controls() -> None:
+    ranker = CandidateRanker()
+    state = AgentState()
+    remove_button = Candidate(
+        id="el_remove_watchlist",
+        role="button",
+        type="button",
+        text="Remove from Watchlist",
+        href="",
+        context="Share Remove from watchlist Add a Note",
+        field_hint="Remove from Watchlist",
+        field_kind="button",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "remove-watchlist", "case_sensitive": False},
+        dom_path="html/body/main/section/button[1]",
+    )
+    share_button = Candidate(
+        id="el_share",
+        role="button",
+        type="button",
+        text="Share",
+        href="",
+        context="Share Remove from watchlist Add a Note",
+        field_hint="Share",
+        field_kind="button",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "share-movie", "case_sensitive": False},
+        dom_path="html/body/main/section/button[2]",
+    )
+    comment_input = Candidate(
+        id="el_comment_name",
+        role="input",
+        type="input",
+        text="Your name",
+        href="",
+        context="Add a Note Share your thoughts about this film. Name Comment Share",
+        field_hint="Name",
+        field_kind="name",
+        selector={"type": "attributeValueSelector", "attribute": "id", "value": "comment-name", "case_sensitive": False},
+        dom_path="html/body/main/section/form/input[1]",
+    )
+    ranked = ranker.rank(
+        task="Remove from watchlist a movie where the title equals 'The Matrix'",
+        mode="NAV",
+        flags={},
+        candidates=[share_button, comment_input, remove_button],
+        state=state,
+        current_url="https://example.com/movies/the-matrix?seed=999",
+        top_k=3,
+    )
+    assert ranked[0].id == "el_remove_watchlist"
 
 
 def test_ranker_prefers_non_form_controls_on_delete_only_task_after_auth() -> None:
@@ -2629,20 +3147,15 @@ def test_read_only_mutation_page_promotes_plan_mode(monkeypatch: Any) -> None:
             **_base_payload(),
             "prompt": "Delete a film whose duration is NOT '142' minutes.",
             "url": "https://example.com/movies/real-movie-120?seed=7",
-            "snapshot_html": (
-                "<html><body><h1>Nightmare Alley</h1>"
-                "<a href='/register?seed=7'>Register</a>"
-                "<button id='watchlist-action'>Add to Watchlist</button>"
-                "</body></html>"
-            ),
+            "snapshot_html": ("<html><body><h1>Nightmare Alley</h1><a href='/register?seed=7'>Register</a><button id='watchlist-action'>Add to Watchlist</button></body></html>"),
             "step_index": 1,
-            "state_in": {"mode": "NAV"},
+            "internal_state": {"mode": "NAV"},
         }
     )
-    state_out = out.get("state_out") if isinstance(out.get("state_out"), dict) else {}
-    assert state_out.get("mode") in {"PLAN", "NAV", "DONE"}
+    internal_state = out.get("internal_state") if isinstance(out.get("internal_state"), dict) else {}
+    assert internal_state.get("mode") in {"PLAN", "NAV", "DONE"}
     reasoning = str(out.get("reasoning") or "")
-    assert "capability_gap_model_replan" in reasoning or state_out.get("memory", {}).get("strategy_summary")
+    assert "capability_gap_model_replan" in reasoning or internal_state.get("memory", {}).get("strategy_summary")
 
 
 def test_missing_group_guard_does_not_override_section_switch() -> None:
@@ -2840,6 +3353,173 @@ def test_fallback_prefers_dropdown_options_over_generic_select_value() -> None:
     assert out["tool_call"]["arguments"]["index"] == 0
 
 
+def test_fallback_prefers_browser_input_for_search_prompt() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    policy_obs = {
+        "candidates": [
+            {
+                "id": "search-box",
+                "index": 0,
+                "role": "input",
+                "text": "Search films",
+                "context": "Hero search",
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "entry-field", "case_sensitive": False},
+            }
+        ],
+        "candidate_partitions": {"local": [], "escape": [], "global": [], "suppressed_global_count": 0},
+        "memory": {"typed_candidate_ids": [], "visual_element_hints": []},
+        "flags": {},
+        "counters": {"stall_count": 0, "repeat_action_count": 0},
+    }
+    out = engine.policy._fallback(
+        prompt="Search for the movie 'WALL-E' in the database.",
+        mode="DIRECT",
+        policy_obs=policy_obs,
+        allowed_tools={"browser.input", "browser.click"},
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.input"
+    assert out["tool_call"]["arguments"]["index"] == 0
+    assert out["tool_call"]["arguments"]["text"] == ""
+
+
+def test_fallback_prefers_visible_watchlist_intent_on_movie_detail_page() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    policy_obs = {
+        "prompt": "Add to watchlist the current movie.",
+        "url": "https://example.com/movies/the-matrix?seed=999",
+        "candidates": [
+            {
+                "id": "share-btn",
+                "index": 0,
+                "role": "button",
+                "text": "Share",
+                "context": "Watch trailer Add to watchlist Share",
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "share-btn", "case_sensitive": False},
+            },
+            {
+                "id": "watchlist-btn",
+                "index": 1,
+                "role": "button",
+                "text": "Add to Watchlist",
+                "context": "Watch trailer Add to watchlist Share",
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "watchlist-btn", "case_sensitive": False},
+            },
+        ],
+        "candidate_partitions": {"local": [], "escape": [], "global": [], "suppressed_global_count": 0},
+        "memory": {"typed_candidate_ids": [], "visual_element_hints": []},
+        "flags": {},
+        "counters": {"stall_count": 0, "repeat_action_count": 0},
+    }
+    out = engine.policy._fallback(
+        prompt="Add to watchlist the current movie.",
+        mode="DIRECT",
+        policy_obs=policy_obs,
+        allowed_tools={"browser.click"},
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["index"] == 1
+
+
+def test_fallback_prefers_markup_watchlist_control_when_candidates_are_sparse() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    policy_obs = {
+        "prompt": "Add to watchlist the current movie.",
+        "url": "https://example.com/movies/the-matrix?seed=999",
+        "snapshot_html": """
+            <div>
+              <button id="play-trailer">Watch trailer</button>
+              <button id="add-list-btn">Add to watchlist</button>
+              <button id="share-widget">Share</button>
+            </div>
+        """,
+        "candidates": [],
+        "candidate_partitions": {"local": [], "escape": [], "global": [], "suppressed_global_count": 0},
+        "memory": {"typed_candidate_ids": [], "visual_element_hints": []},
+        "flags": {},
+        "counters": {"stall_count": 0, "repeat_action_count": 0},
+    }
+    out = engine.policy._fallback(
+        prompt="Add to watchlist the current movie.",
+        mode="DIRECT",
+        policy_obs=policy_obs,
+        allowed_tools={"browser.click"},
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["selector"]["attribute"] == "id"
+    assert out["tool_call"]["arguments"]["selector"]["value"] == "add-list-btn"
+
+
+def test_fallback_prefers_matching_title_result_before_header_drift() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    policy_obs = {
+        "prompt": "Add to watchlist a movie where the name equals 'The Incredibles'",
+        "url": "https://example.com/?seed=31000&search=The+Incredibles",
+        "candidates": [
+            {
+                "id": "contact-link",
+                "index": 0,
+                "role": "link",
+                "text": "Contact",
+                "href": "#contact",
+                "context": "Header Contact",
+                "selector": {"type": "attributeValueSelector", "attribute": "href", "value": "#contact", "case_sensitive": False},
+            },
+            {
+                "id": "movie-link",
+                "index": 1,
+                "role": "link",
+                "text": "The Incredibles",
+                "href": "/movies/the-incredibles?seed=31000",
+                "context": "Movie card View detail",
+                "selector": {"type": "attributeValueSelector", "attribute": "href", "value": "/movies/the-incredibles?seed=31000", "case_sensitive": False},
+            },
+        ],
+        "candidate_partitions": {"local": [], "escape": [], "global": [], "suppressed_global_count": 0},
+        "memory": {"typed_candidate_ids": [], "visual_element_hints": []},
+        "flags": {},
+        "counters": {"stall_count": 0, "repeat_action_count": 0},
+    }
+    out = engine.policy._fallback(
+        prompt="Add to watchlist a movie where the name equals 'The Incredibles'",
+        mode="DIRECT",
+        policy_obs=policy_obs,
+        allowed_tools={"browser.click"},
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["index"] == 1
+
+
+def test_normalize_decision_reanchors_drifting_click_to_markup_watchlist_control() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.policy._normalize_decision(
+        {
+            "type": "browser",
+            "tool_call": {"name": "browser.click", "arguments": {"selector": {"type": "attributeValueSelector", "attribute": "href", "value": "/?seed=999"}}},
+        },
+        {"browser.click"},
+        policy_obs={
+            "prompt": "Add to watchlist the current movie.",
+            "url": "https://example.com/movies/the-matrix?seed=999",
+            "snapshot_html": """
+                <div>
+                  <button id="play-trailer">Watch trailer</button>
+                  <button id="add-list-btn">Add to watchlist</button>
+                  <button id="share-widget">Share</button>
+                </div>
+            """,
+            "candidates": [],
+        },
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["selector"]["attribute"] == "id"
+    assert out["tool_call"]["arguments"]["selector"]["value"] == "add-list-btn"
+
+
 def test_normalize_decision_rejects_generic_browser_input_text() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     with pytest.raises(ValueError):
@@ -2850,6 +3530,109 @@ def test_normalize_decision_rejects_generic_browser_input_text() -> None:
             },
             {"browser.input"},
         )
+
+
+def test_normalize_decision_reanchors_drifting_click_to_visible_direct_intent() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.policy._normalize_decision(
+        {
+            "type": "browser",
+            "tool_call": {"name": "browser.click", "arguments": {"index": 0}},
+        },
+        {"browser.click"},
+        policy_obs={
+            "prompt": "Add to watchlist the current movie.",
+            "url": "https://example.com/movies/the-matrix?seed=999",
+            "candidates": [
+                {
+                    "id": "share-btn",
+                    "index": 0,
+                    "role": "button",
+                    "text": "Share",
+                    "context": "Watch trailer Add to watchlist Share",
+                    "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "share-btn", "case_sensitive": False},
+                },
+                {
+                    "id": "watchlist-btn",
+                    "index": 1,
+                    "role": "button",
+                    "text": "Add to Watchlist",
+                    "context": "Watch trailer Add to watchlist Share",
+                    "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "watchlist-btn", "case_sensitive": False},
+                },
+            ],
+        },
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["index"] == 1
+
+
+def test_normalize_decision_reanchors_drifting_click_to_matching_title_result() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.policy._normalize_decision(
+        {
+            "type": "browser",
+            "tool_call": {"name": "browser.click", "arguments": {"index": 0}},
+        },
+        {"browser.click"},
+        policy_obs={
+            "prompt": "Add to watchlist a movie where the name equals 'The Incredibles'",
+            "url": "https://example.com/?seed=31000&search=The+Incredibles",
+            "candidates": [
+                {
+                    "id": "contact-link",
+                    "index": 0,
+                    "role": "link",
+                    "text": "Contact",
+                    "href": "#contact",
+                    "context": "Header Contact",
+                    "selector": {"type": "attributeValueSelector", "attribute": "href", "value": "#contact", "case_sensitive": False},
+                },
+                {
+                    "id": "movie-link",
+                    "index": 1,
+                    "role": "link",
+                    "text": "The Incredibles",
+                    "href": "/movies/the-incredibles?seed=31000",
+                    "context": "Movie card View detail",
+                    "selector": {"type": "attributeValueSelector", "attribute": "href", "value": "/movies/the-incredibles?seed=31000", "case_sensitive": False},
+                },
+            ],
+        },
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.click"
+    assert out["tool_call"]["arguments"]["index"] == 1
+
+
+def test_normalize_decision_reanchors_drifting_click_to_seeded_search_navigation() -> None:
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.policy._normalize_decision(
+        {
+            "type": "browser",
+            "tool_call": {"name": "browser.click", "arguments": {"index": 0}},
+        },
+        {"browser.click", "browser.navigate"},
+        policy_obs={
+            "prompt": "Add to watchlist a movie where the name equals 'The Incredibles'",
+            "url": "https://example.com/contact?seed=31000",
+            "candidates": [
+                {
+                    "id": "contact-submit",
+                    "index": 0,
+                    "role": "button",
+                    "text": "Send",
+                    "context": "Contact form send message",
+                    "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "contact-submit", "case_sensitive": False},
+                }
+            ],
+            "page_observations": {"capability_gap": {}},
+        },
+    )
+    assert out["type"] == "browser"
+    assert out["tool_call"]["name"] == "browser.navigate"
+    assert out["tool_call"]["arguments"]["url"].endswith("/?seed=31000&search=The+Incredibles")
 
 
 def test_normalize_decision_downgrades_generic_select_to_dropdown_options() -> None:
@@ -3143,7 +3926,7 @@ def test_select_candidates_for_policy_keeps_local_shortlist_and_limits_global_no
             href=f"https://example.com/section-{i}",
             context="Main navigation links",
             selector={"type": "attributeValueSelector", "attribute": "id", "value": f"nav-{i}", "case_sensitive": False},
-            dom_path=f"html/body/nav/a[{i+1}]",
+            dom_path=f"html/body/nav/a[{i + 1}]",
         )
         for i in range(20)
     ]
@@ -3156,10 +3939,10 @@ def test_select_candidates_for_policy_keeps_local_shortlist_and_limits_global_no
     ids = [cand.id for cand in selected]
     assert ids[:2] == ["title", "save"]
     assert len(selected) < len([local_input, local_save, *global_candidates])
-    assert len(selected) <= 24
+    assert len(selected) <= 96
 
 
-def test_build_policy_obs_exposes_short_action_list_not_large_candidate_dump() -> None:
+def test_build_policy_obs_exposes_richer_action_list_and_page_structure() -> None:
     engine = FSMOperator(llm_call=_dummy_llm_invalid)
     state = AgentState()
     candidates = [
@@ -3171,7 +3954,7 @@ def test_build_policy_obs_exposes_short_action_list_not_large_candidate_dump() -
             href=f"https://example.com/item-{i}" if i % 2 else "",
             context="Page controls" if i < 5 else "Global navigation",
             selector={"type": "attributeValueSelector", "attribute": "id", "value": f"cand-{i}", "case_sensitive": False},
-            dom_path=f"html/body/div[{i+1}]",
+            dom_path=f"html/body/div[{i + 1}]",
         )
         for i in range(40)
     ]
@@ -3183,13 +3966,25 @@ def test_build_policy_obs_exposes_short_action_list_not_large_candidate_dump() -
         mode="NAV",
         flags={},
         state=state,
-        text_ir={"title": "Example", "visible_text": "Example page", "headings": []},
+        text_ir={
+            "title": "Example",
+            "visible_text": "Example page",
+            "visible_lines": ["Example page", "Candidate 1", "Candidate 2"],
+            "page_facts": ["Section: Main navigation"],
+            "value_lines": ["Candidate count: 40"],
+            "headings": [],
+            "html_excerpt": "<main><button id='cand-0'>Candidate 0</button></main>",
+        },
         candidates=candidates,
         history=[],
         screenshot_available=False,
     )
-    assert len(policy_obs["candidates"]) <= 24
+    assert len(policy_obs["candidates"]) <= 64
+    assert "visible_lines" in policy_obs["text_ir"]
+    assert "page_facts" in policy_obs["text_ir"]
+    assert "value_lines" in policy_obs["text_ir"]
     assert "INTERACTIVE ELEMENT SHORTLIST (JSON):" in policy_obs["policy_input_text"]
+    assert "DOM / HTML EXCERPT:" in policy_obs["policy_input_text"]
     assert "UNAVAILABLE TOOLS:" in policy_obs["policy_input_text"]
     assert "ACTIVE OBJECTIVE (JSON):" in policy_obs["policy_input_text"]
     assert "WORKING STATE (JSON):" in policy_obs["policy_input_text"]
@@ -3252,11 +4047,32 @@ def test_policy_obs_includes_site_knowledge_when_enabled(monkeypatch: Any) -> No
     site_knowledge = policy_obs.get("site_knowledge") if isinstance(policy_obs.get("site_knowledge"), dict) else {}
     assert site_knowledge.get("project_id") == "autocinema"
     current = site_knowledge.get("current_task_routing") if isinstance(site_knowledge.get("current_task_routing"), dict) else {}
-    if current:
-        assert current.get("likely_best_section") == "detail"
+    assert current.get("likely_best_section") == "detail"
     routes = site_knowledge.get("routes") if isinstance(site_knowledge.get("routes"), list) else []
-    if routes:
-        assert any(str(route.get("path") or "") == "/movies/123" for route in routes if isinstance(route, dict))
+    assert any(str(route.get("path") or "") == "/search" for route in routes if isinstance(route, dict))
+    assert any(str(route.get("path") or "") == "/movies/123" for route in routes if isinstance(route, dict))
+
+
+def test_policy_obs_includes_site_knowledge_by_default() -> None:
+    builder = ObsBuilder()
+    policy_obs = builder.build_policy_obs(
+        task_id="default-site-knowledge",
+        prompt="Log in to the site",
+        web_project_id="autocinema",
+        use_case={"name": "LOGIN", "description": "Authenticate into the site."},
+        snapshot_html="<html><body><a href='/login'>Login</a></body></html>",
+        step_index=0,
+        url="https://example.com",
+        mode="NAV",
+        flags={},
+        state=AgentState(mode="NAV"),
+        text_ir={"title": "Home", "visible_text": "Login", "headings": []},
+        candidates=[],
+        history=[],
+        screenshot_available=False,
+    )
+    site_knowledge = policy_obs.get("site_knowledge") if isinstance(policy_obs.get("site_knowledge"), dict) else {}
+    assert site_knowledge.get("project_id") == "autocinema"
 
 
 def test_policy_obs_does_not_expose_browser_evaluate() -> None:
@@ -3545,7 +4361,7 @@ def test_policy_obs_exposes_active_objective_and_avoid_repeating_signals() -> No
             text="Sign in",
             href="",
             context="Login form Email Password Sign in",
-            selector={"type": "xpathSelector", "value": "//button[contains(normalize-space(.), \"Sign in\")]", "case_sensitive": False},
+            selector={"type": "xpathSelector", "value": '//button[contains(normalize-space(.), "Sign in")]', "case_sensitive": False},
             dom_path="html/body/main/form/button[1]",
             field_kind="submit",
             region_id="region-form",
@@ -3816,118 +4632,9 @@ def test_candidate_extractor_includes_current_selected_value_for_select() -> Non
     assert "current=Allegory" in genre.text
 
 
-
-
 def test_prompt_field_needs_and_field_kind_detect_genre() -> None:
     ranker = CandidateRanker()
     assert "genre" in ranker._prompt_field_needs("Show me books where the genres equal Allegory")
-
-
-def test_candidate_extractor_field_kind_covers_pager_select_and_name_cases() -> None:
-    extractor = CandidateExtractor()
-
-    assert (
-        extractor._field_kind(
-            tag="button",
-            attrs={"id": "next-page"},
-            role_name="button",
-            text="Next page",
-            field_hint="",
-            context="Pagination controls",
-        )
-        == "pager"
-    )
-    assert (
-        extractor._field_kind(
-            tag="a",
-            attrs={"href": "/page/2"},
-            role_name="link",
-            text="Previous page",
-            field_hint="",
-            context="Pagination controls",
-        )
-        == "pager"
-    )
-    assert (
-        extractor._field_kind(
-            tag="select",
-            attrs={"id": "sort-order"},
-            role_name="select",
-            text="Sort by rating",
-            field_hint="Sort order",
-            context="Order by newest",
-        )
-        == "sort"
-    )
-    assert (
-        extractor._field_kind(
-            tag="select",
-            attrs={"id": "genre-filter"},
-            role_name="select",
-            text="Genre",
-            field_hint="Movie genre",
-            context="Category filters",
-        )
-        == "genre"
-    )
-    assert (
-        extractor._field_kind(
-            tag="select",
-            attrs={"id": "release-year"},
-            role_name="select",
-            text="Released 2024",
-            field_hint="Release year",
-            context="Choose year",
-        )
-        == "year"
-    )
-    assert (
-        extractor._field_kind(
-            tag="input",
-            attrs={"type": "password", "id": "confirm-password"},
-            role_name="input",
-            text="",
-            field_hint="Confirm password",
-            context="Create account",
-        )
-        == "confirm_password"
-    )
-    assert (
-        extractor._field_kind(
-            tag="input",
-            attrs={"type": "text", "id": "full-name"},
-            role_name="input",
-            text="",
-            field_hint="Full name",
-            context="Profile details",
-        )
-        == "name"
-    )
-
-
-def test_candidate_extractor_field_hint_uses_label_parent_and_context() -> None:
-    extractor = CandidateExtractor()
-
-    soup = BeautifulSoup(
-        """
-        <html><body>
-          <label for="email-field">Email address</label>
-          <input id="email-field" />
-          <label>Password <input id="password-field" /></label>
-          <section>
-            <div class="search-panel">
-              <span>Search the catalog</span>
-              <input id="query-field" />
-            </div>
-          </section>
-        </body></html>
-        """,
-        "lxml",
-    )
-
-    assert extractor._field_hint(soup.find("input", attrs={"id": "email-field"})) == "Email address"
-    assert extractor._field_hint(soup.find("input", attrs={"id": "password-field"})) == "Password"
-    assert "Search the catalog" in extractor._field_hint(soup.find("input", attrs={"id": "query-field"}))
 
 
 def test_augment_text_ir_merges_form_and_candidate_control_groups() -> None:
@@ -3973,7 +4680,7 @@ def test_augment_text_ir_merges_form_and_candidate_control_groups() -> None:
             field_hint="",
             href="",
             dom_path="html/body/main/section/div/button[1]",
-            selector={"type": "xpathSelector", "value": "//button[contains(normalize-space(.), \"Clear filters\")]", "case_sensitive": False},
+            selector={"type": "xpathSelector", "value": '//button[contains(normalize-space(.), "Clear filters")]', "case_sensitive": False},
             context="Living catalog Curated books Genre Allegory Clear filters",
             group_id="group_1",
             group_label="Living catalog",
@@ -4046,13 +4753,41 @@ def test_meta_loop_auto_finalizes_informational_task_when_page_fact_is_visible(m
               </main>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
             "allowed_tools": [{"name": "browser.navigate"}, {"name": "browser.click"}],
             "history": [],
         }
     )
     assert out.get("done") is True
     assert "2.8K" in str(out.get("content") or "")
+
+
+def test_meta_loop_auto_finalizes_homepage_summary_prompt(monkeypatch: Any) -> None:
+    monkeypatch.setenv("FSM_DIRECT_LOOP", "0")
+    engine = FSMOperator(llm_call=_dummy_llm_invalid)
+    out = engine.run(
+        payload={
+            "task_id": "info-homepage",
+            "prompt": "Open autoppia.com and summarize the homepage",
+            "step_index": 1,
+            "url": "https://autoppia.com/",
+            "snapshot_html": """
+            <html><head><title>Autoppia</title></head><body>
+              <main>
+                <h1>Best Web Operator in the world</h1>
+                <p>Powered by Bittensor Subnet 36</p>
+                <a href="https://automata.autoppia.com">Automata Cloud</a>
+              </main>
+            </body></html>
+            """,
+            "internal_state": {},
+            "allowed_tools": [{"name": "browser.navigate"}, {"name": "browser.click"}],
+            "history": [],
+        }
+    )
+    assert out.get("done") is True
+    content = str(out.get("content") or "")
+    assert "Best Web Operator" in content or "Bittensor Subnet 36" in content
 
 
 def test_pre_done_verification_rejects_vague_informational_answer() -> None:
@@ -4079,7 +4814,7 @@ def test_completion_only_returns_done_only_with_concrete_page_evidence() -> None
             "completion_only": True,
             "url": "https://example.com/",
             "snapshot_html": "<html><body><h1>Treasury Details</h1><p>Overview page</p></body></html>",
-            "state_in": {},
+            "internal_state": {},
         }
     )
     assert incomplete.get("done") is False
@@ -4098,7 +4833,7 @@ def test_completion_only_returns_done_only_with_concrete_page_evidence() -> None
               <div><span>Total Treasury</span><span>2.8K</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
         }
     )
     assert complete.get("done") is True
@@ -4120,7 +4855,7 @@ def test_completion_only_requires_page_context_overlap_for_informational_answer(
               <div><span>Total Value Locked</span><span>2844</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
         }
     )
     assert out.get("done") is False
@@ -4141,7 +4876,7 @@ def test_completion_only_does_not_finish_on_root_page_even_with_numeric_fact() -
               <div><span>Total Treasury</span><span>2.8K</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
         }
     )
     assert out.get("done") is False
@@ -4150,13 +4885,7 @@ def test_completion_only_does_not_finish_on_root_page_even_with_numeric_fact() -
 def test_browser_end_tool_call_normalizes_to_final_content() -> None:
     def _llm_end(**_: Any) -> dict[str, Any]:
         return {
-            "choices": [
-                {
-                    "message": {
-                        "content": '{"type":"browser","tool_call":{"name":"browser.done","arguments":{"content":"Total Treasury: 2.8K"}}}'
-                    }
-                }
-            ],
+            "choices": [{"message": {"content": '{"type":"browser","tool_call":{"name":"browser.done","arguments":{"content":"Total Treasury: 2.8K"}}}'}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             "model": "gpt-5.2",
         }
@@ -4174,9 +4903,9 @@ def test_browser_end_tool_call_normalizes_to_final_content() -> None:
               <div><span>Total Treasury</span><span>2.8K</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
             "include_reasoning": True,
-                "allowed_tools": [{"name": "browser.done"}],
+            "allowed_tools": [{"name": "browser.done"}],
         }
     )
     assert out.get("done") is True
@@ -4188,13 +4917,7 @@ def test_direct_loop_final_reasoning_uses_final_content(monkeypatch: Any) -> Non
 
     def _llm_end(**_: Any) -> dict[str, Any]:
         return {
-            "choices": [
-                {
-                    "message": {
-                        "content": '{"type":"final","done":true,"content":"Total Treasury: 2.8K"}'
-                    }
-                }
-            ],
+            "choices": [{"message": {"content": '{"type":"final","done":true,"content":"Total Treasury: 2.8K"}'}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             "model": "gpt-5.2",
         }
@@ -4212,7 +4935,7 @@ def test_direct_loop_final_reasoning_uses_final_content(monkeypatch: Any) -> Non
               <div><span>Total Treasury</span><span>2.8K</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
             "include_reasoning": True,
             "allowed_tools": [{"name": "browser.done"}],
         }
@@ -4238,122 +4961,10 @@ def test_direct_loop_does_not_auto_finalize_from_page_evidence(monkeypatch: Any)
               <div><span>Total Treasury</span><span>2.8K</span></div>
             </body></html>
             """,
-            "state_in": {},
+            "internal_state": {},
             "include_reasoning": True,
             "allowed_tools": [{"name": "browser.done"}],
         }
     )
     assert out.get("done") is False
     assert out.get("content") is None
-
-
-def test_agent_state_from_state_in_and_sanitize_trim_fields() -> None:
-    state = AgentState.from_state_in({"mode": "NOT_A_MODE"}, "Open dashboard then export report")
-
-    assert state.mode == "BOOTSTRAP"
-    assert len(state.plan.subgoals) == 2
-    assert state.plan.subgoals[0].status == "active"
-    assert state.plan.active_id == state.plan.subgoals[0].id
-
-    state.visited.page_hashes = {f"k{i}": "x" * 90 for i in range(fsm_state.MAX_PAGE_HASHES + 3)}
-    state.session_query = {f"q{i}": "value" * 40 for i in range(20)}
-    state.plan.subgoals[0].status = "broken"
-    state.plan.active_id = "missing"
-
-    sanitized = state._sanitize()
-
-    assert len(sanitized.visited.page_hashes) == fsm_state.MAX_PAGE_HASHES
-    assert all(len(value) <= 64 for value in sanitized.visited.page_hashes.values())
-    assert len(sanitized.session_query) == 16
-    assert sanitized.plan.subgoals[0].status == "pending"
-    assert sanitized.plan.active_id == ""
-
-
-def test_agent_state_helpers_handle_empty_prompt_and_state_out() -> None:
-    state = AgentState.from_state_in({"mode": "NAV"}, "")
-
-    assert state.plan.subgoals == []
-    assert state.to_state_out()["mode"] == "NAV"
-
-
-def test_flag_detector_fallbacks_without_beautifulsoup(monkeypatch: Any) -> None:
-    detector = FlagDetector()
-    monkeypatch.setattr(fsm_state, "BeautifulSoup", None)
-
-    assert detector._visible_text("") == ""
-    assert detector._visible_text("<html><body><script>hide</script><h1>Hello</h1></body></html>") == "hide Hello"
-    assert detector._interactive_modal_form("") is False
-    assert detector._interactive_modal_form("<dialog><form><input type='email'/><input type='password'/></form></dialog>") is True
-
-
-def test_flag_detector_visible_text_and_modal_form_with_parser(monkeypatch: Any) -> None:
-    detector = FlagDetector()
-
-    class _BrokenTag:
-        def decompose(self) -> None:
-            raise RuntimeError("ignore")
-
-    class _FakeSoup:
-        def __call__(self, _names):
-            return [_BrokenTag()]
-
-        def get_text(self, _sep: str, strip: bool = True) -> str:
-            assert strip is True
-            return " Visible page text "
-
-    monkeypatch.setattr(fsm_state, "BeautifulSoup", lambda html, parser: _FakeSoup())
-    assert detector._visible_text("<html></html>") == "Visible page text"
-
-    class _FakeInput:
-        def __init__(self, attrs: dict[str, str]):
-            self.attrs = attrs
-
-    class _FakeNode:
-        def get_text(self, _sep: str, strip: bool = True) -> str:
-            assert strip is True
-            return "Account sign in"
-
-        def select(self, selector: str):
-            assert selector == "input, select, textarea"
-            return [_FakeInput({"type": "password", "name": "password", "id": "login-password"})]
-
-        def find(self, selector: str):
-            assert selector == "form"
-            return None
-
-    class _FakeModalSoup:
-        def select(self, selector: str):
-            assert selector == "[role='dialog'], dialog, [aria-modal='true'], .modal, .popup"
-            return [_FakeNode()]
-
-    monkeypatch.setattr(fsm_state, "BeautifulSoup", lambda html, parser: _FakeModalSoup())
-    assert detector._interactive_modal_form("<div></div>") is True
-
-
-def test_flag_detector_modal_form_detects_input_attributes_with_parser(monkeypatch: Any) -> None:
-    detector = FlagDetector()
-
-    class _FakeInput:
-        def __init__(self, attrs: dict[str, str]):
-            self.attrs = attrs
-
-    class _FakeNode:
-        def get_text(self, _sep: str, strip: bool = True) -> str:
-            assert strip is True
-            return "Account access panel"
-
-        def select(self, selector: str):
-            assert selector == "input, select, textarea"
-            return [_FakeInput({"type": "text", "name": "username", "placeholder": "Username"})]
-
-        def find(self, selector: str):
-            assert selector == "form"
-            return None
-
-    class _FakeModalSoup:
-        def select(self, selector: str):
-            assert selector == "[role='dialog'], dialog, [aria-modal='true'], .modal, .popup"
-            return [_FakeNode()]
-
-    monkeypatch.setattr(fsm_state, "BeautifulSoup", lambda html, parser: _FakeModalSoup())
-    assert detector._interactive_modal_form("<div></div>") is True

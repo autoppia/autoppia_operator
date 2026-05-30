@@ -1,8 +1,8 @@
 """Configuration for DAgger (Dataset Aggregation) integration."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Literal
 
 
 @dataclass
@@ -31,4 +31,4 @@ class DAggerConfig:
 
     # Action types to flag as potentially irreversible (triggers expert review).
     # These are action type identifiers from the FSM action schema, not keywords.
-    irreversible_action_types: List[str] = field(default_factory=list)
+    irreversible_action_types: list[str] = field(default_factory=list)

@@ -1,14 +1,11 @@
-"""Serialize policy observations to compact text for SFT training.
+"""Serialize policy observations to compact text for SFT training."""
 
-Converts the rich observation dict from build_policy_obs() into a compact
-text representation suitable for fine-tuning data (<2000 tokens target).
-"""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
-def serialize_observation(obs: Dict[str, Any]) -> str:
+def serialize_observation(obs: dict[str, Any]) -> str:
     """Convert a policy observation dict to compact text.
 
     Args:
@@ -18,7 +15,7 @@ def serialize_observation(obs: Dict[str, Any]) -> str:
     Returns:
         Compact text representation (<8000 chars / ~2000 tokens).
     """
-    parts: List[str] = []
+    parts: list[str] = []
 
     # Task
     task = obs.get("prompt", "") or obs.get("task_text", "")
@@ -38,10 +35,17 @@ def serialize_observation(obs: Dict[str, Any]) -> str:
     # Page content
     page_obs = obs.get("page_observations", {})
     if isinstance(page_obs, dict):
+        title = page_obs.get("title", "")
+        if title:
+            parts.append(f"Title: {str(title)[:200]}")
+
+        headings = page_obs.get("headings", [])
+        if headings:
+            parts.append("Headings: " + " | ".join(str(item)[:120] for item in headings[:8]))
+
         visible_text = page_obs.get("visible_text", "")
         if visible_text:
-            # Compress visible text: keep first ~500 chars
-            compressed = _compress_text(visible_text, max_chars=500)
+            compressed = _compress_text(visible_text, max_chars=800)
             parts.append(f"Page: {compressed}")
 
         # Forms summary
@@ -50,6 +54,14 @@ def serialize_observation(obs: Dict[str, Any]) -> str:
             form_summary = _summarize_forms(forms)
             if form_summary:
                 parts.append(f"Forms: {form_summary}")
+
+        page_facts = page_obs.get("page_facts", [])
+        if page_facts:
+            parts.append("Page facts: " + " | ".join(str(fact)[:140] for fact in page_facts[:10]))
+
+        value_lines = page_obs.get("value_lines", [])
+        if value_lines:
+            parts.append("Visible values: " + " | ".join(str(item)[:140] for item in value_lines[:10]))
     elif isinstance(page_obs, str) and page_obs:
         parts.append(f"Page: {_compress_text(page_obs, max_chars=500)}")
 
@@ -60,6 +72,22 @@ def serialize_observation(obs: Dict[str, Any]) -> str:
         if facts:
             facts_text = "; ".join(str(f) for f in facts[:5])
             parts.append(f"Known facts: {facts_text}")
+        history_recent = memory.get("history_recent", [])
+        if history_recent:
+            parts.append("Recent history:")
+            for item in history_recent[-4:]:
+                if not isinstance(item, dict):
+                    continue
+                tool = str(item.get("tool") or "")
+                url = str(item.get("url") or "")
+                exec_ok = bool(item.get("exec_ok", True))
+                parts.append(f"- step {int(item.get('step_index') or 0)}: {tool} exec_ok={str(exec_ok).lower()} url={url[:120]}")
+        state_in = memory.get("state_in", {})
+        if isinstance(state_in, dict) and state_in:
+            parts.append("State in: " + _compact_json(state_in, max_chars=300))
+        state_out = memory.get("state_out", {})
+        if isinstance(state_out, dict) and state_out:
+            parts.append("State out: " + _compact_json(state_out, max_chars=300))
 
     # Candidates
     candidates = obs.get("candidates", [])
@@ -82,7 +110,7 @@ def _compress_text(text: str, max_chars: int = 500) -> str:
     """Compress visible text by removing redundant whitespace and truncating."""
     # Normalize whitespace
     lines = text.split("\n")
-    cleaned: List[str] = []
+    cleaned: list[str] = []
     for line in lines:
         stripped = line.strip()
         if stripped:
@@ -96,9 +124,9 @@ def _compress_text(text: str, max_chars: int = 500) -> str:
     return compressed
 
 
-def _summarize_forms(forms: List[Any]) -> str:
+def _summarize_forms(forms: list[Any]) -> str:
     """Produce a compact summary of form fields."""
-    field_summaries: List[str] = []
+    field_summaries: list[str] = []
     for form in forms:
         if not isinstance(form, dict):
             continue
@@ -113,26 +141,51 @@ def _summarize_forms(forms: List[Any]) -> str:
     return ", ".join(field_summaries[:10]) if field_summaries else ""
 
 
-def _format_candidate(index: int, cand: Dict[str, Any]) -> str:
+def _format_candidate(index: int, cand: dict[str, Any]) -> str:
     """Format a single candidate as a compact indexed line."""
     ctype = cand.get("type", cand.get("element_type", "?"))
     role = cand.get("role", "")
     text = str(cand.get("text", ""))[:100]
     href = cand.get("href", "")
     field_hint = cand.get("field_hint", "")
-    placeholder = cand.get("has_placeholder", False)
+    field_kind = cand.get("field_kind", "")
+    placeholder = cand.get("placeholder", "") or ("placeholder" if cand.get("has_placeholder", False) else "")
+    aria_label = cand.get("aria_label", "")
+    name_attr = cand.get("name_attr", "")
+    selector_summary = cand.get("selector_summary", "")
+    current_value = cand.get("current_value", "")
 
-    extras: List[str] = []
+    extras: list[str] = []
     if role:
         extras.append(role)
     if href:
         extras.append(f"href={href}")
     if field_hint:
         extras.append(f"hint={field_hint}")
-    if placeholder and not text:
-        extras.append("placeholder")
+    if field_kind:
+        extras.append(f"kind={field_kind}")
+    if placeholder:
+        extras.append(f"placeholder={str(placeholder)[:40]}")
+    if aria_label:
+        extras.append(f"aria={str(aria_label)[:40]}")
+    if name_attr:
+        extras.append(f"name={str(name_attr)[:40]}")
+    if selector_summary:
+        extras.append(f"selector={str(selector_summary)[:80]}")
+    if current_value:
+        extras.append(f"value={str(current_value)[:40]}")
 
     extra_str = f" ({', '.join(extras)})" if extras else ""
     text_str = f' "{text}"' if text else ""
 
     return f"[{index}] {ctype}{text_str}{extra_str}"
+
+
+def _compact_json(payload: dict[str, Any], *, max_chars: int) -> str:
+    try:
+        text = str(payload)
+    except Exception:
+        text = repr(payload)
+    if len(text) > max_chars:
+        return text[: max_chars - 3] + "..."
+    return text

@@ -1,36 +1,33 @@
 from __future__ import annotations
 
-from typing import Any
-
 import os
+from typing import Any
 
 from fastapi import HTTPException
 
-from src.operator.api.act_protocol import _normalize_demo_url, env_bool
+from infra.pricing import estimate_cost_usd
+from src.operator.api.step_protocol import _normalize_demo_url, _step_request_from_payload
 from src.operator.support.iwa import IWA_ACT_PROTOCOL_VERSION
 from src.operator.support.telemetry import logger
-from infra.pricing import estimate_cost_usd
+from src.operator.support.utils import env_bool
 
 
 def build_fsm_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    include_reasoning = str(payload.get("include_reasoning") or payload.get("return_reasoning") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
+    request = _step_request_from_payload(payload)
     return {
-        "task_id": str(payload.get("task_id") or ""),
-        "prompt": str(payload.get("prompt") or payload.get("task_prompt") or ""),
-        "url": _normalize_demo_url(str(payload.get("url") or "")),
+        "task_id": str(getattr(request, "task_id", "") or ""),
+        "prompt": str(getattr(request, "prompt", "") or ""),
+        "url": _normalize_demo_url(str(getattr(request, "url", "") or "")),
         "web_project_id": str(payload.get("web_project_id") or ""),
         "use_case": payload.get("use_case") if isinstance(payload.get("use_case"), dict) else {},
-        "step_index": int(payload.get("step_index") or 0),
-        "snapshot_html": str(payload.get("snapshot_html") or ""),
-        "screenshot": payload.get("screenshot"),
-        "history": payload.get("history") if isinstance(payload.get("history"), list) else [],
-        "state_in": payload.get("state_in") if isinstance(payload.get("state_in"), dict) else {},
+        "step_index": int(getattr(request, "step_index", 0) or 0),
+        "snapshot_html": str(getattr(request, "html", "") or ""),
+        "screenshot": getattr(request, "screenshot", None),
+        "history": [item.model_dump() if hasattr(item, "model_dump") else item for item in (getattr(request, "history", None) or [])],
+        "internal_state": payload.get("_internal_state") if isinstance(payload.get("_internal_state"), dict) else {},
+        "score_feedback": payload.get("score_feedback") if isinstance(payload.get("score_feedback"), dict) else {},
         "allowed_tools": payload.get("allowed_tools"),
-        "include_reasoning": include_reasoning,
+        "include_reasoning": bool(getattr(request, "include_reasoning", False)),
     }
 
 
@@ -45,7 +42,7 @@ def normalize_fsm_output(
 
     normalized = dict(out)
     normalized["protocol_version"] = str(normalized.get("protocol_version") or IWA_ACT_PROTOCOL_VERSION)
-    normalized["state_out"] = normalized.get("state_out") if isinstance(normalized.get("state_out"), dict) else {}
+    normalized["internal_state"] = normalized.get("internal_state") if isinstance(normalized.get("internal_state"), dict) else {}
     normalized["actions"] = normalized.get("actions") if isinstance(normalized.get("actions"), list) else []
 
     usage = normalized.get("usage") if isinstance(normalized.get("usage"), dict) else None
@@ -84,19 +81,19 @@ def normalize_fsm_output(
         raw_usage_breakdown = normalized.get("usage_breakdown") if isinstance(normalized.get("usage_breakdown"), dict) else {}
         usage_breakdown = {
             "policy": {
-                "prompt_tokens": int(((raw_usage_breakdown.get("policy") or {}).get("prompt_tokens") or 0)),
-                "completion_tokens": int(((raw_usage_breakdown.get("policy") or {}).get("completion_tokens") or 0)),
-                "total_tokens": int(((raw_usage_breakdown.get("policy") or {}).get("total_tokens") or 0)),
+                "prompt_tokens": int((raw_usage_breakdown.get("policy") or {}).get("prompt_tokens") or 0),
+                "completion_tokens": int((raw_usage_breakdown.get("policy") or {}).get("completion_tokens") or 0),
+                "total_tokens": int((raw_usage_breakdown.get("policy") or {}).get("total_tokens") or 0),
             },
             "obs_extract": {
-                "prompt_tokens": int(((raw_usage_breakdown.get("obs_extract") or {}).get("prompt_tokens") or 0)),
-                "completion_tokens": int(((raw_usage_breakdown.get("obs_extract") or {}).get("completion_tokens") or 0)),
-                "total_tokens": int(((raw_usage_breakdown.get("obs_extract") or {}).get("total_tokens") or 0)),
+                "prompt_tokens": int((raw_usage_breakdown.get("obs_extract") or {}).get("prompt_tokens") or 0),
+                "completion_tokens": int((raw_usage_breakdown.get("obs_extract") or {}).get("completion_tokens") or 0),
+                "total_tokens": int((raw_usage_breakdown.get("obs_extract") or {}).get("total_tokens") or 0),
             },
             "vision": {
-                "prompt_tokens": int(((raw_usage_breakdown.get("vision") or {}).get("prompt_tokens") or 0)),
-                "completion_tokens": int(((raw_usage_breakdown.get("vision") or {}).get("completion_tokens") or 0)),
-                "total_tokens": int(((raw_usage_breakdown.get("vision") or {}).get("total_tokens") or 0)),
+                "prompt_tokens": int((raw_usage_breakdown.get("vision") or {}).get("prompt_tokens") or 0),
+                "completion_tokens": int((raw_usage_breakdown.get("vision") or {}).get("completion_tokens") or 0),
+                "total_tokens": int((raw_usage_breakdown.get("vision") or {}).get("total_tokens") or 0),
             },
         }
         normalized["metrics"] = {
@@ -116,9 +113,6 @@ def run_fsm_operator(fsm_operator: Any, payload: dict[str, Any], *, model_overri
     try:
         out = fsm_operator.run(payload=build_fsm_payload(payload), model_override=model_override)
     except Exception as exc:
-        logger.exception(
-            f"[AGENT_TRACE] strict_fsm_failed task_id={str(payload.get('task_id') or '')} "
-            f"step_index={int(payload.get('step_index') or 0)} err={str(exc)}"
-        )
-        raise HTTPException(status_code=500, detail="fsm_operator_failed")
+        logger.exception(f"[AGENT_TRACE] strict_fsm_failed task_id={payload.get('task_id') or ''!s} step_index={int(payload.get('step_index') or 0)} err={exc!s}")
+        raise HTTPException(status_code=500, detail="fsm_operator_failed") from exc
     return normalize_fsm_output(out, model_override=model_override, return_metrics=env_bool("AGENT_RETURN_METRICS", False))

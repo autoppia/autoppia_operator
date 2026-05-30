@@ -1,0 +1,92 @@
+{
+  "plan_version": "browser_use_runpod_bootstrap_v1",
+  "repo_branch": "arbos",
+  "base_model": "browser-use/bu-30b-a3b-preview",
+  "training_method": "lora_qlora",
+  "preferred_gpu": "NVIDIA A100 80GB PCIe",
+  "fallback_gpus": [
+    "NVIDIA H100 PCIe"
+  ],
+  "existing_bootstrap_pod_id": "59dd4g1snevkqs",
+  "existing_bootstrap_pod_name": "bu-30b-a3b-bootstrap",
+  "active_bootstrap_pod_id": "x38f1yxpmngocu",
+  "active_bootstrap_pod_name": "bu-30b-a3b-bootstrap-arbos-r3",
+  "inventory_snapshot_path": "training/runpod_inventory_snapshot.json",
+  "latest_inventory_observed_at": "2026-03-26T16:27:28Z",
+  "current_spend_per_hour_usd": 1.589,
+  "runpod_defaults": {
+    "gpu_count": 1,
+    "volume_size_gb": 80,
+    "cloud_type": "SECURE",
+    "max_cost_per_hour_usd": 4.5,
+    "max_total_budget_usd": 75.0
+  },
+  "sft_dataset": {
+    "episodes_path": "data/autocinema_trajectory_harvest/episodes.jsonl",
+    "summary_path": "data/autocinema_trajectory_harvest/summary.json",
+    "train_path": "data/autocinema_trajectory_harvest/sft/train.jsonl",
+    "val_path": "data/autocinema_trajectory_harvest/sft/val.jsonl",
+    "manifest_path": "data/autocinema_trajectory_harvest/sft/manifest.json"
+  },
+  "local_prerequisites": [
+    "python check.py",
+    "python -m training.format_for_sft --input data/autocinema_trajectory_harvest/episodes.jsonl --summary data/autocinema_trajectory_harvest/summary.json --output-dir data/autocinema_trajectory_harvest/sft",
+    "python -m training.finetune_bu --help",
+    "python -m training.runpod_job --help",
+    "python -m training.runpod_job --inventory-snapshot-path training/runpod_inventory_snapshot.json --refresh-inventory-snapshot",
+    "python -m training.serve_model --help",
+    "python -m training.post_finetune_eval --help"
+  ],
+  "bootstrap_command": "python -m training.runpod_job --pod-name bu-30b-a3b-bootstrap-arbos-r3 --gpu-type 'NVIDIA A100 80GB PCIe' --cloud-type SECURE --inventory-snapshot-path training/runpod_inventory_snapshot.json --bootstrap-only",
+  "manual_recovery_command": "python -m training.runpod_job --existing-pod-id 59dd4g1snevkqs --inventory-snapshot-path training/runpod_inventory_snapshot.json --bootstrap-only --replace-unreachable-ssh --unreachable-ssh-threshold-seconds 300",
+  "pod_bootstrap_steps": [
+    "Inspect or clone the existing RunPod pod configuration anchored by 59dd4g1snevkqs",
+    "Attempt to resume pod 59dd4g1snevkqs first; if the host still has no free A100 capacity, create a fresh A100 pod from the same image and storage profile",
+    "The first replacement pod s7hx99y7tg1tld (bu-30b-a3b-bootstrap-arbos) never exposed runtime or SSH metadata and is no longer present in the live inventory after the failed replacement cycle",
+    "The previously active fallback pod lgivqago326vr0 (bu-30b-a3b-bootstrap-arbos-r2) was deleted after repeated SSH refusal",
+    "Current live fallback pod is x38f1yxpmngocu (bu-30b-a3b-bootstrap-arbos-r3), created after fixing the local runpodctl create flags for the current CLI",
+    "Refresh training/runpod_inventory_snapshot.json with python -m training.runpod_job --inventory-snapshot-path training/runpod_inventory_snapshot.json --refresh-inventory-snapshot whenever control-plane state changes, then rerun the bootstrap command so the repo status reflects the real pod inventory",
+    "A stop/start recovery was attempted on s7hx99y7tg1tld at 2026-03-26T14:57:03Z, but runtime stayed null across six polls over roughly 90 seconds",
+    "A second stop/start recovery was executed on s7hx99y7tg1tld around 2026-03-26T15:05:00Z from this repo loop; four follow-up GraphQL polls through 2026-03-26T15:06:16Z still reported desiredStatus=RUNNING with runtime=null",
+    "The latest GraphQL inventory at 2026-03-26T15:59:12Z shows x38f1yxpmngocu as RUNNING with runtime ports and public SSH port 17345",
+    "The repo-level bootstrap status now records ssh_probe.reachable=true for x38f1yxpmngocu while preserving 59dd4g1snevkqs as the anchor pod id, so the bootstrap gate is satisfied and the real fine-tune launch should be executed from /workspace/autoppia_operator_run on that pod",
+    "The first pod-side training failure was a stale trainer copy that still called AutoModelForCausalLM for qwen3_vl_moe; sync training/finetune_bu.py before relaunching",
+    "The second pod-side training failure was dependency skew on the container image; the repaired trainer now targets torch 2.8.0/cu128 and upgrades the Python training stack before importing peft/accelerate/bitsandbytes",
+    "If x38f1yxpmngocu later regresses to refused SSH or loses runtime metadata, retry the same SECURE A100 profile or fall back to NVIDIA H100 80GB HBM3 while keeping the same LoRA/QLoRA workflow and artifact paths",
+    "runpodctl is now installed locally under ~/.local/bin/runpodctl; keep using the bootstrap status ssh_probe before attempting upload/exec/download",
+    "Clone the repo, checkout branch arbos, create a venv, and install requirements"
+  ],
+  "training_command": "python -m training.runpod_job --data data/autocinema_trajectory_harvest/sft/train.jsonl --val-data data/autocinema_trajectory_harvest/sft/val.jsonl --output-dir models/bu-30b-lora --existing-pod-id x38f1yxpmngocu --base-model browser-use/bu-30b-a3b-preview --gpu-type 'NVIDIA A100 80GB PCIe' --epochs 3 --lora-rank 32 --keep-pod",
+  "download_command": "python -m training.runpod_job --existing-pod-id x38f1yxpmngocu --output-dir models/bu-30b-lora --remote-adapter-dir /workspace/autoppia_operator_run/models/bu-30b-lora --download-only --keep-pod",
+  "latest_training_attempt": {
+    "status": "post_finetune_eval_success_recorded",
+    "remote_repo_path": "/workspace/autoppia_operator_run",
+    "first_failure": "remote trainer used AutoModelForCausalLM against Qwen3VLMoeConfig",
+    "second_failure": "pod runtime drifted to torch 2.11.0+cu130 on a CUDA 12.8 driver; the first repair to torch 2.1.0+cu118 then broke bitsandbytes/accelerate/numpy compatibility",
+    "active_command": "ssh root@216.81.151.54 -p 17345 'cd /workspace/autoppia_operator_run && nohup python training/finetune_bu.py --base-model browser-use/bu-30b-a3b-preview --data data/autocinema_trajectory_harvest/sft/train.jsonl --val-data data/autocinema_trajectory_harvest/sft/val.jsonl --output-dir models/bu-30b-lora --epochs 3 --lr 2e-4 --lora-rank 32 --lora-alpha 64 --batch-size 2 --grad-accum 8 > train.log 2>&1 < /dev/null &'",
+    "observed_running_at": "2026-03-26T16:23:00Z",
+    "latest_log_excerpt": "2026-03-26T16:23:00Z remote output confirmed checkpoint-21, adapter_config.json, adapter_model.safetensors, tokenizer assets, and train_metrics.json under /workspace/autoppia_operator_run/models/bu-30b-lora; the repo downloaded that bundle locally at 2026-03-26T16:25:36Z.",
+    "local_fix": "training/finetune_bu.py now pins numpy<2, caps transformers below 5.x, restarts the interpreter after torch repair, and routes qwen3_vl_moe through AutoModelForImageTextToText",
+    "local_download_command": "python -m training.runpod_job --existing-pod-id x38f1yxpmngocu --output-dir models/bu-30b-lora --remote-adapter-dir /workspace/autoppia_operator_run/models/bu-30b-lora --download-only --keep-pod",
+    "serving_blocker": null,
+    "serve_retry_command": "ssh -N -L 8001:127.0.0.1:8000 -i /home/usuario1/.runpod/ssh/RunPod-Key-Go -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes -p 17345 root@216.81.151.54",
+    "resolved_serving_path": "HF backend on pod x38f1yxpmngocu via python -m training.serve_model --backend hf ... with a local SSH tunnel to http://127.0.0.1:8001/v1",
+    "post_train_eval_result": "DEMO_WEBS_ENDPOINT=http://84.247.180.192 python -m training.post_finetune_eval --project-id autocinema --use-case SEARCH_FILM --num-tasks 1 --max-steps 18 --adapter-path models/bu-30b-lora --endpoint http://127.0.0.1:8001/v1 --served-model-id autoppia --provider openai --out data/autocinema_trajectory_harvest/post_finetune_eval.json --summary-out data/autocinema_trajectory_harvest/post_finetune_eval_summary.json",
+    "post_train_eval_summary_path": "data/autocinema_trajectory_harvest/post_finetune_eval_summary.json"
+  },
+  "serve_command": "ssh root@216.81.151.54 -p 17345 'cd /workspace/autoppia_operator_run && nohup python -m training.serve_model --backend hf --base-model browser-use/bu-30b-a3b-preview --adapter-path models/bu-30b-lora --served-model-name autoppia --port 8000 > hf_serve.log 2>&1 < /dev/null & echo $! > hf_serve.pid'",
+  "serve_tunnel_command": "ssh -N -L 8001:127.0.0.1:8000 -i /home/usuario1/.runpod/ssh/RunPod-Key-Go -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes -p 17345 root@216.81.151.54",
+  "post_train_eval_command": "DEMO_WEBS_ENDPOINT=http://84.247.180.192 python -m training.post_finetune_eval --project-id autocinema --use-case SEARCH_FILM --num-tasks 1 --max-steps 18 --adapter-path models/bu-30b-lora --endpoint http://127.0.0.1:8001/v1 --served-model-id autoppia --provider openai --out data/autocinema_trajectory_harvest/post_finetune_eval.json --summary-out data/autocinema_trajectory_harvest/post_finetune_eval_summary.json",
+  "verify_before_spend": [
+    "SFT train.jsonl and val.jsonl are non-empty",
+    "manifest.json reports browser-use/bu-30b-a3b-preview and selected successful episodes",
+    "RunPod balance and hourly pricing are acceptable before launch",
+    "Only RUNPOD_API_KEY is required for the bootstrap-only path; HF_TOKEN is optional unless the model becomes gated",
+    "Use the refreshed GraphQL inventory snapshot or the MCP RunPod account view to confirm the latest real pod inventory and whether x38f1yxpmngocu still exposes runtime/SSH metadata before retrying bootstrap from the local shell",
+    "Do not launch training until training/runpod_bootstrap_status.json exposes non-null runtime/ssh metadata and ssh_probe.reachable=true",
+    "Do not launch training while the public SSH endpoint still returns connection refused, even if RunPod advertises a port",
+    "If the local shell still lacks RUNPOD_API_KEY, reconcile training/runpod_bootstrap_status.json from training/runpod_inventory_snapshot.json instead of claiming there is no live bootstrap pod evidence",
+    "The training, serving, and post-train eval CLIs still return --help locally",
+    "The post-train eval summary must contain at least one real successful Autocinema episode before it is treated as evidence"
+  ]
+}

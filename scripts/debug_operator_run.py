@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import socket
 import subprocess
@@ -12,7 +13,6 @@ from datetime import datetime
 from pathlib import Path
 
 import aiohttp
-import asyncio
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data" / "debug_runs"
@@ -141,7 +141,11 @@ def _run_eval(args: argparse.Namespace, *, debug_root: Path, trace_dir: Path, ev
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Run one operator debug episode and open a local trace viewer.")
-    ap.add_argument("--reuse-trace", default=None, help="Existing trace directory to inspect without running eval.")
+    ap.add_argument(
+        "--reuse-trace",
+        default=None,
+        help="Existing trace directory to inspect without running eval.",
+    )
     ap.add_argument("--web-project-id", default=None)
     ap.add_argument("--use-case", default=None)
     ap.add_argument("--task-id", default=None)
@@ -149,11 +153,23 @@ def main() -> int:
     ap.add_argument("--model", default=os.getenv("OPENAI_MODEL", "gpt-5.2"))
     ap.add_argument("--task-cache", default=str(DEFAULT_TASK_CACHE))
     ap.add_argument("--max-steps", type=int, default=8)
-    ap.add_argument("--headed", action="store_true", help="Run the eval episode with a visible browser.")
-    ap.add_argument("--capture-screenshot", action="store_true", help="Capture screenshots into the trace bundle when available.")
+    ap.add_argument(
+        "--headed",
+        action="store_true",
+        help="Run the eval episode with a visible browser.",
+    )
+    ap.add_argument(
+        "--capture-screenshot",
+        action="store_true",
+        help="Capture screenshots into the trace bundle when available.",
+    )
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--no-open", action="store_true", help="Do not auto-open the debugger URL in the system browser.")
+    ap.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not auto-open the debugger URL in the system browser.",
+    )
     args = ap.parse_args()
 
     task_cache = Path(args.task_cache).resolve()
@@ -174,7 +190,13 @@ def main() -> int:
         _run_eval(args, debug_root=debug_root, trace_dir=trace_dir, eval_out=eval_out)
 
     port = _pick_port(int(args.port))
-    return _launch_debugger(trace_dir, task_cache=task_cache, host=str(args.host), port=port, open_browser=not bool(args.no_open))
+    return _launch_debugger(
+        trace_dir,
+        task_cache=task_cache,
+        host=str(args.host),
+        port=port,
+        open_browser=not bool(args.no_open),
+    )
 
 
 if __name__ == "__main__":

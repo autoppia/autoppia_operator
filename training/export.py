@@ -1,16 +1,17 @@
 """Dataset exporters for training: pairwise ranking, verifier classification, SFT, DAgger."""
+
 from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any
 
 from .schema import EpisodeRecord, FullStepRecord
 
 
-def load_episodes(path: str) -> List[EpisodeRecord]:
+def load_episodes(path: str) -> list[EpisodeRecord]:
     """Load EpisodeRecords from a JSONL file."""
-    episodes: List[EpisodeRecord] = []
+    episodes: list[EpisodeRecord] = []
     if not os.path.exists(path):
         return episodes
     with open(path) as f:
@@ -25,7 +26,7 @@ def load_episodes(path: str) -> List[EpisodeRecord]:
 
 
 def export_pairwise_ranking(
-    episodes: List[EpisodeRecord],
+    episodes: list[EpisodeRecord],
     output_path: str,
 ) -> int:
     """Export pairwise ranking dataset from episodes.
@@ -45,8 +46,8 @@ def export_pairwise_ranking(
                 if not step.chosen_candidate_id:
                     continue
 
-                winner_features: Dict[str, float] = {}
-                loser_candidates: List[Dict[str, float]] = []
+                winner_features: dict[str, float] = {}
+                loser_candidates: list[dict[str, float]] = []
 
                 for c in step.candidates:
                     if c.candidate_id == step.chosen_candidate_id:
@@ -69,7 +70,7 @@ def export_pairwise_ranking(
 
 
 def export_verifier_classification(
-    episodes: List[EpisodeRecord],
+    episodes: list[EpisodeRecord],
     output_path: str,
 ) -> int:
     """Export verifier classification dataset from episodes.
@@ -99,12 +100,8 @@ def export_verifier_classification(
                     "previous_action_type": step.previous_action_type,
                     "score_delta": step.score_delta,
                     "dom_node_count": step.dom_node_count,
-                    "validation_success_count": sum(
-                        1 for v in step.validation_events if v.success
-                    ),
-                    "validation_fail_count": sum(
-                        1 for v in step.validation_events if not v.success
-                    ),
+                    "validation_success_count": sum(1 for v in step.validation_events if v.success),
+                    "validation_fail_count": sum(1 for v in step.validation_events if not v.success),
                     "label": label,
                 }
                 f.write(json.dumps(example, ensure_ascii=False) + "\n")
@@ -113,7 +110,7 @@ def export_verifier_classification(
 
 
 def export_sft(
-    episodes: List[EpisodeRecord],
+    episodes: list[EpisodeRecord],
     output_path: str,
 ) -> int:
     """Export SFT dataset: state -> best action from successful episodes.
@@ -146,7 +143,7 @@ def export_sft(
 
 
 def export_dagger(
-    episodes: List[EpisodeRecord],
+    episodes: list[EpisodeRecord],
     output_path: str,
 ) -> int:
     """Export DAgger dataset: uncertain/failed states with expert corrections.
@@ -215,22 +212,14 @@ def _derive_verifier_label(
 export_ranking_pairs = export_pairwise_ranking
 
 
-def _dict_to_episode(data: Dict[str, Any]) -> EpisodeRecord:
+def _dict_to_episode(data: dict[str, Any]) -> EpisodeRecord:
     """Reconstruct EpisodeRecord from a JSON dict."""
     from .schema import CandidateRecord, ValidationEvent
 
-    steps: List[FullStepRecord] = []
+    steps: list[FullStepRecord] = []
     for sd in data.get("steps", []):
-        candidates = [
-            CandidateRecord(**{k: v for k, v in c.items() if k in CandidateRecord.__dataclass_fields__})
-            for c in sd.get("candidates", [])
-            if isinstance(c, dict)
-        ]
-        validation_events = [
-            ValidationEvent(**{k: v for k, v in ve.items() if k in ValidationEvent.__dataclass_fields__})
-            for ve in sd.get("validation_events", [])
-            if isinstance(ve, dict)
-        ]
+        candidates = [CandidateRecord(**{k: v for k, v in c.items() if k in CandidateRecord.__dataclass_fields__}) for c in sd.get("candidates", []) if isinstance(c, dict)]
+        validation_events = [ValidationEvent(**{k: v for k, v in ve.items() if k in ValidationEvent.__dataclass_fields__}) for ve in sd.get("validation_events", []) if isinstance(ve, dict)]
         step_kwargs = {k: v for k, v in sd.items() if k in FullStepRecord.__dataclass_fields__}
         step_kwargs["candidates"] = candidates
         step_kwargs["validation_events"] = validation_events

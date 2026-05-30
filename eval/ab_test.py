@@ -3,13 +3,15 @@
 Runs the operator with different ranker/verifier configurations and compares
 performance metrics (task success rate, score, steps, speed).
 """
+
 from __future__ import annotations
 
 import json
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 
 @dataclass
@@ -23,8 +25,8 @@ class ABConfig:
         output_dir: Directory for evaluation results.
     """
 
-    ranker_model_path: Optional[str] = None
-    verifier_model_path: Optional[str] = None
+    ranker_model_path: str | None = None
+    verifier_model_path: str | None = None
     n_tasks: int = 50
     output_dir: str = "eval/results"
 
@@ -49,8 +51,8 @@ class ABResult:
     config_a: str = "heuristic"
     config_b: str = "learned"
     n_tasks: int = 0
-    a_results: List[RunResult] = field(default_factory=list)
-    b_results: List[RunResult] = field(default_factory=list)
+    a_results: list[RunResult] = field(default_factory=list)
+    b_results: list[RunResult] = field(default_factory=list)
 
     @property
     def a_success_rate(self) -> float:
@@ -88,7 +90,7 @@ class ABResult:
             return 0.0
         return sum(r.total_steps for r in self.b_results) / len(self.b_results)
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         """Generate a comparison summary."""
         return {
             "n_tasks": self.n_tasks,
@@ -122,7 +124,7 @@ class ABEvaluator:
 
     def __init__(
         self,
-        operator_factory: Optional[Callable[..., Any]] = None,
+        operator_factory: Callable[..., Any] | None = None,
     ) -> None:
         """Initialize evaluator.
 
@@ -134,8 +136,8 @@ class ABEvaluator:
 
     def evaluate(
         self,
-        tasks: List[Dict[str, Any]],
-        config: Optional[ABConfig] = None,
+        tasks: list[dict[str, Any]],
+        config: ABConfig | None = None,
     ) -> ABResult:
         """Run A/B evaluation on a set of tasks.
 
@@ -155,7 +157,7 @@ class ABEvaluator:
             n_tasks=len(tasks),
         )
 
-        for task in tasks[:config.n_tasks]:
+        for task in tasks[: config.n_tasks]:
             # Run with heuristic
             a_run = self._run_task(task, use_learned=False, config=config)
             result.a_results.append(a_run)
@@ -170,7 +172,7 @@ class ABEvaluator:
 
     def _run_task(
         self,
-        task: Dict[str, Any],
+        task: dict[str, Any],
         use_learned: bool,
         config: ABConfig,
     ) -> RunResult:

@@ -1,8 +1,20 @@
+from . import _iwa_path  # noqa: F401  — first: operator repo (src.*) + sibling autoppia_iwa
 from .dataset import split_train_val, write_jsonl
 from .exporters import export_ppo_bootstrap, export_sft, load_cleaned_trajectories
 from .iwap_client import IWAPClient
-from .models import ActionRecord, StepRecord, TaskInfo, TrajectoryRecord, TrajectorySummary
-from .normalize import build_sft_record, dedupe_trajectories, extract_task_payload, normalize_trajectory
+from .models import (
+    ActionRecord,
+    StepRecord,
+    TaskInfo,
+    TrajectoryRecord,
+    TrajectorySummary,
+)
+from .normalize import (
+    build_sft_record,
+    dedupe_trajectories,
+    extract_task_payload,
+    normalize_trajectory,
+)
 from .pipeline import (
     DatasetArtifacts,
     IngestionStats,
@@ -11,17 +23,28 @@ from .pipeline import (
     ingest_from_iwap_api,
     ingest_from_s3,
 )
-from .ppo_loop import (
-    IWAStatefulPPOCollector,
-    OperatorLLMPolicy,
-    PPOEpisode,
-    PPOLoopConfig,
-    PPOStepTransition,
-    PolicyDecision,
-    export_ppo_collection,
-    load_tasks,
-)
 from .s3_source import S3ObjectRef, S3TrajectorySource, decode_json_blob, parse_s3_uri
+
+try:
+    from .ppo_loop import (
+        IWAStatefulPPOCollector,
+        OperatorLLMPolicy,
+        PolicyDecision,
+        PPOEpisode,
+        PPOLoopConfig,
+        PPOStepTransition,
+        export_ppo_collection,
+        load_tasks,
+    )
+except ModuleNotFoundError:  # pragma: no cover - optional legacy export
+    IWAStatefulPPOCollector = None
+    OperatorLLMPolicy = None
+    PolicyDecision = None
+    PPOEpisode = None
+    PPOLoopConfig = None
+    PPOStepTransition = None
+    export_ppo_collection = None
+    load_tasks = None
 
 __all__ = [
     "ActionRecord",
@@ -51,9 +74,9 @@ __all__ = [
     "extract_task_payload",
     "ingest_from_iwap_api",
     "ingest_from_s3",
+    "load_cleaned_trajectories",
     "load_tasks",
     "normalize_trajectory",
-    "load_cleaned_trajectories",
     "parse_s3_uri",
     "split_train_val",
     "write_jsonl",

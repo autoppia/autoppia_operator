@@ -13,7 +13,7 @@ class TaskInfo:
     use_case: Any = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "TaskInfo":
+    def from_dict(cls, data: dict[str, Any] | None) -> TaskInfo:
         payload = data if isinstance(data, dict) else {}
         return cls(
             prompt=str(payload.get("prompt") or ""),
@@ -42,7 +42,7 @@ class TrajectorySummary:
     steps_success: int = 0
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "TrajectorySummary":
+    def from_dict(cls, data: dict[str, Any] | None) -> TrajectorySummary:
         payload = data if isinstance(data, dict) else {}
         return cls(
             status=str(payload.get("status") or "unknown"),
@@ -72,7 +72,7 @@ class ActionRecord:
     payload: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "ActionRecord":
+    def from_dict(cls, data: dict[str, Any] | None) -> ActionRecord:
         payload = dict(data) if isinstance(data, dict) else {}
         action_type = str(payload.pop("type", "unknown") or "unknown")
         return cls(type=action_type, payload=payload)
@@ -96,7 +96,7 @@ class StepRecord:
     action: ActionRecord | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "StepRecord":
+    def from_dict(cls, data: dict[str, Any] | None) -> StepRecord:
         payload = data if isinstance(data, dict) else {}
         action_payload = None
         if isinstance(payload.get("agent_output"), dict):
@@ -106,11 +106,7 @@ class StepRecord:
             timestamp=payload.get("timestamp"),
             success=bool(payload.get("success")),
             error=payload.get("error"),
-            execution_time_ms=(
-                int(payload.get("execution_time_ms"))
-                if isinstance(payload.get("execution_time_ms"), (int, float))
-                else None
-            ),
+            execution_time_ms=(int(payload.get("execution_time_ms")) if isinstance(payload.get("execution_time_ms"), int | float) else None),
             agent_input=dict(payload.get("agent_input") or {}),
             post_execute_output=dict(payload.get("post_execute_output") or {}),
             llm_calls=list(payload.get("llm_calls") or []),
@@ -143,7 +139,7 @@ class TrajectoryRecord:
     steps: list[StepRecord] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TrajectoryRecord":
+    def from_dict(cls, data: dict[str, Any]) -> TrajectoryRecord:
         return cls(
             trajectory_id=str(data.get("trajectory_id") or ""),
             run_id=str(data.get("run_id") or ""),
@@ -171,7 +167,12 @@ class TrajectoryRecord:
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": str(system_prompt)})
-        messages.append({"role": "user", "content": f"URL: {self.task.url}\nTask: {self.task.prompt}"})
+        messages.append(
+            {
+                "role": "user",
+                "content": f"URL: {self.task.url}\nTask: {self.task.prompt}",
+            }
+        )
         messages.append(
             {
                 "role": "assistant",

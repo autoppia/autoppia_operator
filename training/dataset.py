@@ -24,7 +24,7 @@ def split_train_val(rows: list[dict[str, Any]], *, val_ratio: float, seed: int) 
     rng = random.Random(int(seed))
     rng.shuffle(items)
 
-    val_count = int(round(len(items) * ratio))
+    val_count = round(len(items) * ratio)
     val_count = min(max(val_count, 1), len(items) - 1) if len(items) > 1 else len(items)
     val = items[:val_count]
     train = items[val_count:]

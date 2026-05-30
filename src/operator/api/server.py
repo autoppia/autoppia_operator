@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 from importlib import import_module
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +30,15 @@ def _operator():
     return import_module("src.operator.entrypoint").OPERATOR
 
 
+async def _respond(payload: dict[str, Any], *, endpoint_name: str) -> dict[str, Any]:
+    try:
+        return await _operator().respond_from_payload(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{endpoint_name}_failed:{type(exc).__name__}") from exc
+
+
 @app.get("/health", summary="Health check")
 async def health() -> dict[str, str]:
     return {"status": "healthy"}
@@ -40,21 +49,11 @@ async def capabilities() -> dict[str, Any]:
     return _operator().capabilities_payload()
 
 
-@app.post("/act", summary="Decide next agent actions")
-async def act(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    try:
-        return await _operator().respond_from_payload(payload)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"act_failed:{type(exc).__name__}") from exc
+@app.post("/step", summary="Decide next agent actions")
+async def step(payload: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
+    return await _respond(payload, endpoint_name="step")
 
 
-@app.post("/step", summary="Alias for /act")
-async def step(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    try:
-        return await _operator().respond_from_payload(payload)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"step_failed:{type(exc).__name__}") from exc
+@app.post("/act", summary="Compatibility alias for /step")
+async def act(payload: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
+    return await _respond(payload, endpoint_name="act")

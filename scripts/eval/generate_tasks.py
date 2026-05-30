@@ -17,8 +17,24 @@ import asyncio
 import hashlib
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
+
+
+def _ensure_autoppia_iwa_on_path(operator_dir: Path) -> None:
+    """If autoppia_iwa is not installed, prepend sibling autoppia_web_agents submodule path."""
+    try:
+        import autoppia_iwa  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        return
+    sibling = operator_dir.parent / "autoppia_web_agents" / "modules" / "autoppia_iwa_module"
+    if sibling.is_dir():
+        s = str(sibling.resolve())
+        if s not in sys.path:
+            sys.path.insert(0, s)
 
 
 def _load_operator_env(operator_dir: Path) -> None:
@@ -58,6 +74,7 @@ async def _generate(project_id: str, prompts_per_use_case: int, dynamic: bool) -
 
 def main() -> None:
     operator_dir = Path(__file__).resolve().parents[2]
+    _ensure_autoppia_iwa_on_path(operator_dir)
 
     parser = argparse.ArgumentParser(description="Generate and cache tasks via autoppia_iwa.")
     parser.add_argument(
@@ -71,8 +88,13 @@ def main() -> None:
         default=None,
         help="Comma-separated project ids (alternative to repeating --project-id)",
     )
-    parser.add_argument("--prompts-per-use-case", type=int, default=1, help="Prompt variants per use case")
-    parser.add_argument("--dynamic", action="store_true", help="Enable dynamic task generation")
+    parser.add_argument(
+        "--prompts-per-use-case",
+        type=int,
+        default=1,
+        help="Prompt variants per use case",
+    )
+    parser.add_argument("--dynamic", action="store_true", help="Enable dynamic task generation (random seed per task in URL; seed also stored on each task in JSON)")
     parser.add_argument(
         "--out",
         default=str(operator_dir / "data" / "task_cache" / "tasks_cache.json"),

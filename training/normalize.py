@@ -5,7 +5,6 @@ import json
 import re
 from typing import Any
 
-
 _SECRET_KEY_RE = re.compile(r"(password|passwd|token|secret|api[_-]?key|authorization)", re.IGNORECASE)
 _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._\-]+", re.IGNORECASE)
 
@@ -100,7 +99,15 @@ def _clean_agent_io(obj: Any, *, keep_html: bool) -> dict[str, Any]:
     if not isinstance(obj, dict):
         return {}
     out: dict[str, Any] = {}
-    for key in ("task_id", "prompt", "url", "web_project_id", "current_url", "timestamp", "step_index"):
+    for key in (
+        "task_id",
+        "prompt",
+        "url",
+        "web_project_id",
+        "current_url",
+        "timestamp",
+        "step_index",
+    ):
         if key in obj and obj.get(key) is not None:
             out[key] = _redact_obj(obj.get(key), parent_key=key)
     if keep_html and obj.get("html") is not None:
@@ -117,7 +124,7 @@ def _step_to_clean(step: Any, *, keep_html: bool) -> dict[str, Any] | None:
         "timestamp": step.get("timestamp"),
         "success": bool(step.get("success")) if step.get("success") is not None else False,
         "error": _redact_obj(step.get("error"), parent_key="error") if step.get("error") is not None else None,
-        "execution_time_ms": int(step.get("execution_time_ms")) if isinstance(step.get("execution_time_ms"), (int, float)) else None,
+        "execution_time_ms": int(step.get("execution_time_ms")) if isinstance(step.get("execution_time_ms"), int | float) else None,
         "agent_input": _clean_agent_io(step.get("agent_input"), keep_html=keep_html),
         "post_execute_output": _clean_agent_io(step.get("post_execute_output"), keep_html=keep_html),
         "llm_calls": _redact_obj(step.get("llm_calls")) if isinstance(step.get("llm_calls"), list) else [],
@@ -208,9 +215,7 @@ def normalize_trajectory(
     success = _is_success(payload=payload, task_meta=task_meta, min_eval_score=min_eval_score)
     eval_score = float(summary.get("eval_score") or (task_meta or {}).get("eval_score") or 0.0)
 
-    unique_fingerprint = hashlib.sha256(
-        (f"{run_id}|{task_id}|{prompt}|{url}|" + json.dumps(actions, sort_keys=True, ensure_ascii=True)).encode("utf-8")
-    ).hexdigest()[:16]
+    unique_fingerprint = hashlib.sha256((f"{run_id}|{task_id}|{prompt}|{url}|" + json.dumps(actions, sort_keys=True, ensure_ascii=True)).encode("utf-8")).hexdigest()[:16]
 
     return {
         "trajectory_id": f"{run_id}:{task_id}:{unique_fingerprint}",
@@ -258,12 +263,7 @@ def dedupe_trajectories(trajectories: list[dict[str, Any]]) -> list[dict[str, An
     for item in trajectories:
         task = item.get("task") if isinstance(item.get("task"), dict) else {}
         actions = item.get("actions") if isinstance(item.get("actions"), list) else []
-        key = hashlib.sha256(
-            (
-                f"{task.get('prompt','')}|{task.get('url','')}|"
-                + json.dumps(actions, sort_keys=True, ensure_ascii=True)
-            ).encode("utf-8")
-        ).hexdigest()
+        key = hashlib.sha256((f"{task.get('prompt', '')}|{task.get('url', '')}|" + json.dumps(actions, sort_keys=True, ensure_ascii=True)).encode("utf-8")).hexdigest()
         prev = best.get(key)
         score = float((item.get("summary") or {}).get("eval_score") or 0.0)
         prev_score = float((prev.get("summary") or {}).get("eval_score") or 0.0) if isinstance(prev, dict) else -1.0

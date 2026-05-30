@@ -16,7 +16,6 @@ from typing import Any
 
 import httpx
 
-
 BASE_URL = "https://api.runpod.io/graphql"
 
 
@@ -63,7 +62,7 @@ def _api_key() -> str:
 
 def _read_variables(raw: str | None, path: str | None) -> dict[str, Any] | None:
     if path:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             payload = json.load(f)
     elif raw:
         payload = json.loads(raw)
@@ -146,7 +145,10 @@ def cmd_get_pod(args: argparse.Namespace) -> int:
         "cost_per_hour": pod.get("costPerHr"),
         "uptime_seconds": pod.get("runtime", {}).get("uptimeInSeconds"),
         "gpu_utilization": [
-            {"gpu_util": item.get("gpuUtilPercent"), "memory_util": item.get("memoryUtilPercent")}
+            {
+                "gpu_util": item.get("gpuUtilPercent"),
+                "memory_util": item.get("memoryUtilPercent"),
+            }
             for item in pod.get("runtime", {}).get("gpus", [])
             if isinstance(item, dict)
         ],
@@ -182,7 +184,14 @@ def cmd_create_pod(args: argparse.Namespace) -> int:
 
     data = _run_query(_api_key(), query, variables)
     pod = data.get("podFindAndDeployOnDemand", {})
-    return _print({"ok": True, "id": pod.get("id"), "name": pod.get("name"), "status": pod.get("desiredStatus")})
+    return _print(
+        {
+            "ok": True,
+            "id": pod.get("id"),
+            "name": pod.get("name"),
+            "status": pod.get("desiredStatus"),
+        }
+    )
 
 
 def cmd_stop_pod(args: argparse.Namespace) -> int:
@@ -319,23 +328,39 @@ def _build_parser() -> argparse.ArgumentParser:
     create_pod.add_argument("--docker-image", default="runpod/pytorch:latest")
     create_pod.add_argument("--volume-in-gb", type=int, default=20)
     create_pod.add_argument("--cloud-type", default="SECURE")
-    create_pod.add_argument("--allow-side-effects", action="store_true", help="required for create/stop/resume/terminate")
+    create_pod.add_argument(
+        "--allow-side-effects",
+        action="store_true",
+        help="required for create/stop/resume/terminate",
+    )
     create_pod.set_defaults(func=cmd_create_pod)
 
     stop_pod = sub.add_parser("stop-pod", help="stop a pod (requires side effects)")
     stop_pod.add_argument("--pod-id", required=True)
-    stop_pod.add_argument("--allow-side-effects", action="store_true", help="required for stop/resume/terminate")
+    stop_pod.add_argument(
+        "--allow-side-effects",
+        action="store_true",
+        help="required for stop/resume/terminate",
+    )
     stop_pod.set_defaults(func=cmd_stop_pod)
 
     resume_pod = sub.add_parser("resume-pod", help="resume a pod (requires side effects)")
     resume_pod.add_argument("--pod-id", required=True)
     resume_pod.add_argument("--gpu-count", type=int, default=1)
-    resume_pod.add_argument("--allow-side-effects", action="store_true", help="required for stop/resume/terminate")
+    resume_pod.add_argument(
+        "--allow-side-effects",
+        action="store_true",
+        help="required for stop/resume/terminate",
+    )
     resume_pod.set_defaults(func=cmd_resume_pod)
 
     terminate_pod = sub.add_parser("terminate-pod", help="terminate a pod (requires side effects)")
     terminate_pod.add_argument("--pod-id", required=True)
-    terminate_pod.add_argument("--allow-side-effects", action="store_true", help="required for stop/resume/terminate")
+    terminate_pod.add_argument(
+        "--allow-side-effects",
+        action="store_true",
+        help="required for stop/resume/terminate",
+    )
     terminate_pod.set_defaults(func=cmd_terminate_pod)
 
     get_balance = sub.add_parser("get-balance", help="get account balance")
@@ -344,10 +369,17 @@ def _build_parser() -> argparse.ArgumentParser:
     gpu_types = sub.add_parser("list-gpu-types", help="list available GPU types and prices")
     gpu_types.set_defaults(func=cmd_list_gpu_types)
 
-    graphql = sub.add_parser("graphql", help="run arbitrary runpod GraphQL (mutations need allow-side-effects)")
+    graphql = sub.add_parser(
+        "graphql",
+        help="run arbitrary runpod GraphQL (mutations need allow-side-effects)",
+    )
     graphql.add_argument("--query", required=True)
-    graphql.add_argument("--variables", default=None, help='JSON object, e.g. "{\"podId\":\"...\"}"')
-    graphql.add_argument("--variables-file", default=None, help="path to JSON file with GraphQL variables")
+    graphql.add_argument("--variables", default=None, help='JSON object, e.g. "{"podId":"..."}"')
+    graphql.add_argument(
+        "--variables-file",
+        default=None,
+        help="path to JSON file with GraphQL variables",
+    )
     graphql.add_argument("--timeout", type=int, default=45)
     graphql.add_argument("--allow-side-effects", action="store_true")
     graphql.set_defaults(func=cmd_graphql)

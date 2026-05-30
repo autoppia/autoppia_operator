@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -24,21 +24,28 @@ from training import (
 
 
 def _parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(
-        description=(
-            "Collect PPO-style rollouts using AutoppiaOperator exploration policy "
-            "and IWA StatefulEvaluator rewards."
-        )
+    ap = argparse.ArgumentParser(description=("Collect PPO-style rollouts using AutoppiaOperator exploration policy and IWA StatefulEvaluator rewards."))
+    ap.add_argument(
+        "--tasks-json",
+        required=True,
+        help="Path to JSON file with tasks or {'tasks':[...]} payload",
     )
-    ap.add_argument("--tasks-json", required=True, help="Path to JSON file with tasks or {'tasks':[...]} payload")
     ap.add_argument("--out-dir", default="data/training/ppo", help="Output base directory")
-    ap.add_argument("--model", default=None, help="Optional model override passed to operator policy")
+    ap.add_argument(
+        "--model",
+        default=None,
+        help="Optional model override passed to operator policy",
+    )
     ap.add_argument("--num-episodes", type=int, default=20, help="Number of episodes to collect")
     ap.add_argument("--max-steps", type=int, default=25, help="Max steps per episode")
     ap.add_argument("--epsilon", type=float, default=0.05, help="Exploration epsilon")
     ap.add_argument("--seed", type=int, default=42, help="Random seed")
     ap.add_argument("--task-limit", type=int, default=None, help="Optional cap on loaded tasks")
-    ap.add_argument("--web-agent-id-prefix", default="autoppia-ppo", help="Evaluator web_agent_id prefix")
+    ap.add_argument(
+        "--web-agent-id-prefix",
+        default="autoppia-ppo",
+        help="Evaluator web_agent_id prefix",
+    )
     return ap.parse_args()
 
 
@@ -62,7 +69,7 @@ def main() -> None:
     collector = IWAStatefulPPOCollector(policy=policy, config=config)
     episodes = collector.collect(tasks)
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     out_dir = Path(args.out_dir).resolve() / stamp
     files = export_ppo_collection(out_dir, episodes)
 
