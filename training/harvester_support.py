@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WEB_ID_VARIANTS = REPO_ROOT.parent / "autoppia_webs_demo" / "web_1_autocinema" / "src" / "dynamic" / "v3" / "data" / "id-variants.json"
 
@@ -215,13 +216,7 @@ def _value_from_rule(field: dict[str, Any]) -> str:
     return ""
 
 
-def _selector_candidates(
-    *,
-    ids: list[str] | None = None,
-    classes: list[str] | None = None,
-    placeholders: list[str] | None = None,
-    texts: list[str] | None = None,
-) -> list[dict[str, Any]]:
+def _selector_candidates(*, ids: list[str] | None = None, texts: list[str] | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for value in ids or []:
@@ -230,18 +225,6 @@ def _selector_candidates(
         if value and key not in seen:
             seen.add(key)
             out.append({"type": "attributeValueSelector", "attribute": "id", "value": value, "case_sensitive": False})
-    for value in classes or []:
-        value = str(value).strip()
-        key = f"class:{value.lower()}"
-        if value and key not in seen:
-            seen.add(key)
-            out.append({"type": "attributeValueSelector", "attribute": "class", "value": value, "case_sensitive": False})
-    for value in placeholders or []:
-        value = str(value).strip()
-        key = f"placeholder:{value.lower()}"
-        if value and key not in seen:
-            seen.add(key)
-            out.append({"type": "attributeValueSelector", "attribute": "placeholder", "value": value, "case_sensitive": False})
     for value in texts or []:
         value = str(value).strip()
         key = f"text:{value.lower()}"
@@ -300,7 +283,9 @@ def _success_signal_hit(*, html: str, url: str, brief: dict[str, Any]) -> bool:
         return True
     if any(f'id="{value}"' in html_lower for value in ids):
         return True
-    return bool(any(fragment in url_lower for fragment in fragments))
+    if any(fragment in url_lower for fragment in fragments):
+        return True
+    return False
 
 
 def _guided_actions_from_brief(*, task_url: str, brief: dict[str, Any]) -> list[dict[str, Any]]:
@@ -340,3 +325,76 @@ __all__ = [
     "brief_prompt_lines",
     "summarize_attempt_for_claude",
 ]
+
+
+def flatten_backend_events_from_report(report: dict[str, Any] | None) -> list[dict[str, Any]]:
+    episodes = report.get("episodes") if isinstance(report, dict) else None
+    episode = episodes[0] if isinstance(episodes, list) and episodes else None
+    flat: list[dict[str, Any]] = []
+    if isinstance(episode, dict):
+        seen = episode.get("backend_events_seen")
+        if isinstance(seen, list):
+            for item in seen:
+                if isinstance(item, list):
+                    flat.extend([ev for ev in item if isinstance(ev, dict)])
+                elif isinstance(item, dict):
+                    flat.append(item)
+        guided = episode.get("guided_execution")
+        if isinstance(guided, list):
+            for step in guided:
+                if not isinstance(step, dict):
+                    continue
+                for ev in step.get("backend_events") or []:
+                    if isinstance(ev, dict):
+                        flat.append(ev)
+    deduped: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for ev in flat:
+        key = json.dumps(ev, sort_keys=True, ensure_ascii=False)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(ev)
+    return deduped
+
+
+def semantic_event_validation(*, task_row: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from autoppia_iwa.src.demo_webs.base_events import Event
+        from autoppia_iwa.src.demo_webs.classes import BackendEvent
+        from autoppia_iwa.src.data_generation.tests.classes import CheckEventTest
+    except Exception as exc:
+        return {"success": False, "reason": f"import_error:{exc}", "matched_tests": 0, "total_tests": 0}
+
+    backend_dicts = flatten_backend_events_from_report(report)
+    backend_events = [BackendEvent(**ev) for ev in backend_dicts if isinstance(ev, dict)]
+    parsed_events = Event.parse_all(backend_events)
+    raw_tests = task_row.get("tests") if isinstance(task_row, dict) else None
+    tests = [t for t in (raw_tests or []) if isinstance(t, dict) and (t.get("type") == "CheckEventTest" or "CheckEvent" in str(t.get("type") or ""))]
+    matched = 0
+    for raw in tests:
+        test = CheckEventTest(
+            type="CheckEventTest",
+            event_name=str(raw.get("event_name") or ""),
+            event_criteria=raw.get("event_criteria") or {},
+            description=str(raw.get("description") or "Check if specific event was triggered"),
+        )
+        ok = False
+        for ev in parsed_events:
+            if ev.event_name != test.event_name:
+                continue
+            try:
+                criteria = ev.ValidationCriteria(**test.event_criteria)
+            except Exception:
+                continue
+            if ev.validate_criteria(criteria):
+                ok = True
+                break
+        if ok:
+            matched += 1
+    return {
+        "success": bool(tests) and matched == len(tests),
+        "matched_tests": matched,
+        "total_tests": len(tests),
+        "backend_events": backend_dicts[:20],
+    }

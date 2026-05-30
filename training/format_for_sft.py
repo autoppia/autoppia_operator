@@ -6,40 +6,48 @@ The exporter now supports multiple policy-training surfaces:
 - v3: runtime-aligned `policy_input_text` plus the same wrapper structure the
   step-engine expects at inference time.
 """
-
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import random
 import sys
-from contextlib import suppress
+import importlib.util
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from datetime import datetime, timezone
 
-# IWA imports may prepend .../autoppia_iwa/autoppia_iwa/src so a bare `import src` would load the
-# wrong top-level `src` package. Always re-pin the operator repo root to the front of sys.path
-# so `import src.operator` is this repo, not the sibling.
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OP_ROOT = str(REPO_ROOT)
-if OP_ROOT in sys.path:
-    with suppress(Exception):
-        sys.path.remove(OP_ROOT)
-sys.path.insert(0, OP_ROOT)
-
-from autoppia_iwa.src.web_agents.protocol import STEP_PROTOCOL_VERSION, StepRequest, StepResponse
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+local_src_root = REPO_ROOT / "src"
+current_src = sys.modules.get("src")
+if current_src is None or not str(getattr(current_src, "__file__", "")).startswith(str(local_src_root)):
+    sys.modules.pop("src", None)
+    src_init = local_src_root / "__init__.py"
+    src_spec = importlib.util.spec_from_file_location(
+        "src",
+        src_init,
+        submodule_search_locations=[str(local_src_root)],
+    )
+    if src_spec is None or src_spec.loader is None:
+        raise ModuleNotFoundError(f"Unable to load local src package from {src_init}")
+    src_module = importlib.util.module_from_spec(src_spec)
+    sys.modules["src"] = src_module
+    src_spec.loader.exec_module(src_module)
 
 from src.operator.agents.step_engine.candidates import Candidate, CandidateExtractor
 from src.operator.agents.step_engine.observation import ObsBuilder
 
 from .obs_serializer import serialize_observation
-from .snapshot_html_clean import clean_snapshot_html
+from src.operator.agents.step_engine.state import AgentState
 
-SYSTEM_PROMPT = "You are a browser-use style web agent operating on Autocinema tasks. Return the next browser tool call as JSON with the chosen tool arguments."
+SYSTEM_PROMPT = (
+    "You are a browser-use style web agent operating on Autocinema tasks. "
+    "Return the next browser tool call as JSON with the chosen tool arguments."
+)
 RUNTIME_ALIGNED_SYSTEM_PROMPT = (
     "You are a browser-use-style web automation policy.\n"
     "Given the task and the current browser state, choose the next browser step sequence.\n"
@@ -67,8 +75,6 @@ DEFAULT_VAL_RATIO = 0.1
 
 _CANDIDATE_EXTRACTOR = CandidateExtractor()
 _OBS_BUILDER = ObsBuilder()
-_STEP_PROTOCOL_VERSION = STEP_PROTOCOL_VERSION
-_STEP_TOOLS_CACHE: list[dict[str, Any]] | None = None
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -195,7 +201,7 @@ def _build_observation(
     before = step.get("before") if isinstance(step.get("before"), dict) else {}
     action = step.get("action") if isinstance(step.get("action"), dict) else {}
     response = step.get("act_response") if isinstance(step.get("act_response"), dict) else {}
-    snapshot_html = clean_snapshot_html(str(request.get("snapshot_html") or ""))
+    snapshot_html = str(request.get("snapshot_html") or "")
     url = str(request.get("url") or before.get("url") or trace.get("task_url") or "")
     if candidates is None:
         candidates = _CANDIDATE_EXTRACTOR.extract(snapshot_html=snapshot_html, url=url)
@@ -204,7 +210,7 @@ def _build_observation(
     trace_steps = trace.get("steps") if isinstance(trace.get("steps"), list) else []
     step_index = int(step.get("step_index") or 0)
     history_recent = _recent_history_from_trace_steps(trace_steps, current_step_index=step_index)
-    use_case = str(_episode_use_case := trace.get("episode", {}).get("use_case") or trace.get("task_web_project_id") or "")
+    use_case = str(episode_use_case := trace.get("episode", {}).get("use_case") or trace.get("task_web_project_id") or "")
 
     obs = {
         "prompt": request.get("prompt") or trace.get("task_prompt") or "",
@@ -232,7 +238,7 @@ def _build_observation(
                 "tool": str(action.get("tool") or ""),
                 "arguments": action.get("arguments") if isinstance(action.get("arguments"), dict) else {},
             },
-        },
+        }
     }
     return serialize_observation(obs)
 
@@ -247,181 +253,37 @@ def _build_runtime_aligned_observation(
 ) -> str:
     request = step.get("act_request") if isinstance(step.get("act_request"), dict) else {}
     before = step.get("before") if isinstance(step.get("before"), dict) else {}
-    snapshot_html = clean_snapshot_html(str(request.get("snapshot_html") or ""))
+    snapshot_html = str(request.get("snapshot_html") or "")
     url = str(request.get("url") or before.get("url") or trace.get("task_url") or "")
     prompt = str(request.get("prompt") or trace.get("task_prompt") or "")
+    web_project_id = str(request.get("web_project_id") or trace.get("task_web_project_id") or "")
     step_index = int(step.get("step_index") or 0)
     if candidates is None:
         candidates = _CANDIDATE_EXTRACTOR.extract(snapshot_html=snapshot_html, url=url)
     if text_ir is None:
         text_ir = _OBS_BUILDER.build_text_ir(snapshot_html)
-    return _step_request_json(
-        task_id=str(request.get("task_id") or trace.get("task_id") or ""),
+    state = AgentState.from_internal_state(request.get("state_in") or {}, prompt)
+    history = _history_for_policy_input(
+        trace.get("steps") if isinstance(trace.get("steps"), list) else [],
+        current_step_index=step_index,
+    )
+    policy_obs = _OBS_BUILDER.build_policy_obs(
+        task_id=str(request.get("task_id") or ""),
         prompt=prompt,
-        url=url,
-        html=snapshot_html,
-        screenshot=request.get("screenshot"),
+        web_project_id=web_project_id,
+        use_case={"id": str(use_case or ""), "name": str(use_case or "")},
+        snapshot_html=snapshot_html,
         step_index=step_index,
-        history=_step_history_from_trace_steps(
-            trace.get("steps") if isinstance(trace.get("steps"), list) else [],
-            current_step_index=step_index,
-        ),
-        tools=_supported_step_tools(),
-        include_reasoning=False,
-    )
-
-
-def _step_request_json(
-    *,
-    task_id: str | None,
-    prompt: str | None,
-    url: str | None,
-    html: str,
-    screenshot: Any = None,
-    step_index: int,
-    history: list[dict[str, Any]] | None = None,
-    tools: list[dict[str, Any]] | None = None,
-    include_reasoning: bool = False,
-) -> str:
-    request = StepRequest(
-        task_id=task_id or None,
-        prompt=prompt or None,
-        url=url or None,
-        html=str(html or ""),
-        screenshot=screenshot,
-        step_index=int(step_index),
+        url=url,
+        mode=str(state.mode or "BOOTSTRAP"),
+        flags={},
+        state=state,
+        text_ir=text_ir,
+        candidates=candidates,
         history=history,
-        tools=tools or [],
-        include_reasoning=bool(include_reasoning),
+        screenshot_available=bool(request.get("screenshot")),
     )
-    payload = request.model_dump(mode="json", exclude_none=True)
-    return json.dumps(payload, ensure_ascii=False)
-
-
-def _supported_step_tools() -> list[dict[str, Any]]:
-    global _STEP_TOOLS_CACHE
-    if _STEP_TOOLS_CACHE is not None:
-        return _STEP_TOOLS_CACHE
-    try:
-        actions_module = importlib.import_module("autoppia_iwa.src.execution.actions.actions")
-        BaseAction = actions_module.BaseAction
-        defs_fn = getattr(BaseAction, "all_function_definitions", None)
-        defs = defs_fn() if callable(defs_fn) else None
-        tools: list[dict[str, Any]] = []
-        for item in defs if isinstance(defs, list) else []:
-            normalized = _normalize_allowed_tool_for_step(item)
-            if normalized is not None:
-                tools.append(normalized)
-        if tools:
-            _STEP_TOOLS_CACHE = tools
-            return _STEP_TOOLS_CACHE
-    except Exception:
-        pass
-    _STEP_TOOLS_CACHE = []
-    return _STEP_TOOLS_CACHE
-
-
-def _normalize_allowed_tool_for_step(item: Any) -> dict[str, Any] | None:
-    if not isinstance(item, dict):
-        return None
-    fn = item.get("function") if isinstance(item.get("function"), dict) else {}
-    tool_name = str(fn.get("name") or "").strip()
-    if not tool_name or tool_name in {"done", "evaluate"}:
-        return None
-    namespaced = "user.request_input" if tool_name == "request_user_input" else f"browser.{tool_name}"
-    return {
-        "name": namespaced,
-        "description": str(fn.get("description") or ""),
-        "parameters": fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {},
-    }
-
-
-def _to_tool_call(payload: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(payload, dict):
-        return None
-    # Already a tool call payload.
-    if isinstance(payload.get("name"), str) and isinstance(payload.get("arguments"), dict):
-        return {
-            "name": _canonical_step_tool_name(str(payload.get("name") or "").strip()),
-            "arguments": dict(payload.get("arguments") or {}),
-        }
-    try:
-        base_module = importlib.import_module("autoppia_iwa.src.execution.actions.base")
-        BaseAction = base_module.BaseAction
-        action = BaseAction.create_action(payload)
-        if action is not None:
-            tool_call = action.to_tool_call()
-            if isinstance(tool_call, dict) and tool_call.get("name"):
-                tool_call = dict(tool_call)
-                tool_call["name"] = _canonical_step_tool_name(str(tool_call.get("name") or ""))
-                return tool_call
-    except Exception:
-        return None
-    return None
-
-
-def _canonical_step_tool_name(name: str) -> str:
-    normalized = str(name or "").strip()
-    lowered = normalized.lower()
-    if not normalized or "." in normalized:
-        return normalized
-    return "user.request_input" if lowered == "request_user_input" else f"browser.{lowered}"
-
-
-def _step_history_from_trace_steps(
-    trace_steps: list[dict[str, Any]],
-    *,
-    current_step_index: int,
-    limit: int = 10,
-) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for previous in trace_steps:
-        if not isinstance(previous, dict):
-            continue
-        prev_index = int(previous.get("step_index") or 0)
-        if prev_index >= current_step_index:
-            break
-        response = previous.get("act_response") if isinstance(previous.get("act_response"), dict) else {}
-        done = bool(response.get("done"))
-        error = str((previous.get("execution") or {}).get("error") or "").strip() if isinstance(previous.get("execution"), dict) else ""
-        tool_calls = response.get("tool_calls")
-        normalized_calls: list[dict[str, Any]] = []
-        if isinstance(tool_calls, list):
-            for call in tool_calls:
-                converted = _to_tool_call(call if isinstance(call, dict) else None)
-                if isinstance(converted, dict):
-                    normalized_calls.append(converted)
-        action_payload = previous.get("action") if isinstance(previous.get("action"), dict) else None
-        if not normalized_calls:
-            converted = _to_tool_call(action_payload)
-            if isinstance(converted, dict):
-                normalized_calls.append(converted)
-        action_value: dict[str, Any] | None = normalized_calls[0] if normalized_calls else (action_payload if isinstance(action_payload, dict) else None)
-        items.append(
-            {
-                "index": prev_index,
-                "action": action_value,
-                "success": str((previous.get("execution") or {}).get("status") or "").lower() == "ok" if isinstance(previous.get("execution"), dict) else None,
-                "error": error or None,
-                "done": done,
-            }
-        )
-    return items[-limit:]
-
-
-def _step_response_payload(
-    *,
-    tool_call: dict[str, Any],
-    done: bool,
-    content: str | None = None,
-) -> dict[str, Any]:
-    response = StepResponse(
-        protocol_version=_STEP_PROTOCOL_VERSION,
-        tool_calls=[tool_call],
-        content=(str(content).strip() if isinstance(content, str) and str(content).strip() else None),
-        done=bool(done),
-    )
-    return response.model_dump(mode="json", exclude_none=True)
+    return str(policy_obs.get("policy_input_text") or "")
 
 
 def _tool_calls_from_step(step: dict[str, Any]) -> list[dict[str, Any]]:
@@ -440,37 +302,43 @@ def _normalize_trace_tool_call(
     candidates: list[Candidate],
     current_url: str,
 ) -> dict[str, Any] | None:
-    normalized = _to_tool_call(tool_call)
-    if not isinstance(normalized, dict):
+    if not isinstance(tool_call, dict):
         return None
-    name = str(normalized.get("name") or "").strip().lower()
-    args = normalized.get("arguments") if isinstance(normalized.get("arguments"), dict) else {}
+    name = str(tool_call.get("name") or "").strip()
+    arguments = dict(tool_call.get("arguments") or {}) if isinstance(tool_call.get("arguments"), dict) else {}
+    if not name:
+        return None
+
     if name == "browser.navigate":
-        target = str(args.get("url") or "").strip()
-        if target and target.rstrip("/") == str(current_url or "").strip().rstrip("/"):
+        target_url = str(arguments.get("url") or "").strip()
+        if not target_url or target_url == str(current_url or "").strip():
             return None
+        return {"name": name, "arguments": arguments}
+
+    raw_index = arguments.get("index")
+    if not isinstance(raw_index, int):
+        return {"name": name, "arguments": arguments}
+
     if name == "browser.click":
-        index = args.get("index")
-        if isinstance(index, int) and 0 <= index < len(candidates) and not _candidate_supports_click(candidates[index]):
-            for candidate_index, candidate in enumerate(candidates):
-                if _candidate_supports_click(candidate):
-                    remapped = dict(normalized)
-                    remapped_args = dict(args)
-                    remapped_args["index"] = candidate_index
-                    remapped["arguments"] = remapped_args
-                    return remapped
-    return normalized
+        eligible = [idx for idx, cand in enumerate(candidates) if cand.role in {"button", "link"}]
+    elif name == "browser.input":
+        eligible = [idx for idx, cand in enumerate(candidates) if cand.role == "input"]
+    else:
+        return {"name": name, "arguments": arguments}
 
+    if 0 <= raw_index < len(candidates):
+        candidate = candidates[raw_index]
+        if (name == "browser.click" and candidate.role in {"button", "link"}) or (
+            name == "browser.input" and candidate.role == "input"
+        ):
+            return {"name": name, "arguments": arguments}
 
-def _candidate_supports_click(candidate: Candidate) -> bool:
-    role = str(candidate.role or "").strip().lower()
-    tag_type = str(candidate.type or "").strip().lower()
-    input_type = str(candidate.input_type or "").strip().lower()
-    if role in {"button", "link", "tab", "menuitem", "checkbox", "radio", "switch", "combobox"}:
-        return True
-    if tag_type in {"a", "button", "select"}:
-        return True
-    return tag_type == "input" and input_type in {"button", "submit", "reset", "checkbox", "radio"}
+    if 0 <= raw_index < len(eligible):
+        remapped = dict(arguments)
+        remapped["index"] = int(eligible[raw_index])
+        return {"name": name, "arguments": remapped}
+
+    return None
 
 
 def _guided_action_from_execution(execution: dict[str, Any]) -> dict[str, Any] | None:
@@ -537,9 +405,6 @@ def convert_guided_report_to_sft_examples(
     episode_task_id = str(episode_row.get("episode_task_id") or report_episode.get("episode_task_id") or "")
     trace_file = str(episode_row.get("result_path") or episode_row.get("trace_file") or "")
     use_case = str(episode_row.get("use_case") or report_episode.get("use_case") or "")
-    episode_prompt = _resolve_episode_prompt(episode_row=episode_row, report_episode=report_episode)
-    final_content_fallback = str(report_episode.get("final_content") or "").strip()
-    last_effective_html = ""
 
     for idx, execution in enumerate(execution_log):
         if not isinstance(execution, dict):
@@ -547,55 +412,24 @@ def convert_guided_report_to_sft_examples(
         action = _guided_action_from_execution(execution)
         if not isinstance(action, dict) or not action.get("type"):
             continue
-        tool_call = _to_tool_call(action)
-        if not isinstance(tool_call, dict):
-            continue
-        is_terminal = idx == len(execution_log) - 1 and bool(report_episode.get("success"))
-        step_html = _resolved_guided_step_html(
-            execution,
-            report_episode,
-            step_index=idx,
-            is_terminal=is_terminal,
-            last_effective_html=last_effective_html,
-            final_content_fallback=final_content_fallback,
-        )
-        if str(step_html or "").strip():
-            last_effective_html = str(step_html)
-        assistant_payload = (
-            _step_response_payload(
-                tool_call=tool_call,
-                done=bool(is_terminal),
-                content=str(report_episode.get("final_url") or "") if is_terminal else None,
+        policy_input_text = str(execution.get("policy_input_text") or "")
+        policy_tool_call = execution.get("policy_tool_call") if isinstance(execution.get("policy_tool_call"), dict) else None
+        if runtime_aligned and policy_input_text and policy_tool_call:
+            user_content = policy_input_text
+            assistant_content = json.dumps({"type": "browser", "tool_call": policy_tool_call}, ensure_ascii=False)
+        else:
+            user_content = _build_guided_observation(
+                episode_row=episode_row,
+                report_episode=report_episode,
+                execution_log=execution_log,
+                current_index=idx,
             )
-            if runtime_aligned
-            else tool_call
-        )
+            assistant_content = json.dumps(action, ensure_ascii=False)
         record = {
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        _step_request_json(
-                            task_id=str(episode_row.get("task_id") or report_episode.get("task_id") or ""),
-                            prompt=episode_prompt,
-                            url=str(execution.get("url") or report_episode.get("final_url") or ""),
-                            html=step_html,
-                            step_index=idx,
-                            history=[],
-                            tools=_supported_step_tools(),
-                            include_reasoning=False,
-                        )
-                        if runtime_aligned
-                        else _build_guided_observation(
-                            episode_row=episode_row,
-                            report_episode=report_episode,
-                            execution_log=execution_log,
-                            current_index=idx,
-                        )
-                    ),
-                },
-                {"role": "assistant", "content": json.dumps(assistant_payload, ensure_ascii=False)},
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": assistant_content},
             ],
             "metadata": {
                 "episode_task_id": episode_task_id,
@@ -644,7 +478,7 @@ def convert_trace_to_sft_examples(
             continue
         request = step.get("act_request") if isinstance(step.get("act_request"), dict) else {}
         before = step.get("before") if isinstance(step.get("before"), dict) else {}
-        snapshot_html = clean_snapshot_html(str(request.get("snapshot_html") or ""))
+        snapshot_html = str(request.get("snapshot_html") or "")
         url = str(request.get("url") or before.get("url") or trace.get("task_url") or "")
         candidates = _CANDIDATE_EXTRACTOR.extract(snapshot_html=snapshot_html, url=url)
         text_ir = _OBS_BUILDER.build_text_ir(snapshot_html)
@@ -655,17 +489,11 @@ def convert_trace_to_sft_examples(
         )
         if not isinstance(normalized_tool_call, dict):
             continue
-        response_payload = step.get("act_response") if isinstance(step.get("act_response"), dict) else {}
-        done = bool(response_payload.get("done"))
-        assistant_payload = (
-            _step_response_payload(
-                tool_call=normalized_tool_call,
-                done=done,
-                content=str(response_payload.get("content") or "") if done else None,
-            )
-            if runtime_aligned
-            else normalized_tool_call
-        )
+        assistant_payload: dict[str, Any]
+        if runtime_aligned:
+            assistant_payload = {"type": "browser", "tool_call": normalized_tool_call}
+        else:
+            assistant_payload = normalized_tool_call
         record = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -709,27 +537,6 @@ def convert_trace_to_sft_examples(
     return examples
 
 
-def _resolve_trace_path(*, row: dict[str, Any], gold_dir: Path) -> Path:
-    """Prefer absolute on-disk path; if missing, try path relative to the gold/ directory."""
-    raw = str(row.get("trace_file") or "").strip()
-    if not raw:
-        return Path()
-    p = Path(raw)
-    try:
-        if p.is_file():
-            return p
-    except OSError:
-        pass
-    if not p.is_absolute():
-        p2 = (gold_dir / p).resolve()
-        try:
-            if p2.is_file():
-                return p2
-        except OSError:
-            pass
-    return p
-
-
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as fh:
@@ -741,105 +548,6 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
             if isinstance(payload, dict):
                 rows.append(payload)
     return rows
-
-
-def _resolve_episode_prompt(
-    *,
-    episode_row: dict[str, Any],
-    report_episode: dict[str, Any] | None = None,
-) -> str:
-    for key in ("prompt", "task_prompt"):
-        value = str(episode_row.get(key) or "").strip()
-        if value:
-            return value
-    if isinstance(report_episode, dict):
-        for key in ("prompt", "task_prompt"):
-            value = str(report_episode.get(key) or "").strip()
-            if value:
-                return value
-
-    candidate_path = str(episode_row.get("candidate_path") or "").strip()
-    if candidate_path:
-        p = Path(candidate_path)
-        if p.exists() and p.is_file():
-            with suppress(Exception):
-                payload = json.loads(p.read_text(encoding="utf-8"))
-                if isinstance(payload, dict):
-                    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-                    objective = metadata.get("objective") if isinstance(metadata.get("objective"), dict) else {}
-                    prompt = str(objective.get("prompt") or "").strip()
-                    if prompt:
-                        return prompt
-                    lines = payload.get("prompt_lines")
-                    if isinstance(lines, list):
-                        merged = " ".join(str(line).strip() for line in lines if str(line).strip()).strip()
-                        if merged:
-                            return merged
-    return ""
-
-
-def _html_embedded_in_guided_execution(execution: dict[str, Any]) -> str:
-    """Per-step HTML if the replay/harvester stored it on the block or on an attempt."""
-    for key in ("snapshot_html", "html", "page_html", "dom_html", "content_html", "page_snapshot_html"):
-        value = str(execution.get(key) or "").strip()
-        if value:
-            return value
-    attempts = execution.get("attempts")
-    if not isinstance(attempts, list):
-        return ""
-    for attempt in attempts:
-        if not isinstance(attempt, dict):
-            continue
-        for key in ("snapshot_html", "html", "page_html", "dom_html", "after_html", "content_html"):
-            value = str(attempt.get(key) or "").strip()
-            if value:
-                return value
-    return ""
-
-
-def _guided_execution_html(
-    *,
-    execution: dict[str, Any],
-    report_episode: dict[str, Any],
-    is_terminal: bool,
-) -> str:
-    for key in ("snapshot_html", "html", "page_html", "dom_html", "content_html"):
-        value = str(execution.get(key) or "").strip()
-        if value:
-            return value
-    if is_terminal:
-        return str(report_episode.get("final_content") or "")
-    return ""
-
-
-def _resolved_guided_step_html(
-    execution: dict[str, Any],
-    report_episode: dict[str, Any],
-    *,
-    step_index: int,
-    is_terminal: bool,
-    last_effective_html: str,
-    final_content_fallback: str,
-) -> str:
-    """HTML for this guided step: embedded fields, then terminal final_content, then carry / episode fallback.
-
-    - Step 0 may stay empty (e.g. cold navigate) — caller allows that.
-    - For step_index > 0, if this step has no HTML, use the last non-empty HTML from prior steps, then
-      ``final_content`` (episode snapshot) so training rows are not blank when per-step DOM was not recorded.
-    """
-    direct = _html_embedded_in_guided_execution(execution) or _guided_execution_html(
-        execution=execution,
-        report_episode=report_episode,
-        is_terminal=is_terminal,
-    )
-    if direct.strip():
-        return clean_snapshot_html(direct)
-    if step_index > 0:
-        if last_effective_html.strip():
-            return clean_snapshot_html(last_effective_html)
-        if final_content_fallback.strip():
-            return clean_snapshot_html(final_content_fallback)
-    return ""
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -865,12 +573,8 @@ def export_harvest_to_sft(
 ) -> dict[str, Any]:
     episodes_path = Path(input_path)
     out_dir = Path(output_dir)
-    gold_dir = episodes_path.parent
     summary_file = Path(summary_path) if summary_path else episodes_path.with_name("summary.json")
     summary = json.loads(summary_file.read_text(encoding="utf-8")) if summary_file.exists() else {}
-
-    if not episodes_path.is_file():
-        raise FileNotFoundError(f"Missing gold episodes file: {episodes_path}\nRun `focus_use_case collect` (or your harvest) and `consolidate-gold` first so {gold_dir / 'episodes.jsonl'} exists.")
 
     episode_rows = _load_jsonl(episodes_path)
     successful_rows = [row for row in episode_rows if bool(row.get("success"))]
@@ -880,7 +584,11 @@ def export_harvest_to_sft(
         val_seed_set = {int(value) for value in (val_seeds or [])}
         train_rows = [row for row in successful_rows if int(row.get("seed") or -1) in train_seed_set]
         val_rows = [row for row in successful_rows if int(row.get("seed") or -1) in val_seed_set]
-        overlap = {str(row.get("episode_task_id") or "") for row in train_rows if str(row.get("episode_task_id") or "") in {str(item.get("episode_task_id") or "") for item in val_rows}}
+        overlap = {
+            str(row.get("episode_task_id") or "")
+            for row in train_rows
+            if str(row.get("episode_task_id") or "") in {str(item.get("episode_task_id") or "") for item in val_rows}
+        }
         if overlap:
             raise ValueError(f"Train/val split overlap detected for episodes: {sorted(overlap)}")
     else:
@@ -891,7 +599,7 @@ def export_harvest_to_sft(
         if len(shuffled_successes) <= 1:
             val_episode_count = 0
         else:
-            raw_count = round(len(shuffled_successes) * max(0.0, min(val_ratio, 0.5)))
+            raw_count = int(round(len(shuffled_successes) * max(0.0, min(val_ratio, 0.5))))
             val_episode_count = min(max(raw_count, 1), len(shuffled_successes) - 1)
 
         val_rows = shuffled_successes[:val_episode_count]
@@ -904,7 +612,7 @@ def export_harvest_to_sft(
 
     for bucket, rows in ((train_examples, train_rows), (val_examples, val_rows)):
         for row in rows:
-            trace_file = _resolve_trace_path(row=row, gold_dir=gold_dir)
+            trace_file = Path(str(row.get("trace_file") or ""))
             result_path = Path(str(row.get("result_path") or ""))
             if trace_file.exists() and trace_file.is_file():
                 trace = json.loads(trace_file.read_text(encoding="utf-8"))
@@ -934,39 +642,14 @@ def export_harvest_to_sft(
 
     train_records = [example.record for example in train_examples]
     val_records = [example.record for example in val_examples]
-    usable_episode_ids = {str(example.episode_task_id) for example in train_examples + val_examples if str(example.episode_task_id)}
+    usable_episode_ids = {
+        str(example.episode_task_id)
+        for example in train_examples + val_examples
+        if str(example.episode_task_id)
+    }
 
     if not train_records:
-        sample_traces: list[str] = []
-        for row in list(train_rows)[:3]:
-            t = str(row.get("trace_file") or "").strip()
-            p = _resolve_trace_path(row=row, gold_dir=gold_dir)
-            sample_traces.append(f"  seed={row.get('seed')!r} trace_file={t!r} resolved_exists={p.is_file()!r} resolved={p!r}")
-        hint = (
-            f"export_harvest_to_sft produced zero training examples.\n"
-            f"  episodes file: {episodes_path} ({'exists' if episodes_path.is_file() else 'missing'})\n"
-            f"  rows in episodes.jsonl: {len(episode_rows)}, successful (success=true): {len(successful_rows)}\n"
-            f"  train split: {len(train_rows)} episode(s), val split: {len(val_rows)} episode(s)\n"
-            f"  trace_only={trace_only}, skipped rows (no readable trace on disk): {skipped_without_trace}, guided fallbacks: {guided_fallback_episodes}\n"
-        )
-        if not successful_rows:
-            hint += "  Fix: add successful harvest rows (score=1) to gold, or set success=true in episodes for replayable runs.\n"
-        elif not train_rows:
-            hint += "  Fix: train split is empty; check val_ratio/seed or pass explicit --train-seeds / --val-seeds on focus_use_case export-sft.\n"
-        elif trace_only and skipped_without_trace:
-            hint += (
-                "  Fix: every successful row should have an on-disk `trace_file` (full per-step trace), or re-run collection with trace persistence.\n"
-                "  If you only have `result_path` (e.g. deterministic replay `replays/.../result.json`) and empty `trace_file`, run:\n"
-                "    python scripts/eval/focus_use_case.py export-sft ... --allow-guided-fallback\n"
-                "  Sample rows:\n" + "\n".join(sample_traces)
-            )
-        else:
-            hint += (
-                "  If `resolved_exists` is true for train rows but you still get no SFT output, open the trace JSON and check for "
-                "non-empty `steps` with tool calls (or a guided `episode` block the exporter can convert).\n"
-            )
-            hint += "  Sample train rows (trace paths):\n" + "\n".join(sample_traces if sample_traces else ["  (no train split rows)"])
-        raise ValueError(hint)
+        raise ValueError("No train SFT examples were produced from successful episodes")
     if not val_records and len(usable_episode_ids) > 1:
         raise ValueError("Validation split is empty; reduce filtering or adjust val_ratio")
 
@@ -1002,8 +685,14 @@ def export_harvest_to_sft(
         "val_ratio": float(val_ratio),
         "train_seeds": sorted({int(row.get("seed") or 0) for row in train_rows}),
         "val_seeds": sorted({int(row.get("seed") or 0) for row in val_rows}),
-        "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "trace_files": sorted({str(example.trace_file) for example in train_examples + val_examples if example.trace_file}),
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "trace_files": sorted(
+            {
+                str(example.trace_file)
+                for example in train_examples + val_examples
+                if example.trace_file
+            }
+        ),
     }
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest

@@ -5,7 +5,7 @@
   "pod_name": "bu-30b-a3b-bootstrap-arbos-r3",
   "status": "resume_blocked",
   "status_reason": "Required local credentials are missing; refusing to fabricate a RunPod launch.",
-  "observed_at": "2026-03-29T13:58:23Z",
+  "observed_at": "2026-04-02T12:52:45Z",
   "started_at": null,
   "resumed": true,
   "newly_created": false,

@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import contextlib
-
-from . import site_knowledge as site_knowledge_module
+from .utils import *
+from .state import *
 from .candidates import *
 from .site_knowledge import *
-from .state import *
-from .utils import *
-
 
 class ObsBuilder:
     POLICY_CANDIDATE_LIMIT = 96
@@ -37,12 +33,14 @@ class ObsBuilder:
             "film detail",
             "movie detail",
         )
-        if re.search(r"\b(add|create|new|insert)\b", text) and not any(term in text for term in public_detail_terms):
-            ops.add("create")
+        if re.search(r"\b(add|create|new|insert)\b", text):
+            if not any(term in text for term in public_detail_terms):
+                ops.add("create")
         if re.search(r"\b(edit|update|modify|change)\b", text):
             ops.add("update")
-        if re.search(r"\b(delete|remove|erase|discard)\b", text) and not any(term in text for term in public_detail_terms):
-            ops.add("delete")
+        if re.search(r"\b(delete|remove|erase|discard)\b", text):
+            if not any(term in text for term in public_detail_terms):
+                ops.add("delete")
         if re.search(r"\b(log ?in|sign in|authenticate)\b", text):
             ops.add("auth_login")
         if re.search(r"\b(register|sign up|signup|create account)\b", text):
@@ -58,7 +56,9 @@ class ObsBuilder:
                 return True
         if re.search(r"<\s*(username|email|password|signup_email|signup_password)\s*>", prompt, flags=re.I):
             return True
-        return bool(re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", prompt))
+        if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", prompt):
+            return True
+        return False
 
     def _task_prefers_login_transition(self, task: str) -> bool:
         text = str(task or "").lower()
@@ -95,329 +95,6 @@ class ObsBuilder:
             "modify your profile",
         )
         return any(term in text for term in account_terms)
-
-    def _page_blob(self, *, url: str, text_ir: Dict[str, Any]) -> str:
-        parts: list[str] = [str(url or "")]
-        for key in ("title", "visible_text", "html_excerpt"):
-            value = _candidate_text(text_ir.get(key))
-            if value:
-                parts.append(value[:4000])
-        for key in ("headings", "page_facts", "value_lines", "visible_lines"):
-            values = text_ir.get(key) if isinstance(text_ir.get(key), list) else []
-            parts.extend([_candidate_text(item)[:220] for item in values[:32] if _candidate_text(item)])
-        return "\n".join(parts)
-
-    def _parse_csv_or_list(self, raw: str) -> List[str]:
-        text = str(raw or "").strip()
-        if not text:
-            return []
-        if text.startswith("[") and text.endswith("]"):
-            text = text[1:-1]
-        items = [item.strip(" '\"\t\r\n") for item in re.split(r",|\|", text) if item.strip(" '\"\t\r\n")]
-        return _dedupe_keep_order(items, 8)
-
-    def _movie_goal_constraints(self, *, prompt: str, task_constraints: Dict[str, str]) -> Dict[str, Any]:
-        text = str(prompt or "")
-        lower = text.lower()
-        out: Dict[str, Any] = {}
-        max_duration = re.search(r"duration of\s+(\d{1,3})\s*(?:minutes?|mins?)\s+or less", lower)
-        if max_duration:
-            out["max_duration_minutes"] = int(max_duration.group(1))
-        min_duration = re.search(r"duration of\s+(\d{1,3})\s*(?:minutes?|mins?)\s+or more", lower)
-        if min_duration:
-            out["min_duration_minutes"] = int(min_duration.group(1))
-        exclude_title = re.search(r"(?:not named|is not named|isn't named)\s+['\"]([^'\"]+)['\"]", text, flags=re.I)
-        if exclude_title:
-            out["exclude_title"] = _norm_ws(exclude_title.group(1))[:120]
-        exact_title = re.search(r"name equals\s+['\"]([^'\"]+)['\"]", text, flags=re.I)
-        if exact_title:
-            out["title_equals"] = _norm_ws(exact_title.group(1))[:120]
-        title_contains = re.search(r"name contains\s+['\"]([^'\"]+)['\"]", text, flags=re.I)
-        if title_contains:
-            out["title_contains"] = _norm_ws(title_contains.group(1))[:120]
-        exclude_genre = re.search(r"(?:does not contain|doesn't contain|not contain)(?:\s+the)?\s+genre\s+['\"]([^'\"]+)['\"]", text, flags=re.I)
-        if exclude_genre:
-            out["exclude_genres"] = self._parse_csv_or_list(exclude_genre.group(1))
-        any_genre = re.search(r"genres?\s+is\s+one\s+of\s+(\[[^\]]+\])", text, flags=re.I)
-        if any_genre:
-            out["genre_any_of"] = self._parse_csv_or_list(any_genre.group(1))
-        year_equals = re.search(r"year equals\s+['\"]?((?:19|20)\d{2})['\"]?", text, flags=re.I)
-        if year_equals:
-            out["year_exact"] = int(year_equals.group(1))
-        raw_name = _candidate_text(task_constraints.get("name"), task_constraints.get("movie_name"))
-        if raw_name and "title_equals" not in out:
-            out["title_equals"] = raw_name[:120]
-        raw_year = _candidate_text(task_constraints.get("year"))
-        if raw_year.isdigit() and "year_exact" not in out:
-            out["year_exact"] = int(raw_year)
-        raw_genre = _candidate_text(task_constraints.get("genre"), task_constraints.get("genres"))
-        if raw_genre and "genre_any_of" not in out and "exclude_genres" not in out:
-            out["genre_any_of"] = self._parse_csv_or_list(raw_genre)
-        return out
-
-    def _target_page_type(self, *, prompt: str) -> str:
-        lower = str(prompt or "").lower()
-        if "homepage" in lower or "home page" in lower:
-            return "home"
-        if re.search(r"\b(login|log in|sign in)\b", lower):
-            return "login"
-        if re.search(r"\b(register|sign up|signup|create account)\b", lower):
-            return "register"
-        if "contact" in lower:
-            return "contact"
-        if "pricing" in lower:
-            return "pricing"
-        if "about" in lower:
-            return "about"
-        if re.search(r"\b(movie|film)\s+page\b|\bdetails?\b", lower):
-            return "detail"
-        if "search" in lower or "results" in lower:
-            return "results"
-        return ""
-
-    def build_goal_state(
-        self,
-        *,
-        prompt: str,
-        web_project_id: str,
-        use_case: Dict[str, str] | None,
-        url: str,
-        flags: Dict[str, Any],
-        text_ir: Dict[str, Any],
-        state: AgentState,
-    ) -> Dict[str, Any]:
-        task_constraints = _task_constraints(prompt)
-        prompt_lower = str(prompt or "").lower()
-        target_page_type = self._target_page_type(prompt=prompt)
-        kind = "act"
-        if _looks_like_informational_task(prompt):
-            kind = "informational"
-        elif (re.search(r"\b(navigate|open|go to|reach|find|show)\b", prompt_lower) and ("page" in prompt_lower or target_page_type)) or target_page_type in {"contact", "pricing", "about", "home"}:
-            kind = "reach_page"
-        entity_type = ""
-        if re.search(r"\b(movie|film)\b", prompt_lower) or str((use_case or {}).get("name") or "").upper() == "FILM_DETAIL":
-            entity_type = "movie"
-        constraints: Dict[str, Any] = {}
-        if entity_type == "movie":
-            constraints.update(self._movie_goal_constraints(prompt=prompt, task_constraints=task_constraints))
-        goal_state: Dict[str, Any] = {
-            "kind": kind,
-            "target_page_type": target_page_type,
-            "entity_type": entity_type,
-            "stop_on_page_match": bool(kind == "reach_page"),
-            "completion_hint": "",
-            "constraints": constraints,
-            "route_hint": "general_web",
-            "route_reason": "",
-            "route_confidence": 0.0,
-        }
-        if goal_state["stop_on_page_match"]:
-            goal_state["completion_hint"] = "Stop once the target page is open and the visible constraints match."
-        if entity_type == "movie" and target_page_type == "detail":
-            goal_state["completion_hint"] = "Stop on a matching movie detail page instead of opening trailer/share/watchlist flows."
-        if state.goal_state.get("last_evaluation") if isinstance(state.goal_state, dict) else None:
-            goal_state["last_evaluation"] = state.goal_state.get("last_evaluation")
-        if web_project_id:
-            goal_state["route_reason"] = f"project:{str(web_project_id).strip().lower()}"
-        elif str(urlsplit(str(url or "")).hostname or "") in {"localhost", "127.0.0.1"}:
-            goal_state["route_reason"] = "local_demo_host"
-        if flags.get("product_cards") or flags.get("results_list"):
-            existing_reason = str(goal_state.get("route_reason") or "").strip()
-            goal_state["route_reason"] = f"{existing_reason}, catalog_like_page".strip(", ") if existing_reason else "catalog_like_page"
-        return goal_state
-
-    def route_execution_profile(
-        self,
-        *,
-        prompt: str,
-        web_project_id: str,
-        use_case: Dict[str, str] | None,
-        url: str,
-        flags: Dict[str, Any],
-        goal_state: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        prompt_lower = str(prompt or "").lower()
-        host = str(urlsplit(str(url or "")).hostname or "").lower()
-        profile = "general_web"
-        confidence = 0.15
-        reasons: List[str] = []
-        if str(web_project_id or "").strip():
-            confidence += 0.5
-            reasons.append(f"web_project_id={str(web_project_id).strip().lower()}")
-        if host in {"localhost", "127.0.0.1"}:
-            confidence += 0.2
-            reasons.append(f"host={host}")
-        if bool(flags.get("product_cards")) or bool(flags.get("results_list")):
-            confidence += 0.15
-            reasons.append("catalog_ui")
-        entity_type = str(goal_state.get("entity_type") or "")
-        target_page_type = str(goal_state.get("target_page_type") or "")
-        if entity_type == "movie" and target_page_type == "detail":
-            profile = "demo_catalog_navigation"
-            confidence += 0.25
-            reasons.append("movie_detail_goal")
-        elif re.search(r"\b(login|log in|sign in|register|sign up|signup)\b", prompt_lower):
-            if confidence >= 0.55:
-                profile = "demo_auth_flow"
-                reasons.append("auth_goal")
-        elif re.search(r"\b(add|create|edit|update|delete|remove)\b", prompt_lower):
-            if confidence >= 0.55:
-                profile = "demo_form_task"
-                reasons.append("mutation_goal")
-        if not str((use_case or {}).get("name") or "").strip() and profile != "general_web" and confidence < 0.55:
-            profile = "general_web"
-        return {
-            "profile": profile,
-            "confidence": max(0.0, min(1.0, confidence)),
-            "reason": ", ".join(reasons[:4]) or "default_general_web",
-        }
-
-    def _movie_page_signals(self, *, url: str, text_ir: Dict[str, Any]) -> Dict[str, Any]:
-        page_blob = self._page_blob(url=url, text_ir=text_ir)
-        title = ""
-        headings = text_ir.get("headings") if isinstance(text_ir.get("headings"), list) else []
-        for heading in headings[:8]:
-            candidate = _candidate_text(heading)
-            if candidate and candidate.lower() not in {"movies", "films", "search", "results"}:
-                title = candidate[:120]
-                break
-        if not title:
-            title = _candidate_text(text_ir.get("title"))[:120]
-        duration_minutes = None
-        for pattern in (
-            r"(?:duration|runtime|running time)\s*:?\s*(\d{1,3})\s*(?:minutes?|mins?)",
-            r"\b(\d{1,3})\s*(?:minutes?|mins?)\b",
-        ):
-            match = re.search(pattern, page_blob, flags=re.I)
-            if match:
-                duration_minutes = int(match.group(1))
-                break
-        year = None
-        year_match = re.search(r"(?:year|release year|released)\s*:?\s*((?:19|20)\d{2})", page_blob, flags=re.I)
-        if year_match:
-            year = int(year_match.group(1))
-        genres: List[str] = []
-        for pattern in (
-            r"(?:genre|genres|category|categories)\s*:?\s*([A-Za-z][A-Za-z,\-/ ]{2,80})",
-            r"\b(?:Genre|Genres)\b[^\n]{0,4}\n([A-Za-z][A-Za-z,\-/ ]{2,80})",
-        ):
-            match = re.search(pattern, page_blob, flags=re.I)
-            if match:
-                genres = self._parse_csv_or_list(match.group(1))
-                break
-        is_detail_page = str(urlsplit(str(url or "")).path or "").startswith("/movies/")
-        if not is_detail_page and title and (duration_minutes is not None or genres or year is not None):
-            is_detail_page = True
-        return {
-            "title": title,
-            "duration_minutes": duration_minutes,
-            "year": year,
-            "genres": genres,
-            "is_detail_page": bool(is_detail_page),
-        }
-
-    def evaluate_goal_state(
-        self,
-        *,
-        prompt: str,
-        url: str,
-        text_ir: Dict[str, Any],
-        flags: Dict[str, Any],
-        goal_state: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        if not isinstance(goal_state, dict):
-            return {"satisfied": False, "reason": "missing_goal_state", "content": "", "evidence": []}
-        if bool(flags.get("captcha_suspected")):
-            return {"satisfied": False, "reason": "captcha_unresolved", "content": "", "evidence": []}
-        kind = str(goal_state.get("kind") or "")
-        target_page_type = str(goal_state.get("target_page_type") or "")
-        entity_type = str(goal_state.get("entity_type") or "")
-        constraints = goal_state.get("constraints") if isinstance(goal_state.get("constraints"), dict) else {}
-        page_blob = self._page_blob(url=url, text_ir=text_ir)
-        path = str(urlsplit(str(url or "")).path or "/").lower()
-        title = _candidate_text(text_ir.get("title"))
-        headings = text_ir.get("headings") if isinstance(text_ir.get("headings"), list) else []
-        evidence: List[str] = []
-        if kind != "reach_page" or not bool(goal_state.get("stop_on_page_match")):
-            return {"satisfied": False, "reason": "goal_not_terminal_page_navigation", "content": "", "evidence": []}
-        page_match = False
-        if target_page_type == "home":
-            page_match = path in {"", "/"}
-        elif target_page_type == "login":
-            page_match = path.startswith(("/login", "/signin", "/auth")) or "login" in page_blob.lower() or "sign in" in page_blob.lower()
-        elif target_page_type == "register":
-            page_match = path.startswith(("/register", "/signup")) or "sign up" in page_blob.lower() or "create account" in page_blob.lower()
-        elif target_page_type == "contact":
-            page_match = path.startswith("/contact") or "contact" in page_blob.lower()
-        elif target_page_type == "pricing":
-            page_match = path.startswith("/pricing") or "pricing" in page_blob.lower()
-        elif target_page_type == "about":
-            page_match = path.startswith("/about") or "about" in page_blob.lower()
-        elif target_page_type == "detail":
-            movie_signals = self._movie_page_signals(url=url, text_ir=text_ir)
-            page_match = bool(movie_signals.get("is_detail_page"))
-            if page_match:
-                if _candidate_text(movie_signals.get("title")):
-                    evidence.append(f"title={_candidate_text(movie_signals.get('title'))}")
-                if movie_signals.get("duration_minutes") is not None:
-                    evidence.append(f"duration={int(movie_signals.get('duration_minutes') or 0)}")
-                if movie_signals.get("genres"):
-                    evidence.append("genres=" + ", ".join(list(movie_signals.get("genres") or [])[:3]))
-                if movie_signals.get("year") is not None:
-                    evidence.append(f"year={int(movie_signals.get('year') or 0)}")
-            if page_match and entity_type == "movie":
-                current_title = str(movie_signals.get("title") or "")
-                current_duration = movie_signals.get("duration_minutes")
-                current_year = movie_signals.get("year")
-                current_genres = [str(item).lower() for item in list(movie_signals.get("genres") or [])]
-                exclude_title = _candidate_text(constraints.get("exclude_title"))
-                if exclude_title and _constraint_value_matches(exclude_title, current_title):
-                    return {"satisfied": False, "reason": "excluded_title_on_page", "content": "", "evidence": evidence}
-                title_equals = _candidate_text(constraints.get("title_equals"))
-                if title_equals and not _constraint_value_matches(title_equals, current_title):
-                    return {"satisfied": False, "reason": "title_mismatch", "content": "", "evidence": evidence}
-                title_contains = _candidate_text(constraints.get("title_contains"))
-                if title_contains and title_contains.lower() not in current_title.lower():
-                    return {"satisfied": False, "reason": "title_contains_mismatch", "content": "", "evidence": evidence}
-                max_duration = constraints.get("max_duration_minutes")
-                if isinstance(max_duration, int) and current_duration is not None and int(current_duration) > max_duration:
-                    return {"satisfied": False, "reason": "duration_above_limit", "content": "", "evidence": evidence}
-                min_duration = constraints.get("min_duration_minutes")
-                if isinstance(min_duration, int) and current_duration is not None and int(current_duration) < min_duration:
-                    return {"satisfied": False, "reason": "duration_below_limit", "content": "", "evidence": evidence}
-                year_exact = constraints.get("year_exact")
-                if isinstance(year_exact, int) and current_year is not None and int(current_year) != year_exact:
-                    return {"satisfied": False, "reason": "year_mismatch", "content": "", "evidence": evidence}
-                exclude_genres = [str(item).lower() for item in list(constraints.get("exclude_genres") or [])]
-                if exclude_genres and any(any(excluded in genre for genre in current_genres) for excluded in exclude_genres):
-                    return {"satisfied": False, "reason": "excluded_genre_present", "content": "", "evidence": evidence}
-                genre_any_of = [str(item).lower() for item in list(constraints.get("genre_any_of") or [])]
-                if genre_any_of and current_genres and not any(any(allowed in genre for genre in current_genres) for allowed in genre_any_of):
-                    return {"satisfied": False, "reason": "genre_not_allowed", "content": "", "evidence": evidence}
-                pieces = [_candidate_text(current_title, title, (headings[0] if headings else ""))]
-                if current_duration is not None:
-                    pieces.append(f"{int(current_duration)} min")
-                if movie_signals.get("genres"):
-                    pieces.append(", ".join(list(movie_signals.get("genres") or [])[:3]))
-                if current_year is not None:
-                    pieces.append(str(int(current_year)))
-                return {
-                    "satisfied": True,
-                    "reason": "matching_movie_detail_page",
-                    "content": "Opened matching movie page: " + " | ".join([piece for piece in pieces if piece])[:220],
-                    "evidence": evidence,
-                }
-        else:
-            page_match = any(token in page_blob.lower() for token in [target_page_type]) or target_page_type in path
-        if not page_match:
-            return {"satisfied": False, "reason": "target_page_not_reached", "content": "", "evidence": evidence}
-        summary = _candidate_text(title, (headings[0] if headings else ""), path)
-        return {
-            "satisfied": True,
-            "reason": "target_page_reached",
-            "content": f"Opened the target {target_page_type or 'page'}: {summary}"[:240],
-            "evidence": evidence[:6],
-        }
 
     def _candidate_action_tags(self, cand: Candidate) -> set[str]:
         blob = " ".join([cand.text, cand.href, cand.field_hint, cand.field_kind, cand.group_label]).lower()
@@ -481,10 +158,16 @@ class ObsBuilder:
             elif login_available:
                 preferred_transition = "login"
         local_mutation_controls_visible = bool(mutation_ops) and any(op in available_ops for op in mutation_ops)
-        active_manage_context = bool(local_mutation_controls_visible) and (bool(state.form_progress.active_group_candidate_ids) or bool(state.form_progress.active_group_label))
+        active_manage_context = bool(local_mutation_controls_visible) and (
+            bool(state.form_progress.active_group_candidate_ids) or bool(state.form_progress.active_group_label)
+        )
         strategy_parts: List[str] = []
         if read_only_for_task:
-            strategy_parts.append("Current page appears read-only for the requested operation: missing " + ", ".join(missing_ops[:3]) + ".")
+            strategy_parts.append(
+                "Current page appears read-only for the requested operation: missing "
+                + ", ".join(missing_ops[:3])
+                + "."
+            )
             if preferred_transition == "register":
                 strategy_parts.append("Prefer registration to reach an authenticated management context.")
             elif preferred_transition == "login":
@@ -544,8 +227,10 @@ class ObsBuilder:
         try:
             soup = BeautifulSoup(html, "lxml")
             for node in soup(["script", "style", "noscript"]):
-                with contextlib.suppress(Exception):
+                try:
                     node.decompose()
+                except Exception:
+                    pass
             title = ""
             try:
                 title_tag = soup.find("title")
@@ -630,7 +315,7 @@ class ObsBuilder:
                     score += 1
                 if lowered.startswith("view "):
                     score -= 2
-                if "toggle" in lowered or lowered == "search":
+                if "toggle" in lowered or "search" == lowered:
                     score -= 3
                 if score > best_score:
                     best = candidate
@@ -640,7 +325,11 @@ class ObsBuilder:
         # Table / row pairs
         try:
             for row in soup.find_all(["tr"], limit=80):
-                cells = [_norm_ws(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"], limit=4) if _norm_ws(cell.get_text(" ", strip=True))]
+                cells = [
+                    _norm_ws(cell.get_text(" ", strip=True))
+                    for cell in row.find_all(["th", "td"], limit=4)
+                    if _norm_ws(cell.get_text(" ", strip=True))
+                ]
                 if len(cells) >= 2 and _labelish_text(cells[0]) and _valueish_text(cells[1]):
                     facts.append(f"{cells[0]}: {cells[1]}"[:180])
         except Exception:
@@ -714,7 +403,7 @@ class ObsBuilder:
                     score += 1
                 if lowered.startswith("view "):
                     score -= 2
-                if "toggle" in lowered or lowered == "search":
+                if "toggle" in lowered or "search" == lowered:
                     score -= 3
                 if score > best_score:
                     best = candidate
@@ -768,7 +457,7 @@ class ObsBuilder:
         if selected:
             return selected
         fallback: List[str] = []
-        for item in value_lines[:12] + visible_lines[:12]:
+        for item in (value_lines[:12] + visible_lines[:12]):
             clean = _norm_ws(item)
             if clean and clean not in fallback:
                 fallback.append(clean[:180])
@@ -844,10 +533,8 @@ class ObsBuilder:
                             _norm_ws(control.get_text(" ", strip=True)),
                         ]
                     ).lower()
-                    if (
-                        tag == "button"
-                        or str(c_attrs.get("type") or "").strip().lower() in {"submit", "button"}
-                        or any(token in role_blob for token in ("submit", "save", "apply", "search", "find", "continue", "register", "sign up", "log in", "sign in"))
+                    if tag == "button" or str(c_attrs.get("type") or "").strip().lower() in {"submit", "button"} or any(
+                        token in role_blob for token in ("submit", "save", "apply", "search", "find", "continue", "register", "sign up", "log in", "sign in")
                     ):
                         commit_label = _candidate_text(
                             label,
@@ -1155,7 +842,11 @@ class ObsBuilder:
                 or (focus_candidate_ids and cand.id in focus_candidate_ids)
             ):
                 local_candidates += 1
-        recent_failures = sum(1 for item in history_recent if isinstance(item, dict) and ((not bool(item.get("exec_ok", True))) or bool(_candidate_text(item.get("error")))))
+        recent_failures = sum(
+            1
+            for item in history_recent
+            if isinstance(item, dict) and ((not bool(item.get("exec_ok", True))) or bool(_candidate_text(item.get("error"))))
+        )
         capability_gap = self._capability_gap_summary(prompt=prompt, state=state, candidates=candidates)
         page_facts = text_ir.get("page_facts") if isinstance(text_ir.get("page_facts"), list) else []
         value_lines = text_ir.get("value_lines") if isinstance(text_ir.get("value_lines"), list) else []
@@ -1318,7 +1009,10 @@ class ObsBuilder:
                 if not isinstance(group, dict):
                     continue
                 controls = group.get("controls") if isinstance(group.get("controls"), list) else []
-                group_lines.append(f"{str(group.get('label') or '')[:120]} ({int(group.get('control_count') or 0)} controls) -> " + " ; ".join(str(x)[:120] for x in controls[:8]))
+                group_lines.append(
+                    f"{str(group.get('label') or '')[:120]} ({int(group.get('control_count') or 0)} controls) -> "
+                    + " ; ".join(str(x)[:120] for x in controls[:8])
+                )
             if group_lines:
                 parts.append("CONTROL GROUPS:\n" + "\n".join(f"- {line}" for line in group_lines[:8]))
         if active_region:
@@ -1350,7 +1044,11 @@ class ObsBuilder:
                 ]
                 active_lines.append(" | ".join([x for x in bits if x]))
             if active_lines:
-                parts.append("ACTIVE CONTROL GROUP:\n" + f"- {label} ({len(active_items)} visible related elements)\n" + "\n".join(f"- {line}" for line in active_lines[:8]))
+                parts.append(
+                    "ACTIVE CONTROL GROUP:\n"
+                    + f"- {label} ({len(active_items)} visible related elements)\n"
+                    + "\n".join(f"- {line}" for line in active_lines[:8])
+                )
         if cards:
             card_lines: List[str] = []
             for idx, card in enumerate(cards[:8], start=1):
@@ -1364,7 +1062,9 @@ class ObsBuilder:
                         continue
                     action_bits.append(_candidate_text(action.get("text"), action.get("href"), action.get("id"))[:90])
                 card_lines.append(
-                    f"card[{idx}] {str(card.get('label') or '')[:120]} -> " + " | ".join(str(x)[:80] for x in facts[:3]) + (" ; actions=" + " / ".join(action_bits) if action_bits else "")
+                    f"card[{idx}] {str(card.get('label') or '')[:120]} -> "
+                    + " | ".join(str(x)[:80] for x in facts[:3])
+                    + (" ; actions=" + " / ".join(action_bits) if action_bits else "")
                 )
             if card_lines:
                 parts.append("ITEM GROUPS:\n" + "\n".join(f"- {line}" for line in card_lines[:8]))
@@ -1398,7 +1098,10 @@ class ObsBuilder:
         parts.append(f"no_progress_score={int(state.progress.no_progress_score or 0)}")
         parts.append(f"consecutive_no_effect_steps={int(state.progress.consecutive_no_effect_steps or 0)}")
         if state.focus_region.region_label:
-            parts.append("active_region=" + _candidate_text(state.focus_region.region_label, state.focus_region.region_kind, state.focus_region.region_id)[:160])
+            parts.append(
+                "active_region="
+                + _candidate_text(state.focus_region.region_label, state.focus_region.region_kind, state.focus_region.region_id)[:160]
+            )
         recent_effects = []
         for effect in state.progress.recent_effects[-4:]:
             if not isinstance(effect, ProgressEffect):
@@ -1571,7 +1274,11 @@ class ObsBuilder:
         if not isinstance(active_region, dict) or not active_region:
             return {}
         typed_ids = set(state.form_progress.typed_candidate_ids or [])
-        indexed = {cand.id: idx for idx, cand in enumerate(candidates[:24]) if isinstance(cand, Candidate) and cand.id}
+        indexed = {
+            cand.id: idx
+            for idx, cand in enumerate(candidates[:24])
+            if isinstance(cand, Candidate) and cand.id
+        }
         commit_controls: List[Dict[str, Any]] = []
         for item in list(active_region.get("items") or [])[:12]:
             if not isinstance(item, dict):
@@ -1672,7 +1379,7 @@ class ObsBuilder:
             str(selector.get("attribute") or ""),
             str(selector.get("value") or ""),
         ]
-        return "|".join([*selector_bits, cand.text[:80], cand.role[:24]])
+        return "|".join(selector_bits + [cand.text[:80], cand.role[:24]])
 
     def _page_summary_text(self, *, text_ir: Dict[str, Any]) -> str:
         text_ir = text_ir if isinstance(text_ir, dict) else {}
@@ -1765,7 +1472,9 @@ class ObsBuilder:
                 return True
             if focus_region_context and _norm_ws(cand.context) == focus_region_context:
                 return True
-            return bool(focus_candidate_ids and cand.id in focus_candidate_ids)
+            if focus_candidate_ids and cand.id in focus_candidate_ids:
+                return True
+            return False
 
         for cand in candidates:
             if same_focus_region(cand):
@@ -1880,12 +1589,13 @@ class ObsBuilder:
         global_pool: List[Candidate] = []
         for cand in candidates:
             same_region = False
-            if (
-                (focus_region_id and cand.region_id and cand.region_id == focus_region_id)
-                or (focus_region_id and focus_region_id in set(cand.region_ancestor_ids or []))
-                or (focus_region_context and _norm_ws(cand.context) == focus_region_context)
-                or (focus_candidate_ids and cand.id in focus_candidate_ids)
-            ):
+            if focus_region_id and cand.region_id and cand.region_id == focus_region_id:
+                same_region = True
+            elif focus_region_id and focus_region_id in set(cand.region_ancestor_ids or []):
+                same_region = True
+            elif focus_region_context and _norm_ws(cand.context) == focus_region_context:
+                same_region = True
+            elif focus_candidate_ids and cand.id in focus_candidate_ids:
                 same_region = True
             if same_region:
                 if self._is_escape_candidate(cand=cand, focus_region_id=focus_region_id, focus_region_context=focus_region_context):
@@ -1943,12 +1653,12 @@ class ObsBuilder:
             f"Current URL: {_candidate_text(url)}",
             (
                 "Page stats: "
-                f"{int(page_stats.get('links') or 0)} links, "
-                f"{int(page_stats.get('controls') or 0)} controls, "
-                f"{int(page_stats.get('forms') or 0)} forms, "
-                f"{int(page_stats.get('control_groups') or 0)} control groups, "
-                f"{int(page_stats.get('cards') or 0)} cards, "
-                f"{int(page_stats.get('visible_text_chars') or 0)} visible chars"
+                f'{int(page_stats.get("links") or 0)} links, '
+                f'{int(page_stats.get("controls") or 0)} controls, '
+                f'{int(page_stats.get("forms") or 0)} forms, '
+                f'{int(page_stats.get("control_groups") or 0)} control groups, '
+                f'{int(page_stats.get("cards") or 0)} cards, '
+                f'{int(page_stats.get("visible_text_chars") or 0)} visible chars'
             ),
             f"Screenshot available: {bool(screenshot_available)}",
         ]
@@ -1964,11 +1674,11 @@ class ObsBuilder:
 
     def _browser_state_text(self, candidates: List[Candidate], *, limit: int = POLICY_RENDERED_TREE_LIMIT) -> str:
         class _Node:
-            __slots__ = ("children", "items", "name")
+            __slots__ = ("name", "children", "items")
 
             def __init__(self, name: str) -> None:
                 self.name = name
-                self.children: Dict[str, _Node] = {}
+                self.children: Dict[str, "_Node"] = {}
                 self.items: List[Candidate] = []
 
         root = _Node("ROOT")
@@ -2078,6 +1788,7 @@ class ObsBuilder:
                 if val:
                     out.append(val)
         return out
+
 
     def _history_summary(self, history: List[Dict[str, Any]]) -> str:
         if not isinstance(history, list) or not history:
@@ -2226,7 +1937,7 @@ class ObsBuilder:
         recent_failures = self._recent_failures(history_recent, limit=4)
         progress_brief = self._progress_brief(state=state)
         site_knowledge = (
-            site_knowledge_module._build_site_knowledge(
+            _build_site_knowledge(
                 _candidate_text(web_project_id),
                 _normalize_use_case_info(use_case),
                 prompt,
@@ -2234,7 +1945,7 @@ class ObsBuilder:
                 snapshot_html=snapshot_html,
                 candidates=candidates,
             )
-            if _env_bool("FSM_USE_SITE_KNOWLEDGE", True)
+            if _env_bool("FSM_USE_SITE_KNOWLEDGE", False)
             else {}
         )
         active_subgoal = {}
@@ -2269,8 +1980,17 @@ class ObsBuilder:
         typed_recent = [
             str(item.get("text") or "")
             for item in history_recent
-            if isinstance(item, dict) and str(item.get("action_type") or "").lower() in {"typeaction", "fillaction"} and str(item.get("text") or "").strip()
+            if isinstance(item, dict)
+            and str(item.get("action_type") or "").lower() in {"typeaction", "fillaction"}
+            and str(item.get("text") or "").strip()
         ][:10]
+        parts.append(
+            "AGENT ROLE:\n"
+            + "You are a web agent operating a browser.\n"
+            + "Your job is to choose the next browser action that makes progress toward completing the task.\n"
+            + "Use the current page state, visible elements, recent action outcomes, and HTML snapshot to decide the next tool call.\n"
+            + "Do not assume the current page is the target workflow unless the task can actually be completed from what is visible right now."
+        )
         parts.append(f"TASK: {_candidate_text(prompt)}")
         if task_constraints:
             parts.append("TASK CONSTRAINTS:\n" + json.dumps(task_constraints, ensure_ascii=False))
@@ -2281,9 +2001,30 @@ class ObsBuilder:
             + "tabs_supported=false\n"
             + "file_tools_supported=false"
         )
-        parts.append("CURRENT STATE:\n" + f"step_index={int(step_index)}\n" + f"mode={mode!s}\n" + f"url={_candidate_text(url)}")
-        parts.append("AVAILABLE TOOLS:\n" + ", ".join(sorted(_supported_browser_tool_names())))
-        parts.append("UNAVAILABLE TOOLS:\n" + ", ".join(_unavailable_browser_tools()) + "\nNever emit unavailable tools.")
+        parts.append(
+            "CURRENT STATE:\n"
+            + f"step_index={int(step_index)}\n"
+            + f"mode={str(mode)}\n"
+            + f"url={_candidate_text(url)}"
+        )
+        if int(step_index) == 0:
+            parts.append(
+                "STEP 0 PRIORITY:\n"
+                + "At step 0, prioritize a visible path to the target workflow.\n"
+                + "Prefer clicking a visible contact/support/about/message entry point or navigating directly to the relevant route.\n"
+                + "Do not wait at step 0.\n"
+                + "Do not scroll at step 0 unless no relevant clickable or form element is visible.\n"
+                + "Do not type task values into generic page search boxes or unrelated inputs."
+            )
+        parts.append(
+            "AVAILABLE TOOLS:\n"
+            + ", ".join(sorted(_supported_browser_tool_names()))
+        )
+        parts.append(
+            "UNAVAILABLE TOOLS:\n"
+            + ", ".join(_unavailable_browser_tools())
+            + "\nNever emit unavailable tools."
+        )
         parts.append(
             "TOOL USAGE GUIDE:\n"
             + "- Use browser.click for buttons, links, toggles, tabs, checkboxes, radios, and submit controls.\n"
@@ -2294,7 +2035,6 @@ class ObsBuilder:
             + "- Use browser.search only to start a web search, not for in-page site search boxes.\n"
             + "- Prefer browser.done when the page already contains the final answer."
         )
-        parts.append("ACTIVE OBJECTIVE (JSON):\n" + json.dumps(active_objective, ensure_ascii=False))
         parts.append("WORKING STATE (JSON):\n" + json.dumps(working_state, ensure_ascii=False))
         if local_workflow_closure:
             parts.append("LOCAL WORKFLOW CLOSURE (JSON):\n" + json.dumps(local_workflow_closure, ensure_ascii=False))
@@ -2317,17 +2057,12 @@ class ObsBuilder:
             parts.append("PREVIOUS REASONING TRACE (JSON):\n" + json.dumps(reasoning_trace, ensure_ascii=False))
         if working_state:
             parts.append("WORKING STATE SUMMARY:\n" + _working_state_summary(working_state))
-        parts.append(
-            "BROWSER SNAPSHOT:\n"
-            + str(
-                self._browser_state_snapshot(
-                    url=url,
-                    text_ir=text_ir,
-                    page_observations=page_observations,
-                    screenshot_available=screenshot_available,
-                )
-            )
-        )
+        parts.append("BROWSER SNAPSHOT:\n" + str(self._browser_state_snapshot(
+            url=url,
+            text_ir=text_ir,
+            page_observations=page_observations,
+            screenshot_available=screenshot_available,
+        )))
         parts.append(
             "ELEMENT TARGETING GUIDE:\n"
             + "- Each shortlist item has index, role, text, and context.\n"
@@ -2353,22 +2088,14 @@ class ObsBuilder:
         if recent_failures:
             parts.append("RECENT FAILURES (JSON):\n" + json.dumps(recent_failures, ensure_ascii=False))
         parts.append("PAGE OBSERVATIONS (JSON):\n" + json.dumps(page_observations, ensure_ascii=False))
-        parts.append(
-            "PAGE GROUPS (JSON):\n"
-            + json.dumps(
-                {
-                    "forms": (text_ir.get("forms") if isinstance(text_ir.get("forms"), list) else [])[:8],
-                    "control_groups": (text_ir.get("control_groups") if isinstance(text_ir.get("control_groups"), list) else [])[:12],
-                    "cards": (text_ir.get("cards") if isinstance(text_ir.get("cards"), list) else [])[:12],
-                    "active_region": text_ir.get("active_region") if isinstance(text_ir.get("active_region"), dict) else {},
-                    "active_group": text_ir.get("active_group") if isinstance(text_ir.get("active_group"), dict) else {},
-                },
-                ensure_ascii=False,
-            )
-        )
+        parts.append("RAW HTML SNAPSHOT:\n" + str(snapshot_html or ""))
         if progress_brief:
             parts.append("PROGRESS LEDGER:\n" + progress_brief)
-        parts.append("PREVIOUS STEP VERDICT:\n" + f"status={_candidate_text(verdict.get('status'))}\n" + f"summary={_candidate_text(verdict.get('summary'))}\n")
+        parts.append(
+            "PREVIOUS STEP VERDICT:\n"
+            + f"status={_candidate_text(verdict.get('status'))}\n"
+            + f"summary={_candidate_text(verdict.get('summary'))}\n"
+        )
         if active_region:
             parts.append("FOCUSED REGION SUMMARY (JSON):\n" + json.dumps(active_region, ensure_ascii=False))
         if history_summary:
@@ -2496,7 +2223,11 @@ class ObsBuilder:
         items: List[Dict[str, Any]] = []
         for cand in candidates:
             same_region = False
-            if (region_id and cand.region_id and cand.region_id == region_id) or (region_context and _norm_ws(cand.context) == region_context) or (candidate_ids and cand.id in candidate_ids):
+            if region_id and cand.region_id and cand.region_id == region_id:
+                same_region = True
+            elif region_context and _norm_ws(cand.context) == region_context:
+                same_region = True
+            elif candidate_ids and cand.id in candidate_ids:
                 same_region = True
             if not same_region:
                 continue
@@ -2677,27 +2408,6 @@ class ObsBuilder:
             state.memory.history_summary = history_summary
         parsed_url = urlsplit(str(url or ""))
         task_constraints = _task_constraints(prompt)
-        goal_state = self.build_goal_state(
-            prompt=prompt,
-            web_project_id=web_project_id,
-            use_case=use_case,
-            url=url,
-            flags=flags,
-            text_ir=text_ir,
-            state=state,
-        )
-        goal_evaluation = self.evaluate_goal_state(
-            prompt=prompt,
-            url=url,
-            text_ir=text_ir,
-            flags=flags,
-            goal_state=goal_state,
-        )
-        goal_state["route_hint"] = str(state.execution_profile or goal_state.get("route_hint") or "general_web")
-        if isinstance(state.goal_state, dict):
-            goal_state["route_reason"] = _candidate_text(state.goal_state.get("route_reason"), goal_state.get("route_reason"))
-            goal_state["route_confidence"] = float(state.goal_state.get("route_confidence") or goal_state.get("route_confidence") or 0.0)
-        goal_state["last_evaluation"] = goal_evaluation
         page_observations = self._page_observations(
             prompt=prompt,
             flags=flags,
@@ -2712,7 +2422,9 @@ class ObsBuilder:
         text_ir["active_region"] = active_region
         text_ir["active_group"] = active_group
         text_ir["capability_gap"] = page_observations.get("capability_gap") if isinstance(page_observations, dict) else {}
-        state.memory.strategy_summary = _candidate_text((page_observations.get("capability_gap") if isinstance(page_observations, dict) else {}).get("strategy_summary"))[:320]
+        state.memory.strategy_summary = _candidate_text(
+            (page_observations.get("capability_gap") if isinstance(page_observations, dict) else {}).get("strategy_summary")
+        )[:320]
         policy_candidates = self._select_candidates_for_policy(
             candidates=candidates,
             current_url=url,
@@ -2735,7 +2447,10 @@ class ObsBuilder:
             page_ir_text=page_ir_text,
             candidates=policy_candidates,
         )
-        plan_items = [{"id": sg.id, "text": sg.text, "status": sg.status} for sg in state.plan.subgoals]
+        plan_items = [
+            {"id": sg.id, "text": sg.text, "status": sg.status}
+            for sg in state.plan.subgoals
+        ]
         active_objective = self._active_objective_summary(
             prompt=prompt,
             state=state,
@@ -2789,7 +2504,7 @@ class ObsBuilder:
         )
         indexed_policy_candidates = self._indexed_candidate_obs(policy_candidates, limit=self.POLICY_SHORTLIST_LIMIT)
         site_knowledge = (
-            site_knowledge_module._build_site_knowledge(
+            _build_site_knowledge(
                 _candidate_text(web_project_id),
                 _normalize_use_case_info(use_case),
                 prompt,
@@ -2797,7 +2512,7 @@ class ObsBuilder:
                 snapshot_html=snapshot_html,
                 candidates=policy_candidates,
             )
-            if _env_bool("FSM_USE_SITE_KNOWLEDGE", True)
+            if _env_bool("FSM_USE_SITE_KNOWLEDGE", False)
             else {}
         )
         return {
@@ -2805,10 +2520,7 @@ class ObsBuilder:
             "web_project_id": _candidate_text(web_project_id),
             "use_case": _normalize_use_case_info(use_case),
             "prompt": str(prompt or "")[:1200],
-            "execution_profile": str(state.execution_profile or "general_web"),
             "task_constraints": task_constraints,
-            "goal_state": goal_state,
-            "goal_evaluation": goal_evaluation,
             "step_index": int(step_index),
             "url": str(url or "")[:800],
             "url_parts": {
@@ -2828,7 +2540,11 @@ class ObsBuilder:
             "active_objective": active_objective,
             "working_state": working_state,
             "score_feedback": state.score_feedback if isinstance(state.score_feedback, dict) else {},
-            "state_score": (float((state.score_feedback or {}).get("score")) if isinstance(state.score_feedback, dict) and "score" in state.score_feedback else None),
+            "state_score": (
+                float((state.score_feedback or {}).get("score"))
+                if isinstance(state.score_feedback, dict) and "score" in state.score_feedback
+                else None
+            ),
             "local_workflow_closure": local_workflow_closure,
             "local_html_context": local_html_context,
             "site_knowledge": site_knowledge,
@@ -2845,18 +2561,18 @@ class ObsBuilder:
             },
             "session_query": state.session_query,
             "counters": state.counters.model_dump(),
-            "memory": {
-                "facts": state.memory.facts[:20],
-                "checkpoints": state.memory.checkpoints[-20:],
-                "visual_notes": state.memory.visual_notes[-8:],
-                "visual_element_hints": state.memory.visual_element_hints[-12:],
-                "obs_candidate_hints": state.memory.obs_candidate_hints[-12:],
-                "strategy_summary": state.memory.strategy_summary,
-                "reasoning_trace": reasoning_trace,
-                "working_state": working_state,
-                "typed_values_recent": typed_values_recent,
-                "typed_candidate_ids": state.form_progress.typed_candidate_ids[-20:],
-                "typed_selector_sigs": state.form_progress.typed_selector_sigs[-20:],
+                "memory": {
+                    "facts": state.memory.facts[:20],
+                    "checkpoints": state.memory.checkpoints[-20:],
+                    "visual_notes": state.memory.visual_notes[-8:],
+                    "visual_element_hints": state.memory.visual_element_hints[-12:],
+                    "obs_candidate_hints": state.memory.obs_candidate_hints[-12:],
+                    "strategy_summary": state.memory.strategy_summary,
+                    "reasoning_trace": reasoning_trace,
+                    "working_state": working_state,
+                    "typed_values_recent": typed_values_recent,
+                    "typed_candidate_ids": state.form_progress.typed_candidate_ids[-20:],
+                    "typed_selector_sigs": state.form_progress.typed_selector_sigs[-20:],
                 "submit_attempt_sigs": state.form_progress.submit_attempt_sigs[-20:],
                 "active_group_label": state.form_progress.active_group_label,
                 "active_group_candidate_ids": state.form_progress.active_group_candidate_ids[-20:],

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+import ast
 import base64
 import hashlib
 import json
 import os
 import re
-from datetime import UTC, datetime
 from functools import lru_cache
-from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Dict, List, Literal
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
+from pathlib import Path
+from datetime import datetime, timezone
+
+from pydantic import BaseModel, Field
 
 try:
     from bs4 import BeautifulSoup  # type: ignore
@@ -60,7 +64,6 @@ SUPPORTED_BROWSER_TOOL_NAMES = {
     "browser.tripleclick",
     "browser.input",
     "browser.scroll",
-    "browser.wait",
     "browser.done",
     "browser.select_dropdown",
     "browser.dropdown_options",
@@ -125,6 +128,7 @@ _TASK_TERM_STOPWORDS = {
     "continue",
     "task",
     "next",
+    "value",
     "total",
     "price",
     "count",
@@ -133,6 +137,7 @@ _TASK_TERM_STOPWORDS = {
     "many",
     "much",
     "tell",
+    "show",
     "find",
     "what",
     "when",
@@ -143,12 +148,12 @@ _TASK_TERM_STOPWORDS = {
 
 def _utc_now() -> str:
     try:
-        return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     except Exception:
         return ""
 
 
-def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -158,23 +163,23 @@ def _norm_ws(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
 
 
-def _merge_usage_dicts(base: dict[str, Any] | None, extra: dict[str, Any] | None) -> dict[str, int]:
+def _merge_usage_dicts(base: Dict[str, Any] | None, extra: Dict[str, Any] | None) -> Dict[str, int]:
     out = {
-        "prompt_tokens": int((base or {}).get("prompt_tokens") or 0),
-        "completion_tokens": int((base or {}).get("completion_tokens") or 0),
-        "total_tokens": int((base or {}).get("total_tokens") or 0),
+        "prompt_tokens": int(((base or {}).get("prompt_tokens") or 0)),
+        "completion_tokens": int(((base or {}).get("completion_tokens") or 0)),
+        "total_tokens": int(((base or {}).get("total_tokens") or 0)),
     }
-    out["prompt_tokens"] += int((extra or {}).get("prompt_tokens") or 0)
-    out["completion_tokens"] += int((extra or {}).get("completion_tokens") or 0)
-    out["total_tokens"] += int((extra or {}).get("total_tokens") or 0)
+    out["prompt_tokens"] += int(((extra or {}).get("prompt_tokens") or 0))
+    out["completion_tokens"] += int(((extra or {}).get("completion_tokens") or 0))
+    out["total_tokens"] += int(((extra or {}).get("total_tokens") or 0))
     return out
 
 
-def _empty_usage_dict() -> dict[str, int]:
+def _empty_usage_dict() -> Dict[str, int]:
     return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 
-def _empty_call_breakdown() -> dict[str, int]:
+def _empty_call_breakdown() -> Dict[str, int]:
     return {
         "policy_llm_calls": 0,
         "obs_extract_llm_calls": 0,
@@ -182,7 +187,7 @@ def _empty_call_breakdown() -> dict[str, int]:
     }
 
 
-def _usage_breakdown_template() -> dict[str, dict[str, int]]:
+def _usage_breakdown_template() -> Dict[str, Dict[str, int]]:
     return {
         "policy": _empty_usage_dict(),
         "obs_extract": _empty_usage_dict(),
@@ -198,62 +203,13 @@ def _dom_digest(html: str) -> str:
         return ""
 
 
-def clean_snapshot_html_for_llm(html: str) -> str:
-    """Drop noisy DOM before BeautifulSoup / candidate extraction / LLM excerpts.
-
-    Removes executable and styling blocks, HTML comments, oversized data-URIs,
-    and optionally truncates the raw string so huge pages (e.g. Google SERP) stay
-    within a bounded parse + token budget.
-    """
-    s = str(html or "")
-    if not s:
-        return ""
-    # Tag blocks whose inner text is never useful for browser automation prompts.
-    for tag in ("script", "style", "noscript", "template"):
-        s = re.sub(rf"<{tag}\b[^>]*>.*?</{tag}>", "", s, flags=re.I | re.S)
-    # Declarative embeds (often large, rarely actionable with current tools).
-    for tag in ("iframe", "embed", "object"):
-        s = re.sub(rf"<{tag}\b[^>]*>.*?</{tag}>", "", s, flags=re.I | re.S)
-        s = re.sub(rf"<{tag}\b[^>]*/>", "", s, flags=re.I)
-    # Inline SVG can dominate DOM size on some apps.
-    s = re.sub(r"<svg\b[^>]*>.*?</svg>", "", s, flags=re.I | re.S)
-    s = re.sub(r"<!--.*?-->", "", s, flags=re.S)
-
-    # Huge data: URLs in src/href blow up tokens and are not actionable as literals.
-    def _shorten_data_attr_dq(m: Any) -> str:
-        val = m.group(2)
-        if val.lower().startswith("data:"):
-            return f'{m.group(1)}="[data-uri-truncated]"'
-        return m.group(0)
-
-    def _shorten_data_attr_sq(m: Any) -> str:
-        val = m.group(2)
-        if val.lower().startswith("data:"):
-            return f"{m.group(1)}='[data-uri-truncated]'"
-        return m.group(0)
-
-    s = re.sub(r'(src|href)\s*=\s*"([^"]{800,})"', _shorten_data_attr_dq, s, flags=re.I)
-    s = re.sub(r"(src|href)\s*=\s*'([^']{800,})'", _shorten_data_attr_sq, s, flags=re.I)
-    # Oversized inline event handlers.
-    s = re.sub(r"\s(on[a-z]{2,20})\s*=\s*([\"'])(?:(?!\2).){400,}\2", "", s, flags=re.I)
-    try:
-        max_raw = int(os.getenv("FSM_SNAPSHOT_HTML_MAX_CHARS", "400000") or "400000")
-    except Exception:
-        max_raw = 400_000
-    # Clamp: tiny values break real pages; multi-megabyte snapshots blow memory.
-    max_raw = max(8_000, min(max_raw, 2_000_000))
-    if len(s) > max_raw:
-        s = s[:max_raw] + "\n<!-- fsm:snapshot_html_truncated -->"
-    return s
-
-
 def _tokenize(text: str) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]{2,}", str(text or "").lower())}
 
 
 def _focus_terms(text: str, *, max_terms: int = 18) -> set[str]:
     tokens = [t for t in re.findall(r"[a-z0-9]{3,}", str(text or "").lower()) if t not in _TASK_TERM_STOPWORDS]
-    freq: dict[str, int] = {}
+    freq: Dict[str, int] = {}
     for token in tokens:
         freq[token] = int(freq.get(token) or 0) + 1
     ranked = sorted(freq.items(), key=lambda item: (item[1], len(item[0]), item[0]), reverse=True)
@@ -267,9 +223,6 @@ def _looks_like_informational_task(prompt: str) -> bool:
     info_patterns = [
         r"\bwhat(?:'s| is)\b",
         r"\btell me\b",
-        r"\bsummari[sz]e\b",
-        r"\bsummary\b",
-        r"\bdescribe\b",
         r"\bhow much\b",
         r"\bhow many\b",
         r"\bvalue\b",
@@ -296,7 +249,9 @@ def _valueish_text(text: str) -> bool:
         return True
     if re.search(r"\b(?:yes|no|active|inactive|online|offline|open|closed)\b", value.lower()):
         return True
-    return bool(re.search(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b", value.lower()))
+    if re.search(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b", value.lower()):
+        return True
+    return False
 
 
 def _labelish_text(text: str) -> bool:
@@ -309,7 +264,9 @@ def _labelish_text(text: str) -> bool:
         return False
     if len(re.findall(r"\d", label)) > 0:
         return False
-    return not re.search(r"^[^a-zA-Z]*$", label)
+    if re.search(r"^[^a-zA-Z]*$", label):
+        return False
+    return True
 
 
 def _value_line_text(text: str) -> bool:
@@ -320,7 +277,9 @@ def _value_line_text(text: str) -> bool:
         return False
     if len(re.findall(r"\d", line)) >= 1:
         return True
-    return bool(re.search(r"\b(?:yes|no|active|inactive|online|offline|open|closed)\b", line.lower()))
+    if re.search(r"\b(?:yes|no|active|inactive|online|offline|open|closed)\b", line.lower()):
+        return True
+    return False
 
 
 def _is_generic_tool_placeholder(value: Any, *, kind: str) -> bool:
@@ -354,7 +313,7 @@ def _is_generic_tool_placeholder(value: Any, *, kind: str) -> bool:
     return text in generic_common
 
 
-def _normalize_reasoning_trace(raw: Any) -> dict[str, str]:
+def _normalize_reasoning_trace(raw: Any) -> Dict[str, str]:
     if not isinstance(raw, dict):
         return {}
     allowed = (
@@ -367,7 +326,7 @@ def _normalize_reasoning_trace(raw: Any) -> dict[str, str]:
         "state_assessment",
         "plan",
     )
-    out: dict[str, str] = {}
+    out: Dict[str, str] = {}
     for key in allowed:
         text = _norm_ws(str(raw.get(key) or ""))
         if text:
@@ -375,10 +334,10 @@ def _normalize_reasoning_trace(raw: Any) -> dict[str, str]:
     return out
 
 
-def _normalize_working_state(raw: Any) -> dict[str, Any]:
+def _normalize_working_state(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
-    out: dict[str, Any] = {}
+    out: Dict[str, Any] = {}
     for key in (
         "current_page_kind",
         "active_region",
@@ -394,7 +353,7 @@ def _normalize_working_state(raw: Any) -> dict[str, Any]:
         "pending_fields",
         "completion_evidence_missing",
     ):
-        values: list[str] = []
+        values: List[str] = []
         for item in list(raw.get(key) or []):
             text = _candidate_text(item)
             if text:
@@ -404,10 +363,10 @@ def _normalize_working_state(raw: Any) -> dict[str, Any]:
     return out
 
 
-def _reasoning_trace_summary(trace: dict[str, str]) -> str:
+def _reasoning_trace_summary(trace: Dict[str, str]) -> str:
     if not isinstance(trace, dict) or not trace:
         return ""
-    parts: list[str] = []
+    parts: List[str] = []
     if trace.get("task_interpretation"):
         parts.append(f"Task means: {trace['task_interpretation']}")
     if trace.get("success_state"):
@@ -427,10 +386,10 @@ def _reasoning_trace_summary(trace: dict[str, str]) -> str:
     return " | ".join(parts)[:900]
 
 
-def _working_state_summary(ws: dict[str, Any]) -> str:
+def _working_state_summary(ws: Dict[str, Any]) -> str:
     if not isinstance(ws, dict) or not ws:
         return ""
-    parts: list[str] = []
+    parts: List[str] = []
     if ws.get("current_page_kind"):
         parts.append(f"Page: {ws['current_page_kind']}")
     if ws.get("active_region"):
@@ -453,7 +412,7 @@ def _working_state_summary(ws: dict[str, Any]) -> str:
     return " | ".join(parts)[:900]
 
 
-def _normalize_use_case_info(raw: Any) -> dict[str, str]:
+def _normalize_use_case_info(raw: Any) -> Dict[str, str]:
     if isinstance(raw, dict):
         return {
             "name": _candidate_text(raw.get("name"))[:80],
@@ -465,7 +424,7 @@ def _normalize_use_case_info(raw: Any) -> dict[str, str]:
     return {k: v for k, v in out.items() if v}
 
 
-def _site_section_templates() -> dict[str, dict[str, str]]:
+def _site_section_templates() -> Dict[str, Dict[str, str]]:
     return {
         "home": {
             "label": "home / landing",
@@ -505,42 +464,16 @@ def _site_section_templates() -> dict[str, dict[str, str]]:
     }
 
 
-def _section_keys_for_use_case(name: str, description: str) -> list[str]:
+def _section_keys_for_use_case(name: str, description: str) -> List[str]:
     text = f"{name} {description}".lower()
     keys = ["home"]
     if any(tok in text for tok in ("login", "sign in", "sign up", "register", "logout", "auth")):
         keys.append("auth")
     if any(tok in text for tok in ("search", "filter", "browse", "find", "list")):
         keys.append("catalog")
-    if any(
-        tok in text
-        for tok in (
-            "detail",
-            "movie",
-            "book",
-            "product",
-            "profile",
-            "comment",
-            "review",
-            "share",
-            "trailer",
-            "view",
-        )
-    ):
+    if any(tok in text for tok in ("detail", "movie", "book", "product", "profile", "comment", "review", "share", "trailer", "view")):
         keys.append("detail")
-    if any(
-        tok in text
-        for tok in (
-            "add",
-            "create",
-            "edit",
-            "delete",
-            "contact",
-            "submit",
-            "form",
-            "message",
-        )
-    ):
+    if any(tok in text for tok in ("add", "create", "edit", "delete", "contact", "submit", "form", "message")):
         keys.append("form")
     if any(tok in text for tok in ("watchlist", "wishlist", "profile", "account", "saved")):
         keys.append("account")
@@ -550,7 +483,7 @@ def _section_keys_for_use_case(name: str, description: str) -> list[str]:
 
 
 @lru_cache(maxsize=1)
-def _load_task_cache_site_index() -> dict[str, dict[str, Any]]:
+def _load_task_cache_site_index() -> Dict[str, Dict[str, Any]]:
     path = SITE_KNOWLEDGE_TASK_CACHE
     if not path.exists():
         return {}
@@ -560,7 +493,7 @@ def _load_task_cache_site_index() -> dict[str, dict[str, Any]]:
     except Exception:
         return {}
     raw_tasks = data.get("tasks") if isinstance(data, dict) else data
-    out: dict[str, dict[str, Any]] = {}
+    out: Dict[str, Dict[str, Any]] = {}
     for item in raw_tasks if isinstance(raw_tasks, list) else []:
         if not isinstance(item, dict):
             continue
@@ -574,12 +507,12 @@ def _load_task_cache_site_index() -> dict[str, dict[str, Any]]:
             project["use_cases"][uc_name] = uc
         prompt = _candidate_text(item.get("prompt"))
         if prompt:
-            project["examples"] = _dedupe_keep_order([*list(project["examples"]), prompt[:180]], 12)
+            project["examples"] = _dedupe_keep_order(list(project["examples"]) + [prompt[:180]], 12)
     return out
 
 
 @lru_cache(maxsize=1)
-def _load_static_site_maps() -> dict[str, dict[str, Any]]:
+def _load_static_site_maps() -> Dict[str, Dict[str, Any]]:
     path = SITE_KNOWLEDGE_STATIC_MAP_PATH
     if not path.exists():
         return {}
@@ -591,7 +524,7 @@ def _load_static_site_maps() -> dict[str, dict[str, Any]]:
     if not isinstance(payload, dict):
         return {}
     projects = payload.get("projects") if isinstance(payload.get("projects"), dict) else payload
-    out: dict[str, dict[str, Any]] = {}
+    out: Dict[str, Dict[str, Any]] = {}
     for project_id, project_payload in projects.items() if isinstance(projects, dict) else []:
         pid = _candidate_text(project_id)
         if not pid or not isinstance(project_payload, dict):
@@ -606,53 +539,20 @@ def _section_key_for_path(path: str) -> str:
         return "home"
     if any(tok in clean for tok in ("/login", "/register", "/signup", "/signin", "/auth")):
         return "auth"
-    if any(
-        tok in clean
-        for tok in (
-            "/search",
-            "/browse",
-            "/catalog",
-            "/books",
-            "/movies",
-            "/restaurants",
-        )
-    ):
+    if any(tok in clean for tok in ("/search", "/browse", "/catalog", "/books", "/movies", "/restaurants")):
         return "catalog"
     if any(tok in clean for tok in ("/detail", "/movie/", "/book/", "/restaurant/", "/item/", "/film/")):
         return "detail"
-    if any(
-        tok in clean
-        for tok in (
-            "/contact",
-            "/create",
-            "/add",
-            "/edit",
-            "/delete",
-            "/checkout",
-            "/reserve",
-            "/booking",
-        )
-    ):
+    if any(tok in clean for tok in ("/contact", "/create", "/add", "/edit", "/delete", "/checkout", "/reserve", "/booking")):
         return "form"
-    if any(
-        tok in clean
-        for tok in (
-            "/profile",
-            "/account",
-            "/watchlist",
-            "/wishlist",
-            "/saved",
-            "/menu",
-            "/calendar",
-        )
-    ):
+    if any(tok in clean for tok in ("/profile", "/account", "/watchlist", "/wishlist", "/saved", "/menu", "/calendar")):
         return "account"
     if any(tok in clean for tok in ("/about", "/help", "/support", "/faq", "/policy")):
         return "info"
     return "home"
 
 
-def _normalize_route_entry(route: dict[str, Any], *, base_url: str = "") -> dict[str, Any] | None:
+def _normalize_route_entry(route: Dict[str, Any], *, base_url: str = "") -> Dict[str, Any] | None:
     if not isinstance(route, dict):
         return None
     raw_href = _candidate_text(route.get("href"), route.get("url"), route.get("path"))
@@ -672,8 +572,8 @@ def _normalize_route_entry(route: dict[str, Any], *, base_url: str = "") -> dict
     }
 
 
-def _discover_page_routes(*, snapshot_html: str, current_url: str, candidates: list[Any]) -> list[dict[str, Any]]:
-    discovered: list[dict[str, Any]] = []
+def _discover_page_routes(*, snapshot_html: str, current_url: str, candidates: List[Any]) -> List[Dict[str, Any]]:
+    discovered: List[Dict[str, Any]] = []
     if snapshot_html and BeautifulSoup is not None:
         try:
             soup = BeautifulSoup(snapshot_html, "lxml")
@@ -706,7 +606,7 @@ def _discover_page_routes(*, snapshot_html: str, current_url: str, candidates: l
                 "source": "candidate_href",
             }
         )
-    normalized: list[dict[str, Any]] = []
+    normalized: List[Dict[str, Any]] = []
     seen: set[str] = set()
     for item in discovered:
         route = _normalize_route_entry(item, base_url=current_url)
@@ -737,12 +637,12 @@ def _crawl_site_routes(start_url: str, depth: int, max_pages: int, timeout_s: fl
     if not (parsed_start.scheme and parsed_start.netloc):
         return ()
     same_origin = f"{parsed_start.scheme}://{parsed_start.netloc}"
-    queue: list[tuple[str, int]] = [(start, 0)]
+    queue: List[tuple[str, int]] = [(start, 0)]
     root = _root_url(start)
     if root and root != start:
         queue.append((root, 0))
     fetched_paths: set[str] = set()
-    emitted: list[tuple[str, str, str, str]] = []
+    emitted: List[tuple[str, str, str, str]] = []
     emitted_paths: set[str] = set()
     while queue and len(fetched_paths) < max(1, int(max_pages)):
         page_url, current_depth = queue.pop(0)
@@ -781,11 +681,7 @@ def _crawl_site_routes(start_url: str, depth: int, max_pages: int, timeout_s: fl
                 emitted_paths.add(route_path)
                 emitted.append(
                     (
-                        _candidate_text(
-                            anchor.get_text(" ", strip=True),
-                            anchor.get("aria-label"),
-                            route_path,
-                        )[:120],
+                        _candidate_text(anchor.get_text(" ", strip=True), anchor.get("aria-label"), route_path)[:120],
                         str(absolute or href)[:300],
                         route_path[:180],
                         _section_key_for_path(route_path),
@@ -796,13 +692,8 @@ def _crawl_site_routes(start_url: str, depth: int, max_pages: int, timeout_s: fl
     return tuple(emitted[:40])
 
 
-def _merge_site_routes(
-    static_routes: list[dict[str, Any]],
-    discovered_routes: list[dict[str, Any]],
-    *,
-    base_url: str,
-) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
+def _merge_site_routes(static_routes: List[Dict[str, Any]], discovered_routes: List[Dict[str, Any]], *, base_url: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
     seen: set[str] = set()
     for item in list(static_routes or []) + list(discovered_routes or []):
         route = _normalize_route_entry(item, base_url=base_url)
@@ -820,13 +711,13 @@ def _merge_site_routes(
 
 def _build_site_knowledge(
     project_id: str,
-    use_case: dict[str, str],
+    use_case: Dict[str, str],
     prompt: str,
     *,
     current_url: str = "",
     snapshot_html: str = "",
-    candidates: list[Any] | None = None,
-) -> dict[str, Any]:
+    candidates: List[Any] | None = None,
+) -> Dict[str, Any]:
     project_id = _candidate_text(project_id)
     uc = _normalize_use_case_info(use_case)
     cache_index = _load_task_cache_site_index()
@@ -838,7 +729,7 @@ def _build_site_knowledge(
     if uc.get("name") and not any(str(item.get("name") or "") == uc["name"] for item in all_use_cases if isinstance(item, dict)):
         all_use_cases.append(uc)
     templates = _site_section_templates()
-    section_sources: dict[str, list[str]] = {}
+    section_sources: Dict[str, List[str]] = {}
     for item in all_use_cases:
         if not isinstance(item, dict):
             continue
@@ -846,7 +737,7 @@ def _build_site_knowledge(
         desc = _candidate_text(item.get("description"))
         for key in _section_keys_for_use_case(name, desc):
             section_sources.setdefault(key, []).append(name or desc or "unknown")
-    known_sections: list[dict[str, Any]] = []
+    known_sections: List[Dict[str, Any]] = []
     for key in ("home", "auth", "catalog", "detail", "form", "account", "info"):
         if key not in section_sources:
             continue
@@ -871,7 +762,7 @@ def _build_site_knowledge(
         current_url=str(current_url or ""),
         candidates=list(candidates or []),
     )
-    crawled_routes: list[dict[str, Any]] = []
+    crawled_routes: List[Dict[str, Any]] = []
     if (not static_routes) and _env_bool("FSM_ENABLE_SITE_CRAWLER", True):
         crawl_depth = max(0, min(_env_int("FSM_SITE_CRAWL_DEPTH", 3), 3))
         crawl_max_pages = max(1, min(_env_int("FSM_SITE_CRAWL_MAX_PAGES", 12), 24))
@@ -894,12 +785,8 @@ def _build_site_knowledge(
             ]
         except Exception:
             crawled_routes = []
-    merged_routes = _merge_site_routes(
-        static_routes,
-        list(discovered_routes) + list(crawled_routes),
-        base_url=str(current_url or ""),
-    )
-    route_sections: dict[str, list[str]] = {}
+    merged_routes = _merge_site_routes(static_routes, list(discovered_routes) + list(crawled_routes), base_url=str(current_url or ""))
+    route_sections: Dict[str, List[str]] = {}
     for route in merged_routes:
         if not isinstance(route, dict):
             continue
@@ -950,19 +837,8 @@ def _digit_tokens(text: str) -> set[str]:
     return set(re.findall(r"\d+(?:[.,]\d+)?", str(text or "")))
 
 
-def _best_page_evidence(prompt: str, text_ir: dict[str, Any]) -> str:
+def _best_page_evidence(prompt: str, text_ir: Dict[str, Any]) -> str:
     text_ir = text_ir if isinstance(text_ir, dict) else {}
-    prompt_text = str(prompt or "").lower()
-
-    def _homepage_summary_fallback() -> str:
-        if not (re.search(r"\b(summary|summarize|describe)\b", prompt_text) and re.search(r"\b(homepage|home page|landing page)\b", prompt_text)):
-            return ""
-        title = _candidate_text(text_ir.get("title"))
-        headings = text_ir.get("headings") if isinstance(text_ir.get("headings"), list) else []
-        visible_text = _norm_ws(str(text_ir.get("visible_text") or ""))
-        summary_parts = [part for part in [title, *(str(x) for x in headings[:2]), visible_text[:180]] if _norm_ws(part)]
-        return _norm_ws(" - ".join(summary_parts))[:220]
-
     page_facts = text_ir.get("page_facts") if isinstance(text_ir.get("page_facts"), list) else []
     value_lines = text_ir.get("value_lines") if isinstance(text_ir.get("value_lines"), list) else []
     relevant_lines = text_ir.get("relevant_lines") if isinstance(text_ir.get("relevant_lines"), list) else []
@@ -971,8 +847,8 @@ def _best_page_evidence(prompt: str, text_ir: dict[str, Any]) -> str:
         24,
     )
     if not candidates:
-        return _homepage_summary_fallback()
-    ranked: list[tuple[int, str]] = []
+        return ""
+    ranked: List[tuple[int, str]] = []
     for fact in candidates:
         clean = _norm_ws(fact)
         if not clean:
@@ -992,7 +868,7 @@ def _best_page_evidence(prompt: str, text_ir: dict[str, Any]) -> str:
     ranked.sort(key=lambda item: (item[0], len(item[1])), reverse=True)
     if not ranked:
         return ""
-    _best_score, tagged_fact = ranked[0]
+    best_score, tagged_fact = ranked[0]
     overlap_blob, _, best_fact = tagged_fact.partition("::")
     try:
         raw_overlap_str, anchor_overlap_str = overlap_blob.split(":", 1)
@@ -1002,25 +878,14 @@ def _best_page_evidence(prompt: str, text_ir: dict[str, Any]) -> str:
         raw_overlap = 0
         anchor_overlap = 0
     if raw_overlap <= 0 and anchor_overlap <= 0:
-        return _homepage_summary_fallback()
+        return ""
     return best_fact[:220]
 
 
-def _content_supported_by_page_evidence(prompt: str, content: str, text_ir: dict[str, Any]) -> bool:
+def _content_supported_by_page_evidence(prompt: str, content: str, text_ir: Dict[str, Any]) -> bool:
     answer = _norm_ws(content)
     if not answer:
         return False
-    prompt_text = str(prompt or "").lower()
-    if re.search(r"\b(summary|summarize|describe)\b", prompt_text) and re.search(r"\b(homepage|home page|landing page)\b", prompt_text):
-        homepage_haystack = " ".join(
-            [
-                str(text_ir.get("title") or ""),
-                " ".join(str(x) for x in (text_ir.get("headings") if isinstance(text_ir.get("headings"), list) else [])[:4]),
-                str(text_ir.get("visible_text") or ""),
-            ]
-        )
-        if _fact_overlap_score(answer, homepage_haystack) >= 2:
-            return True
     page_facts = text_ir.get("page_facts") if isinstance(text_ir.get("page_facts"), list) else []
     likely = []
     if page_facts:
@@ -1034,14 +899,17 @@ def _content_supported_by_page_evidence(prompt: str, content: str, text_ir: dict
     answer_terms = _tokenize(answer)
     answer_digits = _digit_tokens(answer)
     for fact in likely:
-        if (answer.lower() in fact.lower() or fact.lower() in answer.lower()) and _fact_overlap_score(prompt, fact) >= 1:
-            return True
+        if answer.lower() in fact.lower() or fact.lower() in answer.lower():
+            if _fact_overlap_score(prompt, fact) >= 1:
+                return True
         fact_terms = _tokenize(fact)
         fact_digits = _digit_tokens(fact)
-        if answer_digits and fact_digits and answer_digits.intersection(fact_digits) and answer_terms.intersection(fact_terms) and _fact_overlap_score(prompt, fact) >= 1:
-            return True
-        if _fact_overlap_score(answer, fact) >= 2 and _fact_overlap_score(prompt, fact) >= 1:
-            return True
+        if answer_digits and fact_digits and answer_digits.intersection(fact_digits):
+            if answer_terms.intersection(fact_terms) and _fact_overlap_score(prompt, fact) >= 1:
+                return True
+        if _fact_overlap_score(answer, fact) >= 2:
+            if _fact_overlap_score(prompt, fact) >= 1:
+                return True
     return False
 
 
@@ -1064,7 +932,7 @@ def _looks_like_vague_informational_answer(text: str) -> bool:
     return any(re.search(pattern, answer) for pattern in vague_patterns)
 
 
-def _page_context_overlap(prompt: str, url: str, text_ir: dict[str, Any]) -> int:
+def _page_context_overlap(prompt: str, url: str, text_ir: Dict[str, Any]) -> int:
     terms = _focus_terms(prompt, max_terms=16)
     if not terms:
         return 0
@@ -1086,7 +954,7 @@ def _page_context_overlap(prompt: str, url: str, text_ir: dict[str, Any]) -> int
     return len(terms.intersection(hay_terms))
 
 
-def _page_context_ready_for_informational_answer(prompt: str, url: str, text_ir: dict[str, Any]) -> bool:
+def _page_context_ready_for_informational_answer(prompt: str, url: str, text_ir: Dict[str, Any]) -> bool:
     overlap = _page_context_overlap(prompt, url, text_ir)
     try:
         path = str(urlsplit(str(url or "")).path or "/").strip() or "/"
@@ -1096,7 +964,7 @@ def _page_context_ready_for_informational_answer(prompt: str, url: str, text_ir:
     return bool(non_root_path or overlap >= 2)
 
 
-def _runtime_page_evidence_ready(prompt: str, url: str, text_ir: dict[str, Any], *, step_index: int) -> bool:
+def _runtime_page_evidence_ready(prompt: str, url: str, text_ir: Dict[str, Any], *, step_index: int) -> bool:
     if _page_context_ready_for_informational_answer(prompt, url, text_ir):
         return True
     if int(step_index) < 1:
@@ -1104,10 +972,10 @@ def _runtime_page_evidence_ready(prompt: str, url: str, text_ir: dict[str, Any],
     best_fact = _best_page_evidence(prompt, text_ir)
     if not best_fact:
         return False
-    prompt_text = str(prompt or "").lower()
-    if re.search(r"\b(summary|summarize|describe)\b", prompt_text) and re.search(r"\b(homepage|home page|landing page)\b", prompt_text):
-        return True
-    return bool(_fact_overlap_score(prompt, best_fact) >= 1 and _anchor_overlap_score(prompt, best_fact) >= 1)
+    return bool(
+        _fact_overlap_score(prompt, best_fact) >= 1
+        and _anchor_overlap_score(prompt, best_fact) >= 1
+    )
 
 
 def _env_str(name: str, default: str = "") -> str:
@@ -1197,9 +1065,9 @@ def _vision_signature(*, screenshot: Any, question: str, url: str) -> str:
     return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 
-def _task_constraints(task: str) -> dict[str, str]:
+def _task_constraints(task: str) -> Dict[str, str]:
     text = str(task or "")
-    out: dict[str, str] = {}
+    out: Dict[str, str] = {}
     pattern = re.compile(
         r"\b([a-z][a-z0-9 _-]{1,40})\b\s*(?:equals|=|is|:)\s*(?:'([^']+)'|\"([^\"]+)\"|(<[^>]+>)|([0-9]+(?:\.[0-9]+)?)|([^\s,;]+))",
         flags=re.I,
@@ -1234,7 +1102,9 @@ def _constraint_value_matches(expected: str, actual: str) -> bool:
         return True
     exp_tokens = _tokenize(exp)
     act_tokens = _tokenize(act)
-    return bool(exp_tokens and act_tokens and exp_tokens.issubset(act_tokens))
+    if exp_tokens and act_tokens and exp_tokens.issubset(act_tokens):
+        return True
+    return False
 
 
 def _safe_url(raw: str, base: str = "") -> str:
@@ -1256,10 +1126,10 @@ def _safe_url(raw: str, base: str = "") -> str:
     return txt
 
 
-def _query_map(url: str) -> dict[str, str]:
+def _query_map(url: str) -> Dict[str, str]:
     try:
         parsed = urlsplit(str(url or "").strip())
-        out: dict[str, str] = {}
+        out: Dict[str, str] = {}
         for k, v in parse_qsl(str(parsed.query or ""), keep_blank_values=True):
             key = str(k or "").strip()
             if not key:
@@ -1272,22 +1142,14 @@ def _query_map(url: str) -> dict[str, str]:
         return {}
 
 
-def _with_query(url: str, query: dict[str, str]) -> str:
+def _with_query(url: str, query: Dict[str, str]) -> str:
     try:
         parsed = urlsplit(str(url or "").strip())
         if not parsed.scheme or not parsed.netloc:
             return str(url or "")
         q_items = list(query.items())[:16]
         q_encoded = urlencode(q_items, doseq=False)
-        return urlunsplit(
-            (
-                parsed.scheme,
-                parsed.netloc,
-                parsed.path or "/",
-                q_encoded,
-                parsed.fragment or "",
-            )
-        )
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", q_encoded, parsed.fragment or ""))
     except Exception:
         return str(url or "")
 
@@ -1301,7 +1163,7 @@ def _candidate_text(*parts: Any) -> str:
     return ""
 
 
-def _sanitize_selector(selector: dict[str, Any] | None) -> dict[str, Any] | None:
+def _sanitize_selector(selector: Dict[str, Any] | None) -> Dict[str, Any] | None:
     if not isinstance(selector, dict):
         return None
     out = dict(selector)
@@ -1316,22 +1178,11 @@ def _sanitize_selector(selector: dict[str, Any] | None) -> dict[str, Any] | None
                 return value[:MAX_STR]
         return ""
 
-    if sel_type in {
-        "text",
-        "textselector",
-        "textcontains",
-        "textcontainsselector",
-        "linktext",
-        "partiallinktext",
-    }:
+    if sel_type in {"text", "textselector", "textcontains", "textcontainsselector", "linktext", "partiallinktext"}:
         value = first_text("value", "text", "label", "name", "query")
         if not value:
             return None
-        return {
-            "type": "tagContainsSelector",
-            "value": value,
-            "case_sensitive": case_sensitive,
-        }
+        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
     if sel_type in {"attribute", "attributevalueselector"}:
         attribute = first_text("attribute", "attr", "name")
         value = first_text("value", "text", "label")
@@ -1343,19 +1194,7 @@ def _sanitize_selector(selector: dict[str, Any] | None) -> dict[str, Any] | None
             "value": value,
             "case_sensitive": case_sensitive,
         }
-    if sel_type in {
-        "id",
-        "class",
-        "name",
-        "href",
-        "placeholder",
-        "aria-label",
-        "aria_label",
-        "title",
-        "role",
-        "value",
-        "type",
-    }:
+    if sel_type in {"id", "class", "name", "href", "placeholder", "aria-label", "aria_label", "title", "role", "value", "type"}:
         value = first_text("value", "text", "label")
         if not value:
             return None
@@ -1366,11 +1205,7 @@ def _sanitize_selector(selector: dict[str, Any] | None) -> dict[str, Any] | None
             "value": value,
             "case_sensitive": case_sensitive,
         }
-    if sel_type not in {
-        "attributevalueselector",
-        "tagcontainsselector",
-        "xpathselector",
-    }:
+    if sel_type not in {"attributevalueselector", "tagcontainsselector", "xpathselector"}:
         attribute = first_text("attribute", "attr", "name")
         value = first_text("value", "text", "label", "query")
         if attribute and value:
@@ -1381,21 +1216,13 @@ def _sanitize_selector(selector: dict[str, Any] | None) -> dict[str, Any] | None
                 "case_sensitive": case_sensitive,
             }
         if value:
-            return {
-                "type": "tagContainsSelector",
-                "value": value,
-                "case_sensitive": case_sensitive,
-            }
+            return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
         return None
     if sel_type == "tagcontainsselector":
         value = first_text("value", "text", "label")
         if not value:
             return None
-        return {
-            "type": "tagContainsSelector",
-            "value": value,
-            "case_sensitive": case_sensitive,
-        }
+        return {"type": "tagContainsSelector", "value": value, "case_sensitive": case_sensitive}
     if sel_type == "xpathselector":
         value = str(out.get("value") or out.get("text") or out.get("xpath") or "").strip()
         if value.lower().startswith("xpath="):
@@ -1407,16 +1234,12 @@ def _sanitize_selector(selector: dict[str, Any] | None) -> dict[str, Any] | None
         value = re.sub(r"\s+", " ", value).strip()
         if not value:
             return None
-        return {
-            "type": "xpathSelector",
-            "value": value,
-            "case_sensitive": case_sensitive,
-        }
+        return {"type": "xpathSelector", "value": value, "case_sensitive": case_sensitive}
     return out
 
 
-def _dedupe_keep_order(values: list[str], limit: int) -> list[str]:
-    out: list[str] = []
+def _dedupe_keep_order(values: List[str], limit: int) -> List[str]:
+    out: List[str] = []
     seen: set[str] = set()
     for raw in values:
         value = _norm_ws(raw)[:MAX_STR]

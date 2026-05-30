@@ -1,75 +1,17 @@
 from __future__ import annotations
 
-import contextlib
-import hashlib
-import json
-import os
-import re
-from collections.abc import Callable
-from pathlib import Path
-from typing import Any
-from urllib.parse import urlsplit
-
-from .candidates import Candidate, CandidateExtractor, CandidateRanker
-from .meta_tools import MetaToolExecutor, Router, Skills
-from .observation import ObsBuilder
-from .policy import Policy, _preferred_prompt_navigation, _preferred_seed_stable_navigation
-from .state import AgentState, FlagDetector, ProgressEffect
-from .utils import (
-    _REPO_ROOT,
-    CONTROL_META_TOOLS,
-    MAX_CHECKPOINTS,
-    MAX_INTERNAL_META_STEPS,
-    MAX_PENDING_ELEMENTS,
-    MAX_STR,
-    MAX_VISITED_URLS,
-    MAX_VISUAL_HINTS,
-    _action_type_for_tool,
-    _append_jsonl,
-    _best_page_evidence,
-    _candidate_text,
-    _canonical_allowed_tool_name,
-    _constraint_value_matches,
-    _content_supported_by_page_evidence,
-    _dedupe_keep_order,
-    _empty_call_breakdown,
-    _env_bool,
-    _env_int,
-    _env_str,
-    _looks_like_informational_task,
-    _looks_like_vague_informational_answer,
-    _merge_usage_dicts,
-    _meta_tools,
-    _norm_ws,
-    _normalize_reasoning_trace,
-    _normalize_use_case_info,
-    _normalize_working_state,
-    _obs_meta_tools,
-    _page_context_ready_for_informational_answer,
-    _query_map,
-    _reasoning_trace_summary,
-    _runtime_page_evidence_ready,
-    _safe_url,
-    _sanitize_selector,
-    _screenshot_available,
-    _supported_browser_tool_names,
-    _task_constraints,
-    _usage_breakdown_template,
-    _use_vision,
-    _utc_now,
-    _vision_signature,
-    _with_query,
-    clean_snapshot_html_for_llm,
-)
-
-_TEXT_INPUT_ACTION_TYPES = {"TypeAction", "FillAction", "InputAction"}
-
+from .utils import *
+from .state import *
+from .candidates import *
+from .observation import *
+from .meta_tools import *
+from .policy import *
 
 class StepEngine:
     def __init__(
         self,
-        llm_call: Callable[..., dict[str, Any]],
-        vision_call: Callable[..., dict[str, Any]] | None = None,
+        llm_call: Callable[..., Dict[str, Any]],
+        vision_call: Callable[..., Dict[str, Any]] | None = None,
     ) -> None:
         self.flags = FlagDetector()
         self.extractor = CandidateExtractor()
@@ -84,10 +26,7 @@ class StepEngine:
         self.debug_dir = str(os.getenv("FSM_POLICY_DEBUG_DIR", "") or "").strip()
         self.trace_json = _env_bool("FSM_TRACE_JSON", False)
         self.trace_dir = str(
-            os.getenv(
-                "FSM_TRACE_DIR",
-                self.debug_dir or str((_REPO_ROOT / "data" / "fsm_traces").resolve()),
-            )
+            os.getenv("FSM_TRACE_DIR", self.debug_dir or str((_REPO_ROOT / "data" / "fsm_traces").resolve()))
             or ""
         ).strip()
 
@@ -130,18 +69,9 @@ class StepEngine:
         url: str,
         step_index: int,
         state: AgentState,
-        text_ir: dict[str, Any],
-        flags: dict[str, Any],
+        text_ir: Dict[str, Any],
+        flags: Dict[str, Any],
     ) -> tuple[bool, str, str]:
-        goal_done, goal_content, goal_reason = self._goal_completion_result(
-            prompt=prompt,
-            url=url,
-            state=state,
-            text_ir=text_ir,
-            flags=flags,
-        )
-        if goal_done:
-            return True, goal_content, goal_reason
         if bool(flags.get("captcha_suspected")):
             return False, "", "Current page is blocked by a challenge."
         if _looks_like_informational_task(prompt):
@@ -164,134 +94,6 @@ class StepEngine:
                 return True, content, "Current evidence is sufficient."
         return False, "", "Current page is not yet sufficient to conclude completion."
 
-    def _goal_completion_result(
-        self,
-        *,
-        prompt: str,
-        url: str,
-        state: AgentState,
-        text_ir: dict[str, Any],
-        flags: dict[str, Any],
-    ) -> tuple[bool, str, str]:
-        goal_state = state.goal_state if isinstance(state.goal_state, dict) else {}
-        if not goal_state:
-            return False, "", ""
-        evaluation = self.obs_builder.evaluate_goal_state(
-            prompt=prompt,
-            url=url,
-            text_ir=text_ir,
-            flags=flags,
-            goal_state=goal_state,
-        )
-        goal_state = dict(goal_state)
-        goal_state["last_evaluation"] = evaluation
-        state.goal_state = goal_state
-        if not bool(evaluation.get("satisfied")):
-            return False, "", str(evaluation.get("reason") or "")
-        content = _candidate_text(evaluation.get("content"))
-        if not content:
-            return False, "", str(evaluation.get("reason") or "")
-        if not state.memory.facts:
-            state.memory.facts = _dedupe_keep_order([content], 20)
-        return True, content, str(evaluation.get("reason") or "goal_state_satisfied")
-
-    def _search_query_from_prompt(self, *, prompt: str) -> str:
-        text = str(prompt or "")
-        patterns = [
-            r"\bsearch for\s+['\"]([^'\"]+)['\"]",
-            r"\blook up\s+['\"]([^'\"]+)['\"]",
-            r"\bfind\s+['\"]([^'\"]+)['\"]",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text, flags=re.I)
-            if match:
-                return _norm_ws(match.group(1))[:180]
-        return ""
-
-    def _local_search_pre_action(
-        self,
-        *,
-        prompt: str,
-        url: str,
-        history: list[dict[str, Any]],
-        state: AgentState,
-        flags: dict[str, Any],
-        ranked_candidates: list[Candidate],
-        allowed: set[str],
-    ) -> tuple[dict[str, Any] | None, str]:
-        query = self._search_query_from_prompt(prompt=prompt)
-        if not query:
-            return None, ""
-        current_url = str(url or "").strip().lower()
-        if current_url in {"", "about:blank"}:
-            return None, ""
-        if not (bool(flags.get("search_box")) or any(str(c.field_kind or "") == "search" for c in ranked_candidates)):
-            return None, ""
-
-        def allow(name: str) -> bool:
-            return (not allowed) or (name in allowed)
-
-        search_input: Candidate | None = None
-        for cand in ranked_candidates:
-            if cand.disabled or cand.readonly:
-                continue
-            role = str(cand.role or "").strip().lower()
-            blob = " ".join([cand.text, cand.field_hint, cand.field_kind, cand.placeholder, cand.aria_label, cand.context]).lower()
-            if role in {"input", "textarea"} and (cand.field_kind == "search" or "search" in blob or "query" in blob):
-                search_input = cand
-                break
-        if search_input is None:
-            return None, ""
-
-        selector = _sanitize_selector(search_input.selector)
-        if not isinstance(selector, dict):
-            return None, ""
-
-        remembered = self._remembered_value_for_candidate(candidate=search_input, state=state)
-        already_typed = self._candidate_has_usable_typed_value(candidate=search_input, history=history, state=state)
-        if allow("browser.input") and (not already_typed or (remembered and remembered != query)):
-            return {
-                "type": "TypeAction",
-                "selector": selector,
-                "text": query,
-                "_element_id": search_input.id,
-            }, "local_search_type"
-
-        if not allow("browser.click"):
-            return None, ""
-
-        submit_candidate: Candidate | None = None
-        preferred_group = str(search_input.group_id or "")
-        preferred_region = str(search_input.region_id or "")
-        for cand in ranked_candidates:
-            if cand.disabled:
-                continue
-            role = str(cand.role or "").strip().lower()
-            input_type = str(cand.input_type or "").strip().lower()
-            blob = " ".join([cand.text, cand.field_hint, cand.field_kind, cand.placeholder, cand.aria_label, cand.context]).lower()
-            if role not in {"button", "link", "input"}:
-                continue
-            if role == "input" and input_type not in {"submit", "button", "image"}:
-                continue
-            if not any(token in blob for token in ("search", "find", "go", "submit")):
-                continue
-            same_group = preferred_group and str(cand.group_id or "") == preferred_group
-            same_region = preferred_region and str(cand.region_id or "") == preferred_region
-            if submit_candidate is None or same_group or same_region:
-                submit_candidate = cand
-                if same_group or same_region:
-                    break
-        if submit_candidate is None:
-            return None, ""
-        submit_selector = _sanitize_selector(submit_candidate.selector)
-        if not isinstance(submit_selector, dict):
-            return None, ""
-        return {
-            "type": "ClickAction",
-            "selector": submit_selector,
-            "_element_id": submit_candidate.id,
-        }, "local_search_submit"
-
     def _obs_extract_signature(self, *, dom_hash: str, url: str) -> str:
         raw = json.dumps({"dom_hash": str(dom_hash or "")[:64], "url": str(url or "")[:240]}, ensure_ascii=True, sort_keys=True)
         return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
@@ -300,8 +102,8 @@ class StepEngine:
         self,
         *,
         state: AgentState,
-        flags: dict[str, Any],
-        text_ir: dict[str, Any],
+        flags: Dict[str, Any],
+        text_ir: Dict[str, Any],
         url: str,
     ) -> bool:
         mode = self._obs_extract_mode()
@@ -327,13 +129,15 @@ class StepEngine:
         *,
         prompt: str,
         url: str,
-        text_ir: dict[str, Any],
-        candidates: list[Candidate],
-    ) -> list[dict[str, Any]]:
-        candidate_lines: list[str] = []
+        text_ir: Dict[str, Any],
+        candidates: List[Candidate],
+    ) -> List[Dict[str, Any]]:
+        candidate_lines: List[str] = []
         for cand in candidates[:40]:
             label = _candidate_text(cand.text, cand.field_hint, cand.href, cand.group_label, cand.region_label)
-            candidate_lines.append(f"[{cand.id}] role={cand.role} kind={cand.field_kind or cand.region_kind or cand.type} label={label[:140]} context={cand.context[:180]}")
+            candidate_lines.append(
+                f"[{cand.id}] role={cand.role} kind={cand.field_kind or cand.region_kind or cand.type} label={label[:140]} context={cand.context[:180]}"
+            )
         user_payload = {
             "task": str(prompt or "")[:1200],
             "url": str(url or "")[:400],
@@ -358,7 +162,7 @@ class StepEngine:
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
         ]
 
-    def _safe_json_load(self, raw: Any) -> dict[str, Any]:
+    def _safe_json_load(self, raw: Any) -> Dict[str, Any]:
         text = str(raw or "").strip()
         if not text:
             return {}
@@ -373,7 +177,7 @@ class StepEngine:
                     return {}
         return {}
 
-    def _normalize_obs_extract_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_obs_extract_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(payload, dict):
             return {}
         normalized = {
@@ -406,7 +210,13 @@ class StepEngine:
             )
         normalized["facts"] = [str(x)[:180] for x in list(payload.get("facts") or [])[:8] if str(x).strip()]
         normalized["primary_candidate_ids"] = [str(x)[:120] for x in list(payload.get("primary_candidate_ids") or [])[:12] if str(x).strip()]
-        if not (normalized["summary"] or normalized["regions"] or normalized["forms"] or normalized["facts"] or normalized["primary_candidate_ids"]):
+        if not (
+            normalized["summary"]
+            or normalized["regions"]
+            or normalized["forms"]
+            or normalized["facts"]
+            or normalized["primary_candidate_ids"]
+        ):
             return {}
         return normalized
 
@@ -416,11 +226,11 @@ class StepEngine:
         task_id: str,
         prompt: str,
         url: str,
-        flags: dict[str, Any],
+        flags: Dict[str, Any],
         state: AgentState,
-        text_ir: dict[str, Any],
-        candidates: list[Candidate],
-    ) -> dict[str, Any]:
+        text_ir: Dict[str, Any],
+        candidates: List[Candidate],
+    ) -> Dict[str, Any]:
         if not self._should_obs_extract(state=state, flags=flags, text_ir=text_ir, url=url):
             return state.memory.obs_extract_payload if isinstance(state.memory.obs_extract_payload, dict) else {}
         model_name = _env_str("OPENAI_OBS_MODEL", "gpt-4o-mini") or "gpt-4o-mini"
@@ -452,7 +262,7 @@ class StepEngine:
         clean_payload["__usage"] = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
         return clean_payload
 
-    def _debug_log(self, task_id: str, payload: dict[str, Any]) -> None:
+    def _debug_log(self, task_id: str, payload: Dict[str, Any]) -> None:
         if not self.debug_dir and not self.trace_json:
             return
         try:
@@ -463,7 +273,7 @@ class StepEngine:
         except Exception:
             return
 
-    def _state_delta(self, before: AgentState, after: AgentState) -> dict[str, Any]:
+    def _state_delta(self, before: AgentState, after: AgentState) -> Dict[str, Any]:
         return {
             "mode": {"from": before.mode, "to": after.mode},
             "stall_count": {
@@ -489,7 +299,7 @@ class StepEngine:
             },
         }
 
-    def _active_region_debug(self, *, state: AgentState) -> dict[str, Any]:
+    def _active_region_debug(self, *, state: AgentState) -> Dict[str, Any]:
         return {
             "region_id": str(state.focus_region.region_id or "")[:120],
             "region_kind": str(state.focus_region.region_kind or "")[:40],
@@ -500,15 +310,16 @@ class StepEngine:
     def _last_effect_label(
         self,
         *,
-        history: list[dict[str, Any]],
-        flags: dict[str, Any],
+        history: List[Dict[str, Any]],
+        flags: Dict[str, Any],
         done: bool = False,
     ) -> str:
         if done:
             return "COMPLETED"
         last = history[-1] if history else {}
-        if isinstance(last, dict) and (not bool(last.get("exec_ok", True)) or bool(_candidate_text(last.get("error")))):
-            return "BLOCKED"
+        if isinstance(last, dict):
+            if not bool(last.get("exec_ok", True)) or bool(_candidate_text(last.get("error"))):
+                return "BLOCKED"
         if bool(flags.get("url_changed")):
             return "ADVANCED"
         if bool(flags.get("dom_changed")):
@@ -520,11 +331,11 @@ class StepEngine:
     def _predict_expected_effect(
         self,
         *,
-        action: dict[str, Any],
+        action: Dict[str, Any],
         candidate: Candidate | None,
     ) -> str:
         action_type = str(action.get("type") or "").strip()
-        if action_type in _TEXT_INPUT_ACTION_TYPES:
+        if action_type in {"TypeAction", "FillAction"}:
             return "field_filled"
         if action_type == "SelectDropDownOptionAction":
             return "selection_changed"
@@ -553,8 +364,8 @@ class StepEngine:
         self,
         *,
         expected_effect: str,
-        flags: dict[str, Any],
-        history: list[dict[str, Any]],
+        flags: Dict[str, Any],
+        history: List[Dict[str, Any]],
     ) -> bool:
         if not expected_effect:
             return False
@@ -571,7 +382,7 @@ class StepEngine:
             return bool(flags.get("dom_changed")) or not bool(flags.get("no_visual_progress"))
         return False
 
-    def _no_progress_score(self, *, state: AgentState, flags: dict[str, Any], history: list[dict[str, Any]]) -> int:
+    def _no_progress_score(self, *, state: AgentState, flags: Dict[str, Any], history: List[Dict[str, Any]]) -> int:
         score = 0
         score += max(0, int(state.counters.stall_count or 0))
         score += max(0, int(state.counters.repeat_action_count or 0))
@@ -598,9 +409,9 @@ class StepEngine:
         self,
         *,
         step_index: int,
-        history: list[dict[str, Any]],
+        history: List[Dict[str, Any]],
         state: AgentState,
-        flags: dict[str, Any],
+        flags: Dict[str, Any],
     ) -> None:
         if not history:
             state.progress.last_effect = ""
@@ -615,15 +426,11 @@ class StepEngine:
         region_id = str(state.focus_region.region_id or state.form_progress.active_group_id or "")[:120]
         error = str(last.get("error") or "")[:220]
         expected_effect = str(state.progress.pending_expected_effect or "")[:40]
-        expected_effect_met = (
-            self._expected_effect_met(
-                expected_effect=expected_effect,
-                flags=flags,
-                history=history,
-            )
-            if expected_effect
-            else False
-        )
+        expected_effect_met = self._expected_effect_met(
+            expected_effect=expected_effect,
+            flags=flags,
+            history=history,
+        ) if expected_effect else False
         prev_effect = state.progress.recent_effects[-1] if state.progress.recent_effects else None
         prev_region_id = str(prev_effect.region_id or "") if isinstance(prev_effect, ProgressEffect) else ""
         prev_target_id = str(prev_effect.target_id or "") if isinstance(prev_effect, ProgressEffect) else ""
@@ -642,7 +449,7 @@ class StepEngine:
             exec_ok=bool(last.get("exec_ok", last.get("success", True))),
             error=error,
         )
-        state.progress.recent_effects = ([*state.progress.recent_effects, effect])[-16:]
+        state.progress.recent_effects = (state.progress.recent_effects + [effect])[-16:]
         state.progress.pending_expected_effect = ""
         state.progress.pending_expected_target_id = ""
         state.progress.pending_expected_region_id = ""
@@ -657,7 +464,7 @@ class StepEngine:
             state.progress.region_attempts[region_id] = int(state.progress.region_attempts.get(region_id) or 0) + 1
             if label in {"NO_VISIBLE_CHANGE", "BLOCKED"} and int(state.progress.region_attempts.get(region_id) or 0) >= 2:
                 state.progress.blocked_regions = _dedupe_keep_order(
-                    [*state.progress.blocked_regions, region_id],
+                    state.progress.blocked_regions + [region_id],
                     MAX_PENDING_ELEMENTS,
                 )
         pattern = ""
@@ -665,7 +472,7 @@ class StepEngine:
         if label in {"ADVANCED", "LOCAL_PROGRESS"} and action_type in {"TypeAction", "SelectDropDownOptionAction", "ClickAction"}:
             pattern = f"{action_type.lower()}_progress"
             state.progress.successful_patterns = _dedupe_keep_order(
-                [*state.progress.successful_patterns, pattern],
+                state.progress.successful_patterns + [pattern],
                 32,
             )
         elif (label in {"NO_VISIBLE_CHANGE", "BLOCKED"} or (expected_effect and not expected_effect_met)) and action_type:
@@ -675,15 +482,15 @@ class StepEngine:
             elif expected_effect and not expected_effect_met:
                 pattern = f"{action_type.lower()}_expected_{expected_effect}_miss"
             state.progress.failed_patterns = _dedupe_keep_order(
-                [*state.progress.failed_patterns, pattern],
+                state.progress.failed_patterns + [pattern],
                 32,
             )
 
     def _store_expected_effect(
         self,
         *,
-        action: dict[str, Any],
-        ranked_candidates: list[Candidate],
+        action: Dict[str, Any],
+        ranked_candidates: List[Candidate],
         state: AgentState,
     ) -> None:
         candidate = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
@@ -691,14 +498,20 @@ class StepEngine:
         state.progress.pending_expected_effect = expected_effect[:40]
         state.progress.pending_expected_action_type = str(action.get("type") or "")[:80]
         state.progress.pending_expected_target_id = str(action.get("_element_id") or action.get("element_id") or "")[:120]
-        state.progress.pending_expected_region_id = str((candidate.region_id if candidate is not None else "") or state.focus_region.region_id or "")[:120]
+        state.progress.pending_expected_region_id = str(
+            (candidate.region_id if candidate is not None else "") or state.focus_region.region_id or ""
+        )[:120]
 
-    def _apply_stagnation_policy(self, *, state: AgentState, flags: dict[str, Any]) -> None:
+    def _apply_stagnation_policy(self, *, state: AgentState, flags: Dict[str, Any]) -> None:
         no_progress_score = int(state.progress.no_progress_score or 0)
         region_id = str(state.focus_region.region_id or "").strip()
-        if region_id and (no_progress_score >= 6 or int(state.progress.consecutive_no_effect_steps or 0) >= 2 or region_id in set(state.progress.blocked_regions)):
+        if region_id and (
+            no_progress_score >= 6
+            or int(state.progress.consecutive_no_effect_steps or 0) >= 2
+            or region_id in set(state.progress.blocked_regions)
+        ):
             state.focus_region.recent_region_ids = _dedupe_keep_order(
-                [*state.focus_region.recent_region_ids, region_id],
+                state.focus_region.recent_region_ids + [region_id],
                 MAX_PENDING_ELEMENTS,
             )
             state.focus_region.region_id = ""
@@ -707,182 +520,17 @@ class StepEngine:
             state.focus_region.region_context = ""
             state.focus_region.candidate_ids = []
             state.memory.checkpoints = _dedupe_keep_order(
-                [*state.memory.checkpoints, f"release_region:{region_id}"],
+                state.memory.checkpoints + [f"release_region:{region_id}"],
                 MAX_CHECKPOINTS,
             )
         if no_progress_score >= 7 and state.mode in {"NAV", "EXTRACT"}:
             state.mode = "PLAN"
 
-    def _max_recovery_attempts(self) -> int:
-        return max(1, min(_env_int("FSM_MAX_RECOVERY_ATTEMPTS", 3), 8))
-
-    def _max_consecutive_waits(self) -> int:
-        return max(0, min(_env_int("FSM_MAX_CONSECUTIVE_WAITS", 1), 4))
-
-    def _failure_no_progress_score(self) -> int:
-        return max(4, min(_env_int("FSM_FAILURE_NO_PROGRESS_SCORE", 8), 16))
-
-    def _failure_stall_count(self) -> int:
-        return max(4, min(_env_int("FSM_FAILURE_STALL_COUNT", 6), 12))
-
-    def _clear_failure_reason(self, *, state: AgentState) -> None:
-        state.failure_reason = ""
-
-    def _set_failure_reason(self, *, state: AgentState, reason: str) -> None:
-        normalized = str(reason or "").strip().lower().replace(" ", "_")
-        if not normalized:
-            return
-        state.failure_reason = normalized[:80]
-        state.memory.checkpoints = _dedupe_keep_order(
-            [*state.memory.checkpoints, f"failure:{state.failure_reason}"],
-            MAX_CHECKPOINTS,
-        )
-
-    def _reset_recovery_budget_if_progressed(self, *, state: AgentState, flags: dict[str, Any]) -> None:
-        if bool(flags.get("url_changed")) or bool(flags.get("dom_changed")) or not bool(flags.get("no_visual_progress")):
-            state.counters.recovery_attempt_count = 0
-            state.counters.consecutive_wait_count = 0
-            self._clear_failure_reason(state=state)
-
-    def _record_recovery_action(self, *, state: AgentState, action: dict[str, Any] | None) -> None:
-        action_type = str((action or {}).get("type") or "").strip().lower()
-        if action_type == "waitaction":
-            state.counters.consecutive_wait_count = int(state.counters.consecutive_wait_count or 0) + 1
-            state.counters.recovery_attempt_count = int(state.counters.recovery_attempt_count or 0) + 1
-            return
-        state.counters.consecutive_wait_count = 0
-        if action_type in {"gobackaction", "scrollaction"}:
-            state.counters.recovery_attempt_count = int(state.counters.recovery_attempt_count or 0) + 1
-
-    def _bounded_failure_payload(
-        self,
-        *,
-        state: AgentState,
-        flags: dict[str, Any],
-        policy_obs: dict[str, Any],
-    ) -> tuple[str, str, str]:
-        page_obs = policy_obs.get("page_observations") if isinstance(policy_obs.get("page_observations"), dict) else {}
-        capability_gap = page_obs.get("capability_gap") if isinstance(page_obs.get("capability_gap"), dict) else {}
-        current_url = str(policy_obs.get("url") or "")
-        if bool(flags.get("cookie_banner")) or bool(flags.get("modal_dialog")):
-            return (
-                "popup_not_resolved",
-                "Unable to continue safely because a popup or modal keeps blocking progress on the current page.",
-                "popup_not_resolved",
-            )
-        if bool(flags.get("login_form")) or bool(capability_gap.get("read_only_for_task")):
-            preferred = str(capability_gap.get("preferred_transition") or "").strip().lower()
-            detail = f" Suggested next section: {preferred}." if preferred else ""
-            return (
-                "blocked_by_auth",
-                f"Unable to continue safely because this task appears blocked by authentication or a read-only page.{detail}",
-                "blocked_by_auth",
-            )
-        if int(state.counters.recovery_attempt_count or 0) >= self._max_recovery_attempts():
-            return (
-                "no_progress_after_recovery",
-                f"Unable to continue safely after {int(state.counters.recovery_attempt_count or 0)} recovery attempts without visible progress at {current_url or 'the current page'}.",
-                "no_progress_after_recovery",
-            )
-        candidate_count = int(page_obs.get("candidate_count") or 0)
-        if candidate_count <= 0:
-            return (
-                "state_not_understood",
-                "Unable to continue safely because the current page does not expose enough reliable interactive structure.",
-                "state_not_understood",
-            )
-        if int(state.progress.no_progress_score or 0) >= self._failure_no_progress_score():
-            return (
-                "no_progress_after_recovery",
-                f"Unable to continue safely after multiple recovery attempts without visible progress at {current_url or 'the current page'}.",
-                "no_progress_after_recovery",
-            )
-        return (
-            "target_not_found",
-            "Unable to continue safely because the target control could not be found with enough confidence on the current page.",
-            "target_not_found",
-        )
-
-    def _should_emit_bounded_failure(
-        self,
-        *,
-        state: AgentState,
-        flags: dict[str, Any],
-    ) -> bool:
-        consecutive_waits = int(state.counters.consecutive_wait_count or 0)
-        if consecutive_waits > 0 and consecutive_waits >= self._max_consecutive_waits():
-            return True
-        if int(state.counters.recovery_attempt_count or 0) >= self._max_recovery_attempts():
-            return True
-        if int(state.progress.no_progress_score or 0) >= self._failure_no_progress_score():
-            return True
-        if int(state.counters.stall_count or 0) >= self._failure_stall_count():
-            return True
-        return bool(str(flags.get("loop_level") or "none") == "high" and bool(state.escalated_once))
-
-    def _maybe_emit_bounded_failure(
-        self,
-        *,
-        state: AgentState,
-        flags: dict[str, Any],
-        policy_obs: dict[str, Any],
-    ) -> tuple[bool, str, str]:
-        if not self._should_emit_bounded_failure(state=state, flags=flags):
-            return False, "", ""
-        reason, content, error = self._bounded_failure_payload(
-            state=state,
-            flags=flags,
-            policy_obs=policy_obs,
-        )
-        self._set_failure_reason(state=state, reason=reason)
-        state.mode = "DONE"
-        return True, content, error
-
-    def _enforce_recovery_budget_on_action(
-        self,
-        *,
-        chosen_actions: list[dict[str, Any]],
-        prompt: str,
-        url: str,
-        step_index: int,
-        state: AgentState,
-        flags: dict[str, Any],
-        policy_obs: dict[str, Any],
-        allowed: set[str],
-    ) -> tuple[list[dict[str, Any]], bool, str, str]:
-        if not chosen_actions:
-            return [], False, "", ""
-        action = chosen_actions[-1] if isinstance(chosen_actions[-1], dict) else {}
-        action_type = str(action.get("type") or "").strip().lower()
-        if action_type != "waitaction":
-            return chosen_actions, False, "", ""
-        if int(state.counters.consecutive_wait_count or 0) < self._max_consecutive_waits():
-            return chosen_actions, False, "", ""
-        stripped_allowed = {tool for tool in allowed if _canonical_allowed_tool_name(tool) != "browser.wait"}
-        if stripped_allowed:
-            alt_action, _, _, alt_note = self._stuck_recovery(
-                prompt=prompt,
-                url=url,
-                step_index=step_index,
-                state=state,
-                allowed=stripped_allowed,
-            )
-            if alt_action is not None and str(alt_action.get("type") or "").strip().lower() != "waitaction":
-                return [alt_action], False, "", alt_note
-        should_fail, content, error = self._maybe_emit_bounded_failure(
-            state=state,
-            flags=flags,
-            policy_obs=policy_obs,
-        )
-        if should_fail:
-            return [], True, content, error
-        return chosen_actions, False, "", ""
-
     def _maybe_promote_to_plan_from_capability_gap(
         self,
         *,
         state: AgentState,
-        policy_obs: dict[str, Any],
+        policy_obs: Dict[str, Any],
         route_reason: str,
     ) -> str:
         page_obs = policy_obs.get("page_observations") if isinstance(policy_obs.get("page_observations"), dict) else {}
@@ -902,7 +550,7 @@ class StepEngine:
             mode = "auto"
         return mode
 
-    def _default_vision_question(self, *, prompt: str, state: AgentState, text_ir: dict[str, Any]) -> str:
+    def _default_vision_question(self, *, prompt: str, state: AgentState, text_ir: Dict[str, Any]) -> str:
         control_groups = text_ir.get("control_groups") if isinstance(text_ir.get("control_groups"), list) else []
         cards = text_ir.get("cards") if isinstance(text_ir.get("cards"), list) else []
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
@@ -920,9 +568,13 @@ class StepEngine:
                 "Prefer current-page controls or apply/submit actions over unrelated cards unless the target item is clearly identified."
             )
         if control_groups:
-            return "Given the screenshot and task, which visible controls or buttons best advance the task on the current page?"
+            return (
+                "Given the screenshot and task, which visible controls or buttons best advance the task on the current page?"
+            )
         if cards:
-            return "Given the screenshot and task, which visible candidate ids correspond to the most relevant item or item action?"
+            return (
+                "Given the screenshot and task, which visible candidate ids correspond to the most relevant item or item action?"
+            )
         if state.mode in {"PLAN", "STUCK"}:
             return "Describe the visible UI and identify the best visible next target from the candidate list."
         return "Which visible candidate ids best match the next useful action for this task?"
@@ -932,8 +584,8 @@ class StepEngine:
         *,
         screenshot: Any,
         state: AgentState,
-        flags: dict[str, Any],
-        text_ir: dict[str, Any],
+        flags: Dict[str, Any],
+        text_ir: Dict[str, Any],
         question: str,
         url: str,
     ) -> bool:
@@ -961,7 +613,9 @@ class StepEngine:
             return True
         if str(flags.get("loop_level") or "none") == "high":
             return True
-        return bool(int(state.counters.stall_count or 0) >= 2 or int(state.counters.repeat_action_count or 0) >= 1)
+        if int(state.counters.stall_count or 0) >= 2 or int(state.counters.repeat_action_count or 0) >= 1:
+            return True
+        return False
 
     def _pre_done_verification(
         self,
@@ -969,9 +623,9 @@ class StepEngine:
         step_index: int,
         state: AgentState,
         prompt: str,
-        text_ir: dict[str, Any],
+        text_ir: Dict[str, Any],
         content: str,
-        flags: dict[str, Any],
+        flags: Dict[str, Any],
     ) -> tuple[bool, str]:
         text = _candidate_text(content)
         if not text:
@@ -1013,78 +667,21 @@ class StepEngine:
         prompt: str,
         url: str,
         step_index: int,
-        history: list[dict[str, Any]],
         state: AgentState,
-        text_ir: dict[str, Any],
-        candidates: list[Candidate],
-        ranked: list[Candidate],
-        policy_obs: dict[str, Any],
+        text_ir: Dict[str, Any],
+        candidates: List[Candidate],
+        ranked: List[Candidate],
+        policy_obs: Dict[str, Any],
         browser_allowed: set[str],
         model_name: str,
-        usage_payload: dict[str, Any],
+        usage_payload: Dict[str, Any],
         policy_model_used: str,
-    ) -> tuple[list[dict[str, Any]], bool, str, str, str]:
-        chosen_actions: list[dict[str, Any]] = []
+    ) -> tuple[List[Dict[str, Any]], bool, str, str, str]:
+        chosen_actions: List[Dict[str, Any]] = []
         done = False
         content = ""
         policy_reasoning = ""
-        goal_done, goal_content, goal_reason = self._goal_completion_result(
-            prompt=prompt,
-            url=url,
-            state=state,
-            text_ir=text_ir,
-            flags=policy_obs.get("flags") if isinstance(policy_obs.get("flags"), dict) else {},
-        )
-        if goal_done:
-            state.mode = "DONE"
-            return [], True, goal_content, goal_reason, policy_model_used
         direct_browser_allowed = {tool for tool in browser_allowed if tool != "browser.go_back"}
-        search_pre_action, search_note = self._local_search_pre_action(
-            prompt=prompt,
-            url=url,
-            history=history,
-            state=state,
-            flags=policy_obs.get("flags") if isinstance(policy_obs.get("flags"), dict) else {},
-            ranked_candidates=ranked,
-            allowed=direct_browser_allowed,
-        )
-        if search_pre_action is not None:
-            return [search_pre_action], False, "", search_note, policy_model_used
-        preferred_prompt_navigation = _preferred_prompt_navigation(
-            prompt,
-            policy_obs,
-            allowed_tools=direct_browser_allowed,
-        )
-        if isinstance(preferred_prompt_navigation, dict):
-            action = self._browser_action_from_tool_call(
-                tool_call=preferred_prompt_navigation.get("tool_call") if isinstance(preferred_prompt_navigation.get("tool_call"), dict) else preferred_prompt_navigation,
-                ranked_candidates=list(ranked) or list(candidates),
-                state=state,
-                prompt=prompt,
-                allowed=direct_browser_allowed,
-                current_url=url,
-            )
-            if action is not None:
-                return [action], False, "", "preferred_prompt_navigation", policy_model_used
-        preferred_seed_navigation = _preferred_seed_stable_navigation(
-            prompt,
-            policy_obs,
-            allowed_tools=direct_browser_allowed,
-        )
-        if isinstance(preferred_seed_navigation, dict):
-            action_candidates = list(ranked)
-            ranked_ids = {cand.id for cand in ranked if cand.id}
-            action_candidates.extend(cand for cand in candidates if cand.id not in ranked_ids)
-            action = self._browser_action_from_tool_call(
-                tool_call=preferred_seed_navigation.get("tool_call") if isinstance(preferred_seed_navigation.get("tool_call"), dict) else preferred_seed_navigation,
-                ranked_candidates=action_candidates,
-                state=state,
-                prompt=prompt,
-                allowed=direct_browser_allowed,
-                current_url=url,
-            )
-            if action is not None:
-                return [action], False, "", "preferred_seed_navigation", policy_model_used
         decision, usage = self.policy.decide(
             task_id=task_id or "task",
             prompt=prompt,
@@ -1113,9 +710,6 @@ class StepEngine:
         policy_reasoning = _candidate_text(decision.get("reasoning"), policy_reasoning)
         dtype = str(decision.get("type") or "").strip().lower()
         if dtype == "final":
-            final_error = _candidate_text(decision.get("error"), decision.get("failure_reason"))
-            if final_error:
-                self._set_failure_reason(state=state, reason=final_error)
             final_content = _candidate_text(decision.get("content"), "")
             lowered = final_content.lower()
             generic = {
@@ -1142,14 +736,6 @@ class StepEngine:
             for raw_call in raw_calls[:max_actions_per_step]:
                 if not isinstance(raw_call, dict):
                     continue
-                if str(raw_call.get("name") or "").strip() == "browser.done":
-                    final_content = _candidate_text((raw_call.get("arguments") if isinstance(raw_call.get("arguments"), dict) else {}).get("content"))
-                    if final_content:
-                        done = True
-                        content = final_content
-                        state.mode = "DONE"
-                        chosen_actions = []
-                        break
                 action = self._browser_action_from_tool_call(
                     tool_call=raw_call,
                     ranked_candidates=action_candidates,
@@ -1168,42 +754,31 @@ class StepEngine:
         task_id: str,
         prompt: str,
         web_project_id: str,
-        use_case: dict[str, str],
+        use_case: Dict[str, str],
         url: str,
         html: str,
         step_index: int,
-        history: list[dict[str, Any]],
+        history: List[Dict[str, Any]],
         screenshot: Any,
         state: AgentState,
-        flags: dict[str, Any],
-        text_ir: dict[str, Any],
-        candidates: list[Candidate],
-        ranked: list[Candidate],
-        policy_obs: dict[str, Any],
+        flags: Dict[str, Any],
+        text_ir: Dict[str, Any],
+        candidates: List[Candidate],
+        ranked: List[Candidate],
+        policy_obs: Dict[str, Any],
         allowed: set[str],
         model_name: str,
         plan_model_name: str,
-        usage_payload: dict[str, Any],
+        usage_payload: Dict[str, Any],
         policy_model_used: str,
         route_reason: str,
-    ) -> tuple[list[dict[str, Any]], bool, str, str, str, list[str]]:
-        chosen_actions: list[dict[str, Any]] = []
+    ) -> tuple[List[Dict[str, Any]], bool, str, str, str, List[str]]:
+        chosen_actions: List[Dict[str, Any]] = []
         done = False
         content = ""
         policy_reasoning = ""
-        meta_exec_trace: list[str] = []
+        meta_exec_trace: List[str] = []
         step_vision_signatures: set[str] = set()
-        goal_done, goal_content, goal_reason = self._goal_completion_result(
-            prompt=prompt,
-            url=url,
-            state=state,
-            text_ir=text_ir,
-            flags=flags,
-        )
-        if goal_done:
-            state.mode = "DONE"
-            meta_exec_trace.append(f"GOAL_DONE:{goal_reason}")
-            return [], True, goal_content, goal_reason, policy_model_used, meta_exec_trace
 
         pre_action, pre_done, pre_content, pre_note = self._deterministic_pre_action(
             prompt=prompt,
@@ -1321,7 +896,7 @@ class StepEngine:
                     helper_model = str(vision_result.get("model") or "").strip()
                     if helper_model:
                         usage_payload["helper_models"] = _dedupe_keep_order(
-                            [*list(usage_payload.get("helper_models") or []), helper_model],
+                            list(usage_payload.get("helper_models") or []) + [helper_model],
                             8,
                         )
                 ranked = self.ranker.rank(
@@ -1385,9 +960,6 @@ class StepEngine:
                 policy_reasoning = _candidate_text(decision.get("reasoning"), policy_reasoning)
                 dtype = str(decision.get("type") or "").strip().lower()
                 if dtype == "final":
-                    final_error = _candidate_text(decision.get("error"), decision.get("failure_reason"))
-                    if final_error:
-                        self._set_failure_reason(state=state, reason=final_error)
                     final_content = _candidate_text(decision.get("content"), "Task completed.")
                     can_early_finish = bool(state.memory.facts) and state.mode in {"REPORT", "DONE"}
                     ok, done_reason = self._pre_done_verification(
@@ -1403,7 +975,11 @@ class StepEngine:
                     elif not ok:
                         meta_exec_trace.append(f"BLOCK_DONE:{done_reason}")
                         best_page_evidence = _best_page_evidence(prompt, text_ir)
-                        if _looks_like_informational_task(prompt) and best_page_evidence and _runtime_page_evidence_ready(prompt, url, text_ir, step_index=step_index):
+                        if (
+                            _looks_like_informational_task(prompt)
+                            and best_page_evidence
+                            and _runtime_page_evidence_ready(prompt, url, text_ir, step_index=step_index)
+                        ):
                             ok2, reason2 = self._pre_done_verification(
                                 step_index=step_index,
                                 state=state,
@@ -1444,14 +1020,6 @@ class StepEngine:
                     for raw_call in raw_calls[:max_actions_per_step]:
                         if not isinstance(raw_call, dict):
                             continue
-                        if str(raw_call.get("name") or "").strip() == "browser.done":
-                            final_content = _candidate_text((raw_call.get("arguments") if isinstance(raw_call.get("arguments"), dict) else {}).get("content"))
-                            if final_content:
-                                done = True
-                                content = final_content
-                                state.mode = "DONE"
-                                chosen_actions = []
-                                break
                         action = self._browser_action_from_tool_call(
                             tool_call=raw_call,
                             ranked_candidates=ranked,
@@ -1462,7 +1030,7 @@ class StepEngine:
                         )
                         if action is not None:
                             chosen_actions.append(action)
-                    if done or chosen_actions:
+                    if chosen_actions:
                         break
                 if dtype == "meta":
                     if state.counters.meta_steps_used >= MAX_INTERNAL_META_STEPS:
@@ -1470,7 +1038,9 @@ class StepEngine:
                     meta_name = str(decision.get("name") or "")
                     meta_args = decision.get("arguments") if isinstance(decision.get("arguments"), dict) else {}
                     if meta_name == "META.VISION_QA":
-                        vision_question = str(meta_args.get("question") or self._default_vision_question(prompt=prompt, state=state, text_ir=text_ir))
+                        vision_question = str(
+                            meta_args.get("question") or self._default_vision_question(prompt=prompt, state=state, text_ir=text_ir)
+                        )
                         if not self._should_auto_vision(
                             screenshot=screenshot,
                             state=state,
@@ -1535,7 +1105,7 @@ class StepEngine:
                         helper_model = str(result.get("model") or "").strip()
                         if helper_model:
                             usage_payload["helper_models"] = _dedupe_keep_order(
-                                [*list(usage_payload.get("helper_models") or []), helper_model],
+                                list(usage_payload.get("helper_models") or []) + [helper_model],
                                 8,
                             )
                     if meta_name == "META.SET_MODE":
@@ -1605,9 +1175,6 @@ class StepEngine:
             if str(fallback.get("type") or "") == "final":
                 done = True
                 content = _candidate_text(fallback.get("content"), "Task complete.")
-                fallback_error = _candidate_text(fallback.get("error"), fallback.get("failure_reason"))
-                if fallback_error:
-                    self._set_failure_reason(state=state, reason=fallback_error)
                 state.mode = "DONE"
             else:
                 fallback_action = self._browser_action_from_tool_call(
@@ -1628,14 +1195,15 @@ class StepEngine:
         *,
         done: bool,
         direct_loop: bool,
-        chosen_actions: list[dict[str, Any]] | None,
+        chosen_actions: List[Dict[str, Any]] | None,
         prompt: str,
-        history: list[dict[str, Any]],
-        ranked: list[Candidate],
+        policy_obs: Dict[str, Any],
+        history: List[Dict[str, Any]],
+        ranked: List[Candidate],
         state: AgentState,
         step_index: int,
-    ) -> tuple[list[dict[str, Any]], str, dict[str, Any] | None]:
-        actions: list[dict[str, Any]] = []
+    ) -> tuple[List[Dict[str, Any]], str, Dict[str, Any] | None]:
+        actions: List[Dict[str, Any]] = []
         browser_tool_name = ""
         chosen_actions = list(chosen_actions or [])
         if done or not chosen_actions:
@@ -1646,9 +1214,7 @@ class StepEngine:
         simulated_history = list(history)
         max_actions_per_step = max(1, min(_env_int("FSM_MAX_ACTIONS_PER_STEP", 3), 5))
         for chosen_action in chosen_actions[:max_actions_per_step]:
-            if direct_loop:
-                pass
-            else:
+            if not direct_loop:
                 chosen_action = self._guard_delete_task_against_unrelated_form_edits(
                     action=chosen_action,
                     prompt=prompt,
@@ -1697,15 +1263,13 @@ class StepEngine:
         chosen_action = actions[-1] if actions else None
         if chosen_action is None:
             return [], "", None
-        self._clear_failure_reason(state=state)
-        self._record_recovery_action(state=state, action=chosen_action)
         sig = self._action_signature(chosen_action)
         state.counters.repeat_action_count = state.counters.repeat_action_count + 1 if sig == state.last_action_sig else 0
         state.last_action_sig = sig
         state.last_action_element_id = str(chosen_action.get("_element_id") or "")[:120]
         if state.last_action_element_id and int(state.counters.repeat_action_count or 0) >= 2:
             state.blocklist.element_ids = _dedupe_keep_order(
-                [*state.blocklist.element_ids, state.last_action_element_id],
+                state.blocklist.element_ids + [state.last_action_element_id],
                 MAX_PENDING_ELEMENTS,
             )
             state.blocklist.until_step = max(state.blocklist.until_step, int(step_index) + 2)
@@ -1720,25 +1284,25 @@ class StepEngine:
         mode_out: str,
         direct_loop: bool,
         prompt: str,
-        text_ir: dict[str, Any],
-        policy_obs: dict[str, Any],
+        text_ir: Dict[str, Any],
+        policy_obs: Dict[str, Any],
         state_before: AgentState,
         state: AgentState,
-        meta_exec_trace: list[str],
-        chosen_action: dict[str, Any] | None,
-        actions: list[dict[str, Any]],
+        meta_exec_trace: List[str],
+        chosen_action: Dict[str, Any] | None,
+        actions: List[Dict[str, Any]],
         done: bool,
         content: str,
         browser_tool_name: str,
         include_reasoning: bool,
         policy_reasoning: str,
-        ranked: list[Candidate],
-        flags: dict[str, Any],
-        history: list[dict[str, Any]],
-        usage_payload: dict[str, Any],
+        ranked: List[Candidate],
+        flags: Dict[str, Any],
+        history: List[Dict[str, Any]],
+        usage_payload: Dict[str, Any],
         policy_model_used: str,
         model_name: str,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         final_content = _candidate_text(content)
         if done and not final_content:
             final_content = "Task completed."
@@ -1750,21 +1314,19 @@ class StepEngine:
             else:
                 best_fact = _best_page_evidence(prompt, text_ir)
                 goal = _candidate_text(prompt) or "Complete the task."
-                trace_summary = _reasoning_trace_summary(state.memory.reasoning_trace if isinstance(state.memory.reasoning_trace, dict) else {})
                 if done and final_content:
                     current_page = final_content
                     decision_text = f"Return final answer now: {final_content}"
                 else:
-                    current_page = (
-                        best_fact or _candidate_text((text_ir.get("likely_answers") or [""])[0] if isinstance(text_ir.get("likely_answers"), list) else "") or "Current page answer not clear yet."
-                    )
+                    current_page = best_fact or _candidate_text((text_ir.get("likely_answers") or [""])[0] if isinstance(text_ir.get("likely_answers"), list) else "") or "Current page answer not clear yet."
                 if not done and chosen_action is not None:
                     decision_text = f"Take browser action sequence ending with: {browser_tool_name or str(chosen_action.get('type') or 'action')}"
                 elif not done:
                     decision_text = "No safe browser action selected."
-                reasoning = _candidate_text(
-                    trace_summary,
-                    f"Goal: {goal}. Current page: {current_page}. Decision: {decision_text}.",
+                reasoning = (
+                    f"Goal: {goal}. "
+                    f"Current page: {current_page}. "
+                    f"Decision: {decision_text}."
                 )[:600]
 
         selected_candidate = None
@@ -1772,18 +1334,13 @@ class StepEngine:
             selected_candidate = self._candidate_for_action(action=chosen_action, ranked_candidates=ranked)
         last_effect = self._last_effect_label(history=history, flags=flags, done=done)
         no_progress_score = self._no_progress_score(state=state, flags=flags, history=history)
-        out: dict[str, Any] = {
+        out: Dict[str, Any] = {
             "protocol_version": "1.0",
             "actions": actions,
             "done": bool(done),
             "content": final_content if done else None,
             "internal_state": state.to_internal_state(),
-            "execution_profile": str(state.execution_profile or "general_web"),
-            "goal_state": state.goal_state if isinstance(state.goal_state, dict) else {},
         }
-        if done and str(state.failure_reason or "").strip():
-            out["failure_reason"] = str(state.failure_reason or "").strip()
-            out["error"] = str(state.failure_reason or "").strip()
         if isinstance(reasoning, str) and reasoning:
             out["reasoning"] = reasoning
         if include_reasoning and isinstance(state.memory.reasoning_trace, dict) and state.memory.reasoning_trace:
@@ -1804,18 +1361,9 @@ class StepEngine:
         usage_breakdown = usage_payload.get("usage_breakdown") if isinstance(usage_payload.get("usage_breakdown"), dict) else {}
         if usage_breakdown:
             out["usage_breakdown"] = {
-                "policy": _merge_usage_dicts(
-                    {},
-                    usage_breakdown.get("policy") if isinstance(usage_breakdown.get("policy"), dict) else {},
-                ),
-                "obs_extract": _merge_usage_dicts(
-                    {},
-                    usage_breakdown.get("obs_extract") if isinstance(usage_breakdown.get("obs_extract"), dict) else {},
-                ),
-                "vision": _merge_usage_dicts(
-                    {},
-                    usage_breakdown.get("vision") if isinstance(usage_breakdown.get("vision"), dict) else {},
-                ),
+                "policy": _merge_usage_dicts({}, usage_breakdown.get("policy") if isinstance(usage_breakdown.get("policy"), dict) else {}),
+                "obs_extract": _merge_usage_dicts({}, usage_breakdown.get("obs_extract") if isinstance(usage_breakdown.get("obs_extract"), dict) else {}),
+                "vision": _merge_usage_dicts({}, usage_breakdown.get("vision") if isinstance(usage_breakdown.get("vision"), dict) else {}),
             }
         out["model"] = str(policy_model_used or model_name)
         helper_models = [str(m).strip() for m in list(usage_payload.get("helper_models") or []) if str(m).strip()]
@@ -1832,7 +1380,6 @@ class StepEngine:
                 "browser_tool": browser_tool_name,
                 "done": bool(done),
                 "content": _candidate_text(content)[:260] if done else "",
-                "failure_reason": str(state.failure_reason or "")[:80],
                 "state_delta": self._state_delta(state_before, state),
                 "active_region": self._active_region_debug(state=state),
                 "last_effect": last_effect,
@@ -1846,7 +1393,7 @@ class StepEngine:
         )
         return out
 
-    def _remember_reasoning_trace(self, *, state: AgentState, decision: dict[str, Any]) -> None:
+    def _remember_reasoning_trace(self, *, state: AgentState, decision: Dict[str, Any]) -> None:
         trace = _normalize_reasoning_trace(decision.get("reasoning_trace"))
         if not trace:
             return
@@ -1855,7 +1402,7 @@ class StepEngine:
         if next_expected:
             state.progress.pending_expected_effect = next_expected[:40]
 
-    def _remember_working_state(self, *, state: AgentState, decision: dict[str, Any]) -> None:
+    def _remember_working_state(self, *, state: AgentState, decision: Dict[str, Any]) -> None:
         ws = _normalize_working_state(decision.get("working_state"))
         if ws:
             state.memory.working_state = ws
@@ -1868,12 +1415,12 @@ class StepEngine:
         url: str,
         step_index: int,
         state: AgentState,
-        text_ir: dict[str, Any],
-        flags: dict[str, Any],
+        text_ir: Dict[str, Any],
+        flags: Dict[str, Any],
         include_reasoning: bool,
-        usage_payload: dict[str, Any],
+        usage_payload: Dict[str, Any],
         policy_model_used: str,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         done, content, policy_reasoning = self._completion_only_result(
             prompt=prompt,
             url=url,
@@ -1891,8 +1438,6 @@ class StepEngine:
             "reasoning": policy_reasoning[:200] if include_reasoning and policy_reasoning else None,
             "actions": [],
             "internal_state": state.to_internal_state(),
-            "execution_profile": str(state.execution_profile or "general_web"),
-            "goal_state": state.goal_state if isinstance(state.goal_state, dict) else {},
             "usage": usage_payload.get("usage") if isinstance(usage_payload.get("usage"), dict) else None,
             "model": policy_model_used,
             "helper_models": usage_payload.get("helper_models") if isinstance(usage_payload.get("helper_models"), list) else [],
@@ -1920,17 +1465,17 @@ class StepEngine:
         task_id: str,
         prompt: str,
         web_project_id: str,
-        use_case: dict[str, str],
+        use_case: Dict[str, str],
         url: str,
         html: str,
         screenshot: Any,
         step_index: int,
-        history: list[dict[str, Any]],
+        history: List[Dict[str, Any]],
         state: AgentState,
         allowed: set[str],
         model_override: str,
-    ) -> dict[str, Any]:
-        configured_direct_loop = _env_bool("FSM_DIRECT_LOOP", True)
+    ) -> Dict[str, Any]:
+        direct_loop = _env_bool("FSM_DIRECT_LOOP", True)
         flags = self.flags.detect(snapshot_html=html, url=url, history=history, state=state)
         state.counters.stall_count = int(flags.get("stall_count_suggested") or 0)
         self._record_progress_effect(
@@ -1939,7 +1484,6 @@ class StepEngine:
             state=state,
             flags=flags,
         )
-        self._reset_recovery_budget_if_progressed(state=state, flags=flags)
         if bool(flags.get("url_changed")) or bool(flags.get("dom_changed")):
             state.memory.visual_notes = []
             state.memory.visual_element_hints = []
@@ -1958,35 +1502,9 @@ class StepEngine:
         if url:
             state.visited.page_hashes[url[:MAX_STR]] = str(flags.get("dom_hash") or "")[:64]
 
-        text_ir = self.obs_builder.build_text_ir(html)
-        candidates = self.extractor.extract(snapshot_html=html, url=url)
-        goal_state = self.obs_builder.build_goal_state(
-            prompt=prompt,
-            web_project_id=web_project_id,
-            use_case=use_case,
-            url=url,
-            flags=flags,
-            text_ir=text_ir,
-            state=state,
-        )
-        execution_route = self.obs_builder.route_execution_profile(
-            prompt=prompt,
-            web_project_id=web_project_id,
-            use_case=use_case,
-            url=url,
-            flags=flags,
-            goal_state=goal_state,
-        )
-        goal_state["route_hint"] = str(execution_route.get("profile") or "general_web")
-        goal_state["route_reason"] = str(execution_route.get("reason") or "")
-        goal_state["route_confidence"] = float(execution_route.get("confidence") or 0.0)
-        state.goal_state = goal_state
-        state.execution_profile = str(execution_route.get("profile") or "general_web")
-
-        direct_loop = bool(configured_direct_loop and state.execution_profile == "general_web")
         if direct_loop:
             routed_mode = "DIRECT"
-            route_reason = f"execution_profile:{state.execution_profile}:direct_loop"
+            route_reason = "direct_loop"
             state.mode = routed_mode
         else:
             routed_mode, route_reason = self.router.next_mode(step_index=step_index, state=state, flags=flags, prompt=prompt)
@@ -1995,19 +1513,20 @@ class StepEngine:
             self._apply_stagnation_policy(state=state, flags=flags)
             if state.mode == "PLAN" and mode_before_stagnation != "PLAN":
                 route_reason = "stagnation_replan"
-            route_reason = f"execution_profile:{state.execution_profile}:{route_reason}"
         self._debug_log(
             task_id,
             {
                 "phase": "flags_router",
                 "flags": flags,
-                "execution_profile": state.execution_profile,
                 "route_reason": route_reason,
                 "mode_routed": routed_mode,
                 "last_effect": state.progress.last_effect,
                 "no_progress_score": int(state.progress.no_progress_score or 0),
             },
         )
+
+        text_ir = self.obs_builder.build_text_ir(html)
+        candidates = self.extractor.extract(snapshot_html=html, url=url)
         obs_extract = self._maybe_extract_observation(
             task_id=task_id,
             prompt=prompt,
@@ -2019,7 +1538,7 @@ class StepEngine:
         )
         obs_extract_usage = obs_extract.get("__usage") if isinstance(obs_extract.get("__usage"), dict) else {}
         obs_extract_model = str(obs_extract.get("__model") or "").strip() if isinstance(obs_extract, dict) else ""
-        usage_payload: dict[str, Any] = {
+        usage_payload: Dict[str, Any] = {
             "helper_models": [],
             "call_breakdown": _empty_call_breakdown(),
             "usage_breakdown": _usage_breakdown_template(),
@@ -2088,7 +1607,7 @@ class StepEngine:
             usage_payload["usage_breakdown"] = usage_breakdown
         if obs_extract_model:
             usage_payload["helper_models"] = _dedupe_keep_order(
-                [*list(usage_payload.get("helper_models") or []), obs_extract_model],
+                list(usage_payload.get("helper_models") or []) + [obs_extract_model],
                 8,
             )
         if obs_extract_usage or obs_extract_model:
@@ -2117,13 +1636,13 @@ class StepEngine:
             "browser_allowed": browser_allowed,
         }
 
-    def run(self, *, payload: dict[str, Any] | Any, model_override: str = "") -> dict[str, Any]:
+    def run(self, *, payload: Dict[str, Any] | Any, model_override: str = "") -> Dict[str, Any]:
         payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload)
         prompt = str(payload_dict.get("prompt") or payload_dict.get("task_prompt") or "")
         web_project_id = _candidate_text(payload_dict.get("web_project_id"))
         use_case = _normalize_use_case_info(payload_dict.get("use_case"))
         url = str(payload_dict.get("url") or "")
-        html = clean_snapshot_html_for_llm(str(payload_dict.get("snapshot_html") or ""))
+        html = str(payload_dict.get("snapshot_html") or "")
         screenshot = payload_dict.get("screenshot")
         task_id = str(payload_dict.get("task_id") or "")
         step_index = int(payload_dict.get("step_index") or 0)
@@ -2177,9 +1696,9 @@ class StepEngine:
         policy_model_used = prepared["policy_model_used"]
         direct_loop = prepared["direct_loop"]
         browser_allowed = prepared["browser_allowed"]
-        meta_exec_trace: list[str] = []
+        meta_exec_trace: List[str] = []
         policy_reasoning = ""
-        chosen_actions: list[dict[str, Any]] = []
+        chosen_actions: List[Dict[str, Any]] = []
         done = False
         content = ""
         if completion_only:
@@ -2201,7 +1720,6 @@ class StepEngine:
                 prompt=prompt,
                 url=url,
                 step_index=step_index,
-                history=history,
                 state=state,
                 text_ir=text_ir,
                 candidates=candidates,
@@ -2237,39 +1755,12 @@ class StepEngine:
                 route_reason=route_reason,
             )
 
-        if not done and chosen_actions:
-            chosen_actions, fail_done, fail_content, recovery_note = self._enforce_recovery_budget_on_action(
-                chosen_actions=chosen_actions,
-                prompt=prompt,
-                url=url,
-                step_index=step_index,
-                state=state,
-                flags=flags,
-                policy_obs=policy_obs,
-                allowed=browser_allowed,
-            )
-            if recovery_note:
-                meta_exec_trace.append(f"RECOVERY_GUARD:{recovery_note}")
-            if fail_done:
-                done = True
-                content = fail_content
-        if not done and not chosen_actions:
-            fail_done, fail_content, fail_error = self._maybe_emit_bounded_failure(
-                state=state,
-                flags=flags,
-                policy_obs=policy_obs,
-            )
-            if fail_done:
-                done = True
-                content = fail_content
-                if fail_error:
-                    meta_exec_trace.append(f"FAIL:{fail_error}")
-
         actions, browser_tool_name, chosen_action = self._finalize_chosen_action(
             done=done,
             direct_loop=direct_loop,
             chosen_actions=chosen_actions,
             prompt=prompt,
+            policy_obs=policy_obs,
             history=history,
             ranked=ranked,
             state=state,
@@ -2315,52 +1806,21 @@ class StepEngine:
         prompt: str,
         url: str,
         step_index: int,
-        history: list[dict[str, Any]],
+        history: List[Dict[str, Any]],
         state: AgentState,
-        flags: dict[str, Any],
-        ranked_candidates: list[Candidate],
+        flags: Dict[str, Any],
+        ranked_candidates: List[Candidate],
         allowed: set[str],
-    ) -> tuple[dict[str, Any] | None, bool, str, str]:
+    ) -> tuple[Dict[str, Any] | None, bool, str, str]:
         def allow(name: str) -> bool:
             return (not allowed) or (name in allowed)
 
-        preferred_prompt_navigation = _preferred_prompt_navigation(
-            prompt,
-            {"url": url},
-            allowed_tools=allowed,
-        )
-        if isinstance(preferred_prompt_navigation, dict):
-            tool_call = preferred_prompt_navigation.get("tool_call") if isinstance(preferred_prompt_navigation.get("tool_call"), dict) else {}
-            if str(tool_call.get("name") or "").strip() == "browser.navigate":
-                args = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
-                target_url = str(args.get("url") or "").strip()
-                if target_url and allow("browser.navigate"):
-                    return (
-                        {
-                            "type": "NavigateAction",
-                            "url": target_url,
-                            "go_back": False,
-                            "go_forward": False,
-                        },
-                        False,
-                        "",
-                        "bootstrap_prompt_navigation",
-                    )
-
-        search_pre_action, search_note = self._local_search_pre_action(
-            prompt=prompt,
-            url=url,
-            history=history,
-            state=state,
-            flags=flags,
-            ranked_candidates=ranked_candidates,
-            allowed=allowed,
-        )
-        if search_pre_action is not None:
-            return search_pre_action, False, "", search_note
-
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
-        recent_errors = [str(item.get("error") or "").lower() for item in history[-4:] if isinstance(item, dict) and str(item.get("error") or "").strip()]
+        recent_errors = [
+            str(item.get("error") or "").lower()
+            for item in history[-4:]
+            if isinstance(item, dict) and str(item.get("error") or "").strip()
+        ]
         if bool(flags.get("cookie_banner")) or (bool(flags.get("modal_dialog")) and not bool(flags.get("interactive_modal_form"))):
             if allow("browser.send_keys") and any("intercepts pointer events" in err for err in recent_errors):
                 return {"type": "SendKeysIWAAction", "keys": "Escape"}, False, "", "popup_escape"
@@ -2391,42 +1851,29 @@ class StepEngine:
                 continue
             recent_wait_only = False
             break
-        goal_eval = state.goal_state.get("last_evaluation") if isinstance(state.goal_state, dict) and isinstance(state.goal_state.get("last_evaluation"), dict) else {}
-        wait_completion_ok = bool(goal_eval.get("satisfied")) and bool(state.goal_state.get("stop_on_page_match")) if isinstance(state.goal_state, dict) else False
-        if last_action_type == "waitaction" and int(step_index) >= 1 and recent_wait_only and wait_steps >= 1 and wait_completion_ok:
-            return None, True, _candidate_text(goal_eval.get("content"), "Task completed."), "wait_only_complete"
+        if (
+            last_action_type == "waitaction"
+            and int(step_index) >= 1
+            and recent_wait_only
+            and wait_steps >= 1
+            and not _task_constraints(prompt)
+        ):
+            return None, True, "Task completed.", "wait_only_complete"
 
         # Give async side effects one short cycle to land before declaring stuck.
-        if (
-            bool(flags.get("no_visual_progress"))
-            and last_action_type in {"clickaction", "typeaction", "selectdropdownoptionaction"}
-            and allow("browser.wait")
-            and int(state.counters.stall_count or 0) <= 2
-            and int(state.counters.consecutive_wait_count or 0) < self._max_consecutive_waits()
-            and int(state.counters.recovery_attempt_count or 0) < self._max_recovery_attempts()
-        ):
-            checkpoint = "post_action_async_wait"
-            recent = state.memory.checkpoints[-1] if state.memory.checkpoints else ""
-            if recent != checkpoint:
-                state.memory.checkpoints = _dedupe_keep_order(
-                    [*state.memory.checkpoints, checkpoint],
-                    MAX_CHECKPOINTS,
-                )
-                return {"type": "WaitAction", "time_seconds": 1.0}, False, "", "post_action_wait"
-
         return None, False, "", ""
 
-    def _typed_values_from_history(self, history: list[dict[str, Any]]) -> list[str]:
-        out: list[str] = []
+    def _typed_values_from_history(self, history: List[Dict[str, Any]]) -> List[str]:
+        out: List[str] = []
         for item in history:
             if not isinstance(item, dict):
                 continue
             action_raw = item.get("action")
-            action: dict[str, Any] = action_raw if isinstance(action_raw, dict) else {}
+            action: Dict[str, Any] = action_raw if isinstance(action_raw, dict) else {}
             action_type = str(action.get("type") or "")
             if not action_type and isinstance(action_raw, str):
                 action_type = str(action_raw)
-            if action_type in _TEXT_INPUT_ACTION_TYPES:
+            if action_type in {"TypeAction", "FillAction"}:
                 nested = action.get("raw") if isinstance(action.get("raw"), dict) else {}
                 val = _candidate_text(
                     item.get("text"),
@@ -2462,7 +1909,7 @@ class StepEngine:
             return True
         if not re.search(r"[A-Za-z0-9]", normalized):
             return False
-        field_kind = str((candidate.field_kind if candidate is not None else "") or "").strip().lower()
+        field_kind = self._semantic_field_kind(candidate) if candidate is not None else ""
         input_type = str((candidate.input_type if candidate is not None else "") or "").strip().lower()
         if field_kind == "email" or input_type == "email":
             return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized))
@@ -2471,6 +1918,45 @@ class StepEngine:
         if field_kind in {"username", "name"}:
             return len(normalized) >= 2
         return len(normalized) >= 1
+
+    def _semantic_field_kind(self, candidate: Candidate | None) -> str:
+        if candidate is None:
+            return ""
+        raw_field_kind = str(candidate.field_kind or "").strip().lower()
+        input_type = str(candidate.input_type or "").strip().lower()
+        blob = " ".join(
+            [
+                str(candidate.id or ""),
+                str(candidate.text or ""),
+                str(candidate.context or ""),
+                str(candidate.field_hint or ""),
+                str(candidate.group_label or ""),
+                str(candidate.region_label or ""),
+                str(candidate.placeholder or ""),
+                str(candidate.aria_label or ""),
+                str(candidate.name_attr or ""),
+                str(candidate.dom_path or ""),
+            ]
+        ).lower()
+        if input_type == "password" or re.search(r"\b(password|pass|pwd|confirm password|repeat password)\b", blob):
+            return "password" if "confirm" not in blob else "confirm_password"
+        if candidate.role == "textarea" or re.search(r"\b(message|comments?|details?|description|body|content|thoughts?|inquiry)\b", blob):
+            return "message"
+        if re.search(r"\b(subject|topic|title|about)\b", blob):
+            return "subject"
+        if input_type == "email" or re.search(r"\b(email|e-mail|mail)\b", blob):
+            return "email"
+        if re.search(r"\b(username|login)\b", blob):
+            return "username"
+        if re.search(r"\bfull name\b", blob):
+            return "name"
+        if re.search(r"\bname\b", blob) and not re.search(r"\b(user ?name|filename|surname|nickname)\b", blob):
+            return "name"
+        if re.search(r"\b(search|query)\b", blob):
+            return "search"
+        if re.search(r"\b(year|date)\b", blob):
+            return "year"
+        return raw_field_kind
 
     def _remembered_value_for_candidate(self, *, candidate: Candidate, state: AgentState) -> str:
         by_id = str(state.form_progress.typed_values_by_candidate.get(candidate.id) or "")
@@ -2486,7 +1972,7 @@ class StepEngine:
         self,
         *,
         candidate: Candidate,
-        history: list[dict[str, Any]],
+        history: List[Dict[str, Any]],
         state: AgentState,
     ) -> bool:
         remembered = self._remembered_value_for_candidate(candidate=candidate, state=state)
@@ -2508,7 +1994,7 @@ class StepEngine:
             action_type = str(action.get("type") or "")
             if not action_type and isinstance(action_raw, str):
                 action_type = action_raw
-            if action_type not in _TEXT_INPUT_ACTION_TYPES:
+            if action_type not in {"TypeAction", "FillAction"}:
                 continue
             nested = action.get("raw") if isinstance(action.get("raw"), dict) else {}
             item_candidate_id = _candidate_text(
@@ -2551,17 +2037,12 @@ class StepEngine:
                 return ""
             inferred = self._infer_input_text(prompt=prompt, candidate=candidate)
             inferred = self._normalized_field_value(inferred)
-            field_kind = str(candidate.field_kind or "").strip().lower()
+            field_kind = self._semantic_field_kind(candidate)
             if field_kind in {"password", "confirm_password"}:
                 next_password = self._next_password_value(prompt=prompt, candidate=candidate, state=state)
                 if self._field_value_is_usable(value=next_password, candidate=candidate):
                     return next_password
-            if field_kind in {
-                "username",
-                "email",
-                "password",
-                "confirm_password",
-            } and self._field_value_is_usable(value=inferred, candidate=candidate):
+            if field_kind in {"username", "email", "password", "confirm_password"} and self._field_value_is_usable(value=inferred, candidate=candidate):
                 return inferred
         remembered = self._remembered_value_for_candidate(candidate=candidate, state=state) if candidate is not None else ""
         if candidate is not None and self._field_value_is_usable(value=normalized, candidate=candidate):
@@ -2583,13 +2064,15 @@ class StepEngine:
         input_type = str(candidate.input_type or "").strip().lower()
         if role not in {"input", "textarea"}:
             return False
-        return input_type not in {"checkbox", "radio", "submit", "button", "reset", "image", "hidden", "file"}
+        if input_type in {"checkbox", "radio", "submit", "button", "reset", "image", "hidden", "file"}:
+            return False
+        return True
 
     def _next_password_value(self, *, prompt: str, candidate: Candidate | None, state: AgentState) -> str:
         _, passwords = self._extract_credentials(prompt)
         if not passwords:
             return ""
-        used_values: list[str] = []
+        used_values: List[str] = []
         if candidate is not None:
             remembered = self._remembered_value_for_candidate(candidate=candidate, state=state)
             if remembered:
@@ -2605,7 +2088,7 @@ class StepEngine:
                 return normalized
         return self._normalized_field_value(passwords[0])
 
-    def _extract_credentials(self, prompt: str) -> tuple[list[str], list[str]]:
+    def _extract_credentials(self, prompt: str) -> tuple[List[str], List[str]]:
         text = str(prompt or "")
         identifiers = _dedupe_keep_order(
             re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text),
@@ -2618,18 +2101,11 @@ class StepEngine:
         ):
             value = next((g for g in hit.groups() if g), "")
             value = _norm_ws(value).strip(" \t\r\n'\"`.,;:!?")
-            if value and value.lower() not in {
-                "and",
-                "then",
-                "attempt",
-                "retry",
-                "with",
-                "to",
-            }:
+            if value and value.lower() not in {"and", "then", "attempt", "retry", "with", "to"}:
                 identifiers.append(value[:120])
         for token in re.findall(r"<(?:username|user|email|signup_username|signup_email)>", text, flags=re.I):
             identifiers.append(token[:120])
-        passwords: list[str] = []
+        passwords: List[str] = []
         for hit in re.finditer(
             r"\b(?:password|pass|pwd)\b\s*(?:equals|=|is|:)?\s*(?:'([^']+)'|\"([^\"]+)\"|(<[^>]+>)|([^\s,;]+))",
             text,
@@ -2660,8 +2136,8 @@ class StepEngine:
             return str(email_match.group(1) or "").strip().lower()
         return "example.com"
 
-    def _quoted_values(self, prompt: str) -> list[str]:
-        out: list[str] = []
+    def _quoted_values(self, prompt: str) -> List[str]:
+        out: List[str] = []
         for pattern in (r"'([^']*)'", r'"([^"]*)"'):
             for hit in re.finditer(pattern, str(prompt or "")):
                 value = _norm_ws(hit.group(1) or "")
@@ -2678,16 +2154,7 @@ class StepEngine:
 
     def _uses_signup_placeholders(self, prompt: str) -> bool:
         text = str(prompt or "").lower()
-        return any(
-            term in text
-            for term in (
-                "register",
-                "sign up",
-                "signup",
-                "create account",
-                "create an account",
-            )
-        )
+        return any(term in text for term in ("register", "sign up", "signup", "create account", "create an account"))
 
     def _benchmark_placeholder_for_field(self, *, field_kind: str, prompt: str) -> str:
         kind = str(field_kind or "").strip().lower()
@@ -2747,7 +2214,7 @@ class StepEngine:
                 out.add(canonical)
         return out
 
-    def _tool_name_for_action(self, action: dict[str, Any]) -> str:
+    def _tool_name_for_action(self, action: Dict[str, Any]) -> str:
         t = str(action.get("type") or "")
         t_l = t.lower()
         mapping = {
@@ -2772,7 +2239,7 @@ class StepEngine:
         }
         return mapping.get(t_l, "")
 
-    def _candidate_for_action(self, *, action: dict[str, Any], ranked_candidates: list[Candidate]) -> Candidate | None:
+    def _candidate_for_action(self, *, action: Dict[str, Any], ranked_candidates: List[Candidate]) -> Candidate | None:
         element_id = str(action.get("_element_id") or "")
         if element_id:
             for cand in ranked_candidates:
@@ -2794,7 +2261,7 @@ class StepEngine:
                 return cand
         return None
 
-    def _same_group_candidates(self, *, target: Candidate, ranked_candidates: list[Candidate]) -> list[Candidate]:
+    def _same_group_candidates(self, *, target: Candidate, ranked_candidates: List[Candidate]) -> List[Candidate]:
         if target.group_id:
             return [cand for cand in ranked_candidates if cand.group_id == target.group_id and cand.id != target.id]
         target_context = _norm_ws(target.context)
@@ -2802,7 +2269,7 @@ class StepEngine:
             return []
         return [cand for cand in ranked_candidates if _norm_ws(cand.context) == target_context and cand.id != target.id]
 
-    def _remember_active_group(self, *, target: Candidate, ranked_candidates: list[Candidate], state: AgentState) -> None:
+    def _remember_active_group(self, *, target: Candidate, ranked_candidates: List[Candidate], state: AgentState) -> None:
         context = _norm_ws(target.context)
         if not context and not target.group_id:
             return
@@ -2825,18 +2292,18 @@ class StepEngine:
         state.focus_region.candidate_ids = _dedupe_keep_order(related_ids, MAX_PENDING_ELEMENTS)
         if focus_region_id:
             state.focus_region.recent_region_ids = _dedupe_keep_order(
-                [*state.focus_region.recent_region_ids, focus_region_id],
+                state.focus_region.recent_region_ids + [focus_region_id],
                 MAX_PENDING_ELEMENTS,
             )
 
-    def _candidate_constraint_keys(self, *, candidate: Candidate, task_constraints: dict[str, str]) -> set[str]:
+    def _candidate_constraint_keys(self, *, candidate: Candidate, task_constraints: Dict[str, str]) -> set[str]:
         return self.ranker._candidate_constraint_keys(cand=candidate, task_constraints=task_constraints)
 
     def _record_constraint_progress(
         self,
         *,
         prompt: str,
-        action: dict[str, Any],
+        action: Dict[str, Any],
         target: Candidate | None,
         state: AgentState,
     ) -> None:
@@ -2850,7 +2317,7 @@ class StepEngine:
             expected = str(task_constraints.get(key) or "")
             if _constraint_value_matches(expected, action_text) or _constraint_value_matches(expected, target.text):
                 state.progress.satisfied_constraints = _dedupe_keep_order(
-                    [*state.progress.satisfied_constraints, key],
+                    state.progress.satisfied_constraints + [key],
                     32,
                 )
 
@@ -2858,6 +2325,7 @@ class StepEngine:
         prompt_text = str(prompt or "")
         if not self._candidate_accepts_typed_text(candidate=candidate):
             return ""
+        field_kind = self._semantic_field_kind(candidate)
         blob = " ".join(
             [
                 candidate.text,
@@ -2865,13 +2333,16 @@ class StepEngine:
                 candidate.href,
                 candidate.field_hint,
                 candidate.field_kind,
+                candidate.placeholder,
+                candidate.aria_label,
+                candidate.name_attr,
+                candidate.id,
             ]
         ).lower()
         quoted_values = self._quoted_values(prompt_text)
         emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", prompt_text)
         identifiers, passwords = self._extract_credentials(prompt_text)
         explicit_constraints = _task_constraints(prompt_text)
-        field_kind = str(candidate.field_kind or "")
 
         if field_kind in {"password", "confirm_password"} or any(k in blob for k in ("password", "pass", "pwd")):
             if passwords:
@@ -2912,6 +2383,29 @@ class StepEngine:
             if m_movie:
                 return _norm_ws(m_movie.group(1))[:80]
             return "search"
+        if field_kind == "subject" or any(k in blob for k in ("subject", "topic", "about", "title")):
+            m_subject = re.search(
+                r"\b(?:subject|topic|title)\b[^.]{0,80}\b(?:equals|=|is|:)\s*['\"]([^'\"]+)['\"]",
+                prompt_text,
+                flags=re.I,
+            )
+            if m_subject:
+                return _norm_ws(m_subject.group(1))[:120]
+            if quoted_values:
+                return quoted_values[0][:120]
+            return self._generated_value_for_field(field_kind="subject", prompt=prompt_text)
+        if field_kind == "message" or any(k in blob for k in ("message", "comments", "details", "description", "body", "content", "thoughts", "inquiry")):
+            m_message = re.search(
+                r"\b(?:message|comments?|details?|description|body|content)\b[^.]{0,120}\b(?:equals|=|is|:)\s*['\"]([^'\"]+)['\"]",
+                prompt_text,
+                flags=re.I,
+            )
+            if m_message:
+                return _norm_ws(m_message.group(1))[:220]
+            for value in quoted_values:
+                if len(value) >= 12:
+                    return value[:220]
+            return self._generated_value_for_field(field_kind="message", prompt=prompt_text)
         if any(k in blob for k in ("rating", "score")):
             m_num = re.search(r"\b(?:rating|score)\b[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)", prompt_text, flags=re.I)
             if m_num:
@@ -2928,7 +2422,7 @@ class StepEngine:
             return self._generated_value_for_field(field_kind=field_kind or "text", prompt=prompt_text)
         return "autoppia"
 
-    def _selector_signature(self, selector: dict[str, Any] | None) -> str:
+    def _selector_signature(self, selector: Dict[str, Any] | None) -> str:
         selector = _sanitize_selector(selector)
         if not isinstance(selector, dict):
             return ""
@@ -2937,7 +2431,7 @@ class StepEngine:
         except Exception:
             return ""
 
-    def _typed_selector_signatures_from_history(self, history: list[dict[str, Any]]) -> set[str]:
+    def _typed_selector_signatures_from_history(self, history: List[Dict[str, Any]]) -> set[str]:
         out: set[str] = set()
         for item in history:
             if not isinstance(item, dict):
@@ -2947,7 +2441,7 @@ class StepEngine:
             action_type = str(action.get("type") or action.get("name") or "")
             if not action_type and isinstance(action_raw, str):
                 action_type = action_raw
-            if action_type not in _TEXT_INPUT_ACTION_TYPES:
+            if action_type not in {"TypeAction", "FillAction"}:
                 continue
             sel = action.get("selector")
             if not isinstance(sel, dict):
@@ -2958,7 +2452,7 @@ class StepEngine:
                 out.add(sig)
         return out
 
-    def _selected_selector_signatures_from_history(self, history: list[dict[str, Any]]) -> set[str]:
+    def _selected_selector_signatures_from_history(self, history: List[Dict[str, Any]]) -> set[str]:
         out: set[str] = set()
         for item in history:
             if not isinstance(item, dict):
@@ -2979,7 +2473,7 @@ class StepEngine:
                 out.add(sig)
         return out
 
-    def _typed_candidate_ids_from_history(self, history: list[dict[str, Any]]) -> set[str]:
+    def _typed_candidate_ids_from_history(self, history: List[Dict[str, Any]]) -> set[str]:
         out: set[str] = set()
         for item in history:
             if not isinstance(item, dict):
@@ -2989,7 +2483,7 @@ class StepEngine:
             action_type = str(action.get("type") or action.get("name") or "")
             if not action_type and isinstance(action_raw, str):
                 action_type = action_raw
-            if action_type not in _TEXT_INPUT_ACTION_TYPES:
+            if action_type not in {"TypeAction", "FillAction"}:
                 continue
             nested = action.get("raw") if isinstance(action.get("raw"), dict) else {}
             candidate_id = _candidate_text(
@@ -3004,12 +2498,12 @@ class StepEngine:
                 out.add(candidate_id)
         return out
 
-    def _typed_selector_signatures(self, history: list[dict[str, Any]], state: AgentState) -> set[str]:
+    def _typed_selector_signatures(self, history: List[Dict[str, Any]], state: AgentState) -> set[str]:
         out = set(self._typed_selector_signatures_from_history(history))
         out.update(state.form_progress.typed_selector_sigs)
         return out
 
-    def _typed_candidate_ids(self, history: list[dict[str, Any]], state: AgentState) -> set[str]:
+    def _typed_candidate_ids(self, history: List[Dict[str, Any]], state: AgentState) -> set[str]:
         out = set(self._typed_candidate_ids_from_history(history))
         out.update(state.form_progress.typed_candidate_ids)
         return out
@@ -3028,7 +2522,10 @@ class StepEngine:
         if cand.role not in {"button", "input"}:
             return False
         blob = " ".join([cand.text, cand.field_hint]).lower()
-        return any(k in blob for k in ("submit", "save", "apply", "find", "search", "filter", "go", "continue", "send", "sign up", "signup", "register", "login", "sign in", "create account"))
+        return any(
+            k in blob
+            for k in ("submit", "save", "apply", "find", "search", "filter", "go", "continue", "send", "sign up", "signup", "register", "login", "sign in", "create account")
+        )
 
     def _is_search_or_filter_input(self, cand: Candidate) -> bool:
         return str(cand.field_kind or "") in {"search", "sort"}
@@ -3037,14 +2534,17 @@ class StepEngine:
         self,
         *,
         prompt: str,
-        ranked_candidates: list[Candidate],
+        ranked_candidates: List[Candidate],
         target: Candidate | None,
         state: AgentState,
-    ) -> dict[str, Any] | None:
+    ) -> Dict[str, Any] | None:
         task_ops = self.ranker._task_operation_hints(prompt)
         if task_ops.intersection({"create", "update"}) or "delete" not in task_ops:
             return None
-        has_password_input_visible = any(cand.role == "input" and cand.field_kind in {"password", "confirm_password"} for cand in ranked_candidates)
+        has_password_input_visible = any(
+            cand.role == "input" and cand.field_kind in {"password", "confirm_password"}
+            for cand in ranked_candidates
+        )
         if has_password_input_visible:
             return None
         if target is not None and target.role not in {"input", "select"}:
@@ -3070,11 +2570,11 @@ class StepEngine:
     def _guard_delete_task_against_unrelated_form_edits(
         self,
         *,
-        action: dict[str, Any] | None,
+        action: Dict[str, Any] | None,
         prompt: str,
-        ranked_candidates: list[Candidate],
+        ranked_candidates: List[Candidate],
         state: AgentState,
-    ) -> dict[str, Any] | None:
+    ) -> Dict[str, Any] | None:
         if not isinstance(action, dict):
             return action
         task_ops = self.ranker._task_operation_hints(prompt)
@@ -3082,11 +2582,18 @@ class StepEngine:
             return action
         if str(action.get("type") or "") not in {"TypeAction", "SelectDropDownOptionAction"}:
             return action
-        has_password_input_visible = any(cand.role == "input" and cand.field_kind in {"password", "confirm_password"} for cand in ranked_candidates)
+        has_password_input_visible = any(
+            cand.role == "input" and cand.field_kind in {"password", "confirm_password"}
+            for cand in ranked_candidates
+        )
         if has_password_input_visible:
             return action
         mutation_candidates = [
-            cand for cand in ranked_candidates if self.ranker._candidate_action_tags(cand).intersection({"delete"}) and cand.id not in state.blocklist.element_ids and cand.role in {"button", "link"}
+            cand
+            for cand in ranked_candidates
+            if self.ranker._candidate_action_tags(cand).intersection({"delete"})
+            and cand.id not in state.blocklist.element_ids
+            and cand.role in {"button", "link"}
         ]
         if mutation_candidates:
             best = mutation_candidates[0]
@@ -3104,24 +2611,92 @@ class StepEngine:
                     return redirect
         return action
 
+    def _structured_runtime_override_action(
+        self,
+        *,
+        prompt: str,
+        ranked_candidates: List[Candidate],
+        current_url: str = "",
+        history: List[Dict[str, Any]] | None = None,
+    ) -> Dict[str, Any] | None:
+        use_case = _infer_autocinema_use_case(prompt, {"url": current_url})
+        if use_case not in {"LOGIN", "CONTACT"}:
+            return None
+        candidates_obs = []
+        for idx, cand in enumerate(ranked_candidates):
+            candidates_obs.append({
+                "id": cand.id,
+                "index": idx,
+                "role": cand.role,
+                "text": cand.text,
+                "href": cand.href,
+                "context": cand.context,
+                "field_kind": cand.field_kind,
+                "placeholder": cand.placeholder,
+                "aria_label": cand.aria_label,
+                "name": cand.name_attr,
+                "label": cand.text,
+                "current_value": cand.current_value,
+                "selector": cand.selector,
+            })
+        policy_obs = {"url": current_url, "candidates": candidates_obs}
+        if history:
+            policy_obs["history_recent"] = history
+        preferred_nav = _preferred_seed_stable_navigation(prompt, policy_obs, allowed_tools={"browser.navigate"})
+        if isinstance(preferred_nav, dict):
+            tool_call = preferred_nav.get("tool_call") if isinstance(preferred_nav.get("tool_call"), dict) else preferred_nav
+            if isinstance(tool_call, dict):
+                action = self._browser_action_from_tool_call(
+                    tool_call=tool_call,
+                    ranked_candidates=ranked_candidates,
+                    state=AgentState(),
+                    prompt=prompt,
+                    allowed={"browser.navigate", "browser.click"},
+                    current_url=current_url,
+                )
+                if action is not None:
+                    return action
+        preferred_form = _preferred_prompt_form_action(prompt, policy_obs, allowed_tools={"browser.input", "browser.click"})
+        if isinstance(preferred_form, dict):
+            action = self._browser_action_from_tool_call(
+                tool_call=preferred_form,
+                ranked_candidates=ranked_candidates,
+                state=AgentState(),
+                prompt=prompt,
+                allowed={"browser.input", "browser.click"},
+                current_url=current_url,
+            )
+            if action is not None:
+                return action
+        return None
+
     def _guard_submit_without_inputs(
         self,
         *,
-        action: dict[str, Any] | None,
+        action: Dict[str, Any] | None,
         prompt: str,
-        history: list[dict[str, Any]],
-        ranked_candidates: list[Candidate],
+        history: List[Dict[str, Any]],
+        ranked_candidates: List[Candidate],
         state: AgentState,
-    ) -> dict[str, Any] | None:
+    ) -> Dict[str, Any] | None:
         if not isinstance(action, dict) or str(action.get("type") or "") != "ClickAction":
             return action
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
         typed_sigs = self._typed_selector_signatures(history, state)
         typed_candidate_ids = self._typed_candidate_ids(history, state)
-        auth_inputs = [cand for cand in ranked_candidates if cand.role == "input" and cand.field_kind in {"username", "email", "password", "confirm_password"}]
-        required_auth_inputs = [cand for cand in auth_inputs if cand.field_kind in {"username", "email", "password"}]
+        auth_inputs = [
+            cand
+            for cand in ranked_candidates
+            if cand.role == "input" and cand.field_kind in {"username", "email", "password", "confirm_password"}
+        ]
+        required_auth_inputs = [
+            cand for cand in auth_inputs if cand.field_kind in {"username", "email", "password"}
+        ]
         auth_ready = bool(required_auth_inputs) and all(
-            (cand.id in typed_candidate_ids or (self._selector_signature(cand.selector) and self._selector_signature(cand.selector) in typed_sigs))
+            (
+                cand.id in typed_candidate_ids
+                or (self._selector_signature(cand.selector) and self._selector_signature(cand.selector) in typed_sigs)
+            )
             and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state)
             for cand in required_auth_inputs
         )
@@ -3141,7 +2716,9 @@ class StepEngine:
             if self._is_search_or_filter_input(cand):
                 continue
             sig = self._selector_signature(cand.selector)
-            if (cand.id in typed_candidate_ids or (sig and sig in typed_sigs)) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
+            if (
+                cand.id in typed_candidate_ids or (sig and sig in typed_sigs)
+            ) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
                 continue
             text = self._infer_input_text(prompt=prompt, candidate=cand)
             if not text:
@@ -3155,7 +2732,7 @@ class StepEngine:
         sel_sig = self._selector_signature(target.selector)
         if sel_sig:
             state.form_progress.submit_attempt_sigs = _dedupe_keep_order(
-                [*state.form_progress.submit_attempt_sigs, sel_sig],
+                state.form_progress.submit_attempt_sigs + [sel_sig],
                 MAX_PENDING_ELEMENTS * 2,
             )
         return action
@@ -3163,12 +2740,12 @@ class StepEngine:
     def _guard_missing_group_inputs(
         self,
         *,
-        action: dict[str, Any] | None,
+        action: Dict[str, Any] | None,
         prompt: str,
-        history: list[dict[str, Any]],
-        ranked_candidates: list[Candidate],
+        history: List[Dict[str, Any]],
+        ranked_candidates: List[Candidate],
         state: AgentState,
-    ) -> dict[str, Any] | None:
+    ) -> Dict[str, Any] | None:
         if not isinstance(action, dict):
             return action
         action_type = str(action.get("type") or "")
@@ -3184,7 +2761,7 @@ class StepEngine:
         group_context = _norm_ws(state.form_progress.active_group_context)
         group_candidate_ids = set(state.form_progress.active_group_candidate_ids)
 
-        missing_inputs: list[Candidate] = []
+        missing_inputs: List[Candidate] = []
         for cand in ranked_candidates:
             if cand.role != "input":
                 continue
@@ -3193,11 +2770,17 @@ class StepEngine:
             if self._is_search_or_filter_input(cand):
                 continue
             cand_sig = self._selector_signature(cand.selector)
-            if (cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
+            if (
+                cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)
+            ) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
                 continue
             if group_id or group_context or group_candidate_ids:
                 same_group = False
-                if (group_id and cand.group_id == group_id) or (group_context and _norm_ws(cand.context) == group_context) or cand.id in group_candidate_ids:
+                if group_id and cand.group_id == group_id:
+                    same_group = True
+                elif group_context and _norm_ws(cand.context) == group_context:
+                    same_group = True
+                elif cand.id in group_candidate_ids:
                     same_group = True
                 if not same_group:
                     continue
@@ -3206,14 +2789,22 @@ class StepEngine:
                 continue
             missing_inputs.append(cand)
         if not missing_inputs:
-            target_group_candidates: list[Candidate] = []
+            target_group_candidates: List[Candidate] = []
             for cand in ranked_candidates:
-                if (group_id and cand.group_id == group_id) or (group_context and _norm_ws(cand.context) == group_context) or (group_candidate_ids and cand.id in group_candidate_ids):
+                if group_id and cand.group_id == group_id:
+                    target_group_candidates.append(cand)
+                elif group_context and _norm_ws(cand.context) == group_context:
+                    target_group_candidates.append(cand)
+                elif group_candidate_ids and cand.id in group_candidate_ids:
                     target_group_candidates.append(cand)
             typed_kinds = {
                 cand.field_kind
                 for cand in target_group_candidates
-                if cand.field_kind and (cand.id in typed_candidate_ids or (self._selector_signature(cand.selector) and self._selector_signature(cand.selector) in typed_sigs))
+                if cand.field_kind
+                and (
+                    cand.id in typed_candidate_ids
+                    or (self._selector_signature(cand.selector) and self._selector_signature(cand.selector) in typed_sigs)
+                )
             }
             required_kinds = {kind for kind in prompt_needs if any(c.field_kind == kind for c in target_group_candidates)}
             if "password" in required_kinds and any(c.field_kind == "confirm_password" for c in target_group_candidates):
@@ -3265,13 +2856,13 @@ class StepEngine:
     def _guard_redundant_type_action(
         self,
         *,
-        action: dict[str, Any] | None,
+        action: Dict[str, Any] | None,
         prompt: str,
-        history: list[dict[str, Any]],
-        ranked_candidates: list[Candidate],
+        history: List[Dict[str, Any]],
+        ranked_candidates: List[Candidate],
         state: AgentState,
-    ) -> dict[str, Any] | None:
-        if not isinstance(action, dict) or str(action.get("type") or "") not in _TEXT_INPUT_ACTION_TYPES:
+    ) -> Dict[str, Any] | None:
+        if not isinstance(action, dict) or str(action.get("type") or "") != "TypeAction":
             return action
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
         if target is None:
@@ -3279,11 +2870,25 @@ class StepEngine:
         typed_sigs = self._typed_selector_signatures(history, state)
         typed_candidate_ids = self._typed_candidate_ids(history, state)
         target_sig = self._selector_signature(target.selector)
-        already_typed_target = ((target.id in typed_candidate_ids) or (bool(target_sig) and target_sig in typed_sigs)) and self._candidate_has_usable_typed_value(
-            candidate=target, history=history, state=state
-        )
+        already_typed_target = (
+            (target.id in typed_candidate_ids) or (bool(target_sig) and target_sig in typed_sigs)
+        ) and self._candidate_has_usable_typed_value(candidate=target, history=history, state=state)
         if not already_typed_target:
             return action
+        use_case = _infer_autocinema_use_case(prompt, {"url": ""})
+        target_id = str(target.id or "")
+        selector_value = str((target.selector or {}).get("value") or "").strip().lower() if isinstance(target.selector, dict) else ""
+        if use_case == "LOGIN" and selector_value in {"login-username", "login-username-input"}:
+            for cand in ranked_candidates:
+                cand_sel = str((cand.selector or {}).get("value") or "").strip().lower() if isinstance(cand.selector, dict) else ""
+                if cand.role == "input" and cand_sel in {"password-entry-field", "login-password", "login-password-input"}:
+                    text = self._infer_input_text(prompt=prompt, candidate=cand)
+                    if text:
+                        return {"type": "TypeAction", "selector": cand.selector, "text": text[:220], "_element_id": cand.id}
+        if use_case == "CONTACT" and selector_value == "entry-field":
+            for cand in ranked_candidates:
+                if cand.role == "link" and "/contact" in str(cand.href or ""):
+                    return {"type": "ClickAction", "selector": cand.selector, "_element_id": cand.id}
         same_group = self._same_group_candidates(target=target, ranked_candidates=ranked_candidates)
         for cand in same_group:
             if cand.id in state.blocklist.element_ids:
@@ -3307,7 +2912,9 @@ class StepEngine:
             if self._is_search_or_filter_input(cand):
                 continue
             cand_sig = self._selector_signature(cand.selector)
-            if (cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
+            if (
+                cand.id in typed_candidate_ids or (cand_sig and cand_sig in typed_sigs)
+            ) and self._candidate_has_usable_typed_value(candidate=cand, history=history, state=state):
                 continue
             text = self._infer_input_text(prompt=prompt, candidate=cand)
             if not text:
@@ -3336,11 +2943,11 @@ class StepEngine:
     def _guard_redundant_select_action(
         self,
         *,
-        action: dict[str, Any] | None,
-        history: list[dict[str, Any]],
-        ranked_candidates: list[Candidate],
+        action: Dict[str, Any] | None,
+        history: List[Dict[str, Any]],
+        ranked_candidates: List[Candidate],
         state: AgentState,
-    ) -> dict[str, Any] | None:
+    ) -> Dict[str, Any] | None:
         if not isinstance(action, dict) or str(action.get("type") or "") != "SelectDropDownOptionAction":
             return action
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
@@ -3391,11 +2998,11 @@ class StepEngine:
     def _promote_click_input_to_type(
         self,
         *,
-        action: dict[str, Any] | None,
+        action: Dict[str, Any] | None,
         prompt: str,
-        ranked_candidates: list[Candidate],
+        ranked_candidates: List[Candidate],
         state: AgentState,
-    ) -> dict[str, Any] | None:
+    ) -> Dict[str, Any] | None:
         if not isinstance(action, dict):
             return action
         if str(action.get("type") or "") != "ClickAction":
@@ -3406,6 +3013,20 @@ class StepEngine:
         repeat_n = int(state.counters.repeat_action_count or 0)
         if repeat_n < 1 and int(state.counters.stall_count or 0) < 2:
             return action
+        use_case = _infer_autocinema_use_case(prompt, {"url": ""})
+        selector_value = str((cand.selector or {}).get("value") or "").strip().lower() if isinstance(cand.selector, dict) else ""
+        if use_case == "CONTACT" and selector_value == "entry-field":
+            for alt in ranked_candidates:
+                if alt.role == "link" and "/contact" in str(alt.href or ""):
+                    return {"type": "ClickAction", "selector": alt.selector, "_element_id": alt.id}
+            return action
+        if use_case == "LOGIN" and selector_value in {"login-username", "login-username-input"}:
+            for alt in ranked_candidates:
+                alt_sel = str((alt.selector or {}).get("value") or "").strip().lower() if isinstance(alt.selector, dict) else ""
+                if alt.role == "input" and alt_sel in {"password-entry-field", "login-password", "login-password-input"}:
+                    text = self._infer_input_text(prompt=prompt, candidate=alt)
+                    if text:
+                        return {"type": "TypeAction", "selector": alt.selector, "text": text[:220], "_element_id": alt.id}
         text = self._infer_input_text(prompt=prompt, candidate=cand)
         if not text:
             return action
@@ -3419,13 +3040,13 @@ class StepEngine:
     def _browser_action_from_tool_call(
         self,
         *,
-        tool_call: dict[str, Any],
-        ranked_candidates: list[Candidate],
+        tool_call: Dict[str, Any],
+        ranked_candidates: List[Candidate],
         state: AgentState,
         prompt: str,
         allowed: set[str],
         current_url: str = "",
-    ) -> dict[str, Any] | None:
+    ) -> Dict[str, Any] | None:
         normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
         normalized_allowed.discard("")
         name = _canonical_allowed_tool_name(str(tool_call.get("name") or "").strip().lower())
@@ -3438,7 +3059,7 @@ class StepEngine:
         if not action_type:
             return None
 
-        def resolve_target(*, prefer_roles: set[str], allow_unmatched_selector: bool) -> tuple[dict[str, Any] | None, str, int | None]:
+        def resolve_target(*, prefer_roles: set[str], allow_unmatched_selector: bool) -> tuple[Dict[str, Any] | None, str, int | None]:
             selector = _sanitize_selector(args.get("selector") if isinstance(args.get("selector"), dict) else None)
             element_id = str(args.get("element_id") or args.get("_element_id") or "")
             raw_index = args.get("index")
@@ -3480,7 +3101,11 @@ class StepEngine:
                 action={"type": "ClickAction", "selector": selector, "_element_id": element_id},
                 ranked_candidates=ranked_candidates,
             )
-            if selected_candidate is not None and selected_candidate.href and ((not normalized_allowed) or ("browser.navigate" in normalized_allowed)):
+            if (
+                selected_candidate is not None
+                and selected_candidate.href
+                and ((not normalized_allowed) or ("browser.navigate" in normalized_allowed))
+            ):
                 normalized_href = self._normalize_url_for_session(
                     target_url=selected_candidate.href,
                     current_url=current_url,
@@ -3546,7 +3171,7 @@ class StepEngine:
                 return None
             current_safe = _safe_url(current_url, base=current_url)
             if current_safe and nav_url == current_safe:
-                return {"type": "WaitAction", "time_seconds": 0.5}
+                return None
             target_parts = urlsplit(nav_url)
             current_parts = urlsplit(str(current_safe or current_url or ""))
             if (
@@ -3574,7 +3199,11 @@ class StepEngine:
                             same_visible_link = True
                         else:
                             cand_parts = urlsplit(cand_url)
-                            if cand_parts.scheme == target_parts.scheme and cand_parts.netloc == target_parts.netloc and ((cand_parts.path or "/") == (target_parts.path or "/")):
+                            if (
+                                cand_parts.scheme == target_parts.scheme
+                                and cand_parts.netloc == target_parts.netloc
+                                and ((cand_parts.path or "/") == (target_parts.path or "/"))
+                            ):
                                 same_visible_link = True
                     if same_visible_link and isinstance(cand.selector, dict):
                         out = {"type": "ClickAction", "selector": cand.selector}
@@ -3623,7 +3252,11 @@ class StepEngine:
                         out["_element_id"] = element_id
                     return out
                 fallback_candidate = next(
-                    (cand for cand in ranked_candidates if cand.id not in state.blocklist.element_ids and self._candidate_accepts_typed_text(candidate=cand)),
+                    (
+                        cand
+                        for cand in ranked_candidates
+                        if cand.id not in state.blocklist.element_ids and self._candidate_accepts_typed_text(candidate=cand)
+                    ),
                     None,
                 )
                 if fallback_candidate is None:
@@ -3658,7 +3291,7 @@ class StepEngine:
             direction = str(args.get("direction") or "down").strip().lower()
             raw_amount = args.get("amount")
             amount = 650
-            if isinstance(raw_amount, int | float):
+            if isinstance(raw_amount, (int, float)):
                 amount = int(raw_amount)
             else:
                 raw_text = str(raw_amount or "").strip().lower()
@@ -3781,21 +3414,23 @@ class StepEngine:
             if "include_html" in args:
                 out["include_html"] = bool(args.get("include_html"))
             if "max_chars" in args:
-                with contextlib.suppress(Exception):
+                try:
                     out["max_chars"] = int(args.get("max_chars") or 0)
+                except Exception:
+                    pass
             return out
         return None
 
     def _resolve_selector_and_element_id(
         self,
         *,
-        selector: dict[str, Any] | None,
+        selector: Dict[str, Any] | None,
         element_id: str,
-        ranked_candidates: list[Candidate],
+        ranked_candidates: List[Candidate],
         state: AgentState,
         prefer_roles: set[str],
         allow_unmatched_selector: bool = True,
-    ) -> tuple[dict[str, Any] | None, str]:
+    ) -> tuple[Dict[str, Any] | None, str]:
         selector = _sanitize_selector(selector)
         if element_id:
             for cand in ranked_candidates:
@@ -3811,7 +3446,7 @@ class StepEngine:
             if needle:
                 ordered = sorted(
                     ranked_candidates,
-                    key=lambda c: 0 if c.role in prefer_roles else 1,
+                    key=lambda c: (0 if c.role in prefer_roles else 1),
                 )
                 for cand in ordered:
                     if cand.id in state.blocklist.element_ids:
@@ -3834,7 +3469,7 @@ class StepEngine:
             return None, ""
         return selector, element_id
 
-    def _candidate_by_index(self, candidates: list[Candidate], raw_index: Any) -> Candidate | None:
+    def _candidate_by_index(self, candidates: List[Candidate], raw_index: Any) -> Candidate | None:
         try:
             index = int(raw_index)
         except (TypeError, ValueError):
@@ -3846,8 +3481,8 @@ class StepEngine:
     def _candidate_id_for_selector(
         self,
         *,
-        selector: dict[str, Any],
-        ranked_candidates: list[Candidate],
+        selector: Dict[str, Any],
+        ranked_candidates: List[Candidate],
         prefer_roles: set[str] | None = None,
     ) -> str:
         selector = _sanitize_selector(selector)
@@ -3907,7 +3542,7 @@ class StepEngine:
         step_index: int,
         state: AgentState,
         allowed: set[str],
-    ) -> tuple[dict[str, Any] | None, bool, str, str]:
+    ) -> tuple[Dict[str, Any] | None, bool, str, str]:
         normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
         normalized_allowed.discard("")
 
@@ -3916,26 +3551,12 @@ class StepEngine:
 
         if state.last_action_element_id:
             state.blocklist.element_ids = _dedupe_keep_order(
-                [*state.blocklist.element_ids, state.last_action_element_id],
+                state.blocklist.element_ids + [state.last_action_element_id],
                 MAX_PENDING_ELEMENTS,
             )
             state.blocklist.until_step = max(state.blocklist.until_step, int(step_index) + 2)
 
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
-        if (
-            last_action_type in {"clickaction", "typeaction", "selectdropdownoptionaction"}
-            and allow("browser.wait")
-            and int(state.counters.stall_count or 0) <= 3
-            and int(state.counters.consecutive_wait_count or 0) < self._max_consecutive_waits()
-            and int(state.counters.recovery_attempt_count or 0) < self._max_recovery_attempts()
-        ):
-            return (
-                {"type": "WaitAction", "time_seconds": 1.2},
-                False,
-                "",
-                "wait_for_async_side_effect",
-            )
-
         current_url = str(url or "").strip().lower()
         if allow("browser.go_back") and current_url not in {"", "about:blank"}:
             return (
@@ -3957,31 +3578,40 @@ class StepEngine:
         self,
         *,
         prompt: str,
-        ranked_candidates: list[Candidate],
+        ranked_candidates: List[Candidate],
         state: AgentState,
         allowed: set[str],
         current_url: str,
-    ) -> dict[str, Any] | None:
+    ) -> Dict[str, Any] | None:
         normalized_allowed = {_canonical_allowed_tool_name(t) for t in allowed}
         normalized_allowed.discard("")
 
         def allow(tool: str) -> bool:
             return (not normalized_allowed) or (_canonical_allowed_tool_name(tool) in normalized_allowed)
 
+        structured = self._structured_runtime_override_action(
+            prompt=prompt,
+            ranked_candidates=ranked_candidates,
+            current_url=current_url,
+        )
+        if structured is not None:
+            return structured
+
         focus_region_id = str(state.focus_region.region_id or "").strip()
         focus_region_context = _norm_ws(state.focus_region.region_context)
         focus_candidate_ids = set(state.focus_region.candidate_ids)
-        local_ranked: list[Candidate] = []
-        escape_ranked: list[Candidate] = []
-        global_ranked: list[Candidate] = []
+        local_ranked: List[Candidate] = []
+        escape_ranked: List[Candidate] = []
+        global_ranked: List[Candidate] = []
         for cand in ranked_candidates:
             same_region = False
-            if (
-                (focus_region_id and cand.region_id and cand.region_id == focus_region_id)
-                or (focus_region_id and focus_region_id in set(cand.region_ancestor_ids or []))
-                or (focus_region_context and _norm_ws(cand.context) == focus_region_context)
-                or (focus_candidate_ids and cand.id in focus_candidate_ids)
-            ):
+            if focus_region_id and cand.region_id and cand.region_id == focus_region_id:
+                same_region = True
+            elif focus_region_id and focus_region_id in set(cand.region_ancestor_ids or []):
+                same_region = True
+            elif focus_region_context and _norm_ws(cand.context) == focus_region_context:
+                same_region = True
+            elif focus_candidate_ids and cand.id in focus_candidate_ids:
                 same_region = True
             if same_region:
                 blob = " ".join([cand.text, cand.field_hint, cand.group_label, cand.context]).lower()
@@ -4023,7 +3653,7 @@ class StepEngine:
                     return {"type": "SelectDropDownOptionAction", "selector": cand.selector, "text": text, "_element_id": cand.id}
         return None
 
-    def _action_signature(self, action: dict[str, Any]) -> str:
+    def _action_signature(self, action: Dict[str, Any]) -> str:
         t = str(action.get("type") or "").strip()
         selector = ""
         if isinstance(action.get("selector"), dict):
@@ -4039,33 +3669,33 @@ class StepEngine:
         self,
         *,
         prompt: str,
-        action: dict[str, Any],
-        ranked_candidates: list[Candidate],
+        action: Dict[str, Any],
+        ranked_candidates: List[Candidate],
         state: AgentState,
     ) -> None:
         if not isinstance(action, dict):
             return
         action_type = str(action.get("type") or "").strip()
         target = self._candidate_for_action(action=action, ranked_candidates=ranked_candidates)
-        if target is not None and target.context and action_type in (_TEXT_INPUT_ACTION_TYPES | {"ClickAction", "SelectDropDownOptionAction"}):
+        if target is not None and target.context and action_type in {"TypeAction", "ClickAction", "SelectDropDownOptionAction"}:
             self._remember_active_group(target=target, ranked_candidates=ranked_candidates, state=state)
             self._record_constraint_progress(prompt=prompt, action=action, target=target, state=state)
         element_id = str(action.get("_element_id") or action.get("element_id") or "").strip()
-        if action_type in _TEXT_INPUT_ACTION_TYPES:
+        if action_type == "TypeAction":
             cand_id = element_id
             sel = action.get("selector") if isinstance(action.get("selector"), dict) else None
             sel_sig = self._selector_signature(sel if isinstance(sel, dict) else None)
             typed_value = self._normalized_field_value(action.get("text"))
             if cand_id:
                 state.form_progress.typed_candidate_ids = _dedupe_keep_order(
-                    [*state.form_progress.typed_candidate_ids, cand_id],
+                    state.form_progress.typed_candidate_ids + [cand_id],
                     MAX_PENDING_ELEMENTS * 2,
                 )
                 if typed_value:
                     state.form_progress.typed_values_by_candidate[cand_id] = typed_value
             if sel_sig:
                 state.form_progress.typed_selector_sigs = _dedupe_keep_order(
-                    [*state.form_progress.typed_selector_sigs, sel_sig],
+                    state.form_progress.typed_selector_sigs + [sel_sig],
                     MAX_PENDING_ELEMENTS * 2,
                 )
                 if typed_value:
@@ -4074,7 +3704,9 @@ class StepEngine:
         if action_type == "ClickAction":
             cand_id = element_id
             if cand_id and cand_id in state.form_progress.typed_candidate_ids:
-                state.form_progress.typed_candidate_ids = [x for x in state.form_progress.typed_candidate_ids if x != cand_id]
+                state.form_progress.typed_candidate_ids = [
+                    x for x in state.form_progress.typed_candidate_ids if x != cand_id
+                ]
             return
         if action_type == "SelectDropDownOptionAction":
             return

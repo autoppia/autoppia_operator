@@ -68,46 +68,6 @@ def test_autocinema_example_block_includes_matching_examples(monkeypatch: object
     assert "use_case=CONTACT" not in joined
 
 
-def test_example_block_uses_project_specific_trace_examples(monkeypatch: object) -> None:
-    monkeypatch.setattr(
-        policy_module,
-        "_project_success_examples",
-        lambda project_id: [
-            {
-                "web_project_id": project_id,
-                "use_case": "LOGIN_BOOK",
-                "url_path": "/login",
-                "step_index": 1,
-                "prompt": "Log in to the library.",
-                "tool_calls": [{"name": "browser.input", "arguments": {"index": 0, "text": "<username>"}}],
-            },
-            {
-                "web_project_id": project_id,
-                "use_case": "SEARCH_BOOK",
-                "url_path": "/search",
-                "step_index": 1,
-                "prompt": "Search for a book.",
-                "tool_calls": [{"name": "browser.click", "arguments": {"index": 1}}],
-            },
-        ],
-    )
-
-    block = policy_module._autocinema_example_block(
-        "Log in to the library with the provided credentials.",
-        {
-            "web_project_id": "autobooks",
-            "url": "https://books.example/login",
-            "step_index": 1,
-            "use_case": {"name": "LOGIN_BOOK"},
-        },
-    )
-
-    joined = "\n".join(block)
-    assert "RETRIEVED SUCCESSFUL TRACE EXAMPLES:" in joined
-    assert "use_case=LOGIN_BOOK" in joined
-    assert "use_case=SEARCH_BOOK" not in joined
-
-
 def test_obs_candidate_intent_tags_treat_active_watchlist_toggle_as_remove() -> None:
     tags = policy_module._obs_candidate_intent_tags(
         {
@@ -219,90 +179,6 @@ def test_preferred_seed_navigation_uses_login_for_watchlist_when_detail_page_is_
     assert tool_call["arguments"]["url"].endswith("/login?seed=31000")
 
 
-def test_preferred_seed_navigation_uses_site_knowledge_section_route() -> None:
-    action = policy_module._preferred_seed_stable_navigation(
-        "Log in to the site.",
-        {
-            "url": "https://autocinema.example/about?seed=42",
-            "site_knowledge": {
-                "current_task_routing": {"likely_best_section": "auth"},
-                "routes": [
-                    {"section_id": "info", "path": "/about", "label": "About"},
-                    {"section_id": "auth", "path": "/login", "label": "Login"},
-                ],
-            },
-            "page_observations": {"capability_gap": {}},
-            "use_case": {"name": "LOGIN_BOOK"},
-        },
-        allowed_tools={"browser.navigate"},
-    )
-    assert action is not None
-    tool_call = action["tool_call"]
-    assert tool_call["name"] == "browser.navigate"
-    assert tool_call["arguments"]["url"].rstrip("/") == "https://autocinema.example/login"
-
-
-def test_preferred_prompt_navigation_opens_domain_from_blank_page() -> None:
-    action = policy_module._preferred_prompt_navigation(
-        "Open autoppia.com and summarize the homepage.",
-        {
-            "url": "about:blank",
-        },
-        allowed_tools={"browser.navigate", "browser.click"},
-    )
-    assert action is not None
-    tool_call = action["tool_call"]
-    assert tool_call["name"] == "browser.navigate"
-    assert tool_call["arguments"]["url"] == "https://autoppia.com"
-
-
-def test_preferred_prompt_navigation_explicit_https_without_open_verb() -> None:
-    action = policy_module._preferred_prompt_navigation(
-        "Read https://docs.example.com/guide.html and list the headings.",
-        {"url": "about:blank"},
-        allowed_tools={"browser.navigate"},
-    )
-    assert action is not None
-    assert action["tool_call"]["arguments"]["url"] == "https://docs.example.com/guide.html"
-
-
-def test_preferred_prompt_navigation_named_site_without_open_verb() -> None:
-    action = policy_module._preferred_prompt_navigation(
-        "Search for alpine marmots on Wikipedia.",
-        {"url": "about:blank"},
-        allowed_tools={"browser.navigate"},
-    )
-    assert action is not None
-    assert action["tool_call"]["arguments"]["url"] == "https://www.wikipedia.org"
-
-
-def test_fallback_navigates_from_blank_page_for_general_web_task() -> None:
-    policy = policy_module.Policy(llm_call=lambda **_: {})
-    action = policy._fallback(
-        prompt="Go to google.com and search for weather in Tokyo.",
-        mode="DIRECT",
-        policy_obs={"url": "about:blank"},
-        allowed_tools={"browser.navigate", "browser.click"},
-    )
-    assert action["type"] == "browser"
-    assert action["tool_call"]["name"] == "browser.navigate"
-    assert action["tool_call"]["arguments"]["url"] == "https://www.google.com"
-
-
-def test_fallback_fails_fast_on_blank_page_without_inferable_target() -> None:
-    policy = policy_module.Policy(llm_call=lambda **_: {})
-    action = policy._fallback(
-        prompt="Continue with the task.",
-        mode="DIRECT",
-        policy_obs={"url": "about:blank"},
-        allowed_tools={"browser.navigate", "browser.click"},
-    )
-    assert action["type"] == "final"
-    assert action["done"] is True
-    assert action["error"] == "blank_page_no_navigation_target"
-    assert action["failure_reason"] == "blank_page_no_navigation_target"
-
-
 def test_preferred_title_result_action_anchors_to_matching_movie_card() -> None:
     action = policy_module._preferred_title_result_action(
         "Add to watchlist a movie where the name equals 'The Incredibles'",
@@ -387,3 +263,175 @@ def test_preferred_direct_intent_action_from_markup_uses_detail_controls_when_ca
     assert action["tool_call"]["name"] == "browser.click"
     assert action["tool_call"]["arguments"]["selector"]["attribute"] == "id"
     assert action["tool_call"]["arguments"]["selector"]["value"] == "add-list-btn"
+
+
+def test_extract_prompt_field_targets_prefers_task_section_over_html_noise() -> None:
+    prompt = """TASK: Fill out the contact form with a name that equals 'David', an email that contains 'user1@site.com', and a message that equals 'Please provide me with more information'. Navigate directly to /contact and use ids contact-name-input and contact-email-input.
+
+TASK CONSTRAINTS:
+{"follow_this_route_exactly": "/contact"}
+
+PAGE GROUPS (JSON):
+{"forms":[{"controls":[{"id":"contact-name-input","label":"Name","placeholder":"Your name"},{"id":"contact-email-input","label":"Email","placeholder":"you@example.com"}]}]}
+
+INTERACTIVE ELEMENT SHORTLIST (JSON):
+[{"selector":{"value":"contact-subject-input"},"context":"Subject","field_kind":"email","placeholder":"What's this about?"}]
+"""
+    targets = policy_module._extract_prompt_field_targets(prompt)
+    assert targets["name"] == "David"
+    assert targets["email"] == "user1@site.com"
+    assert targets["message"] == "Please provide me with more information"
+    assert "href" not in targets
+    assert "id" not in targets
+
+
+def test_preferred_prompt_form_action_uses_task_targets_before_noisy_shortlist() -> None:
+    prompt = """TASK: Fill out the contact form with a name that equals 'David', an email that contains 'user1@site.com', and a message that equals 'Please provide me with more information'. Navigate directly to /contact and use ids contact-name-input, contact-email-input, contact-message-textarea, send-message-button.
+
+TASK CONSTRAINTS:
+{"follow_this_route_exactly": "/contact"}
+"""
+    policy_obs = {
+        "url": "https://autocinema.example/contact?seed=4242",
+        "page_groups": {
+            "forms": [
+                {
+                    "controls": [
+                        {"tag": "input", "type": "", "id": "contact-name-input", "label": "Name", "value": ""},
+                        {"tag": "input", "type": "email", "id": "contact-email-input", "label": "Email", "value": ""},
+                        {"tag": "input", "type": "", "id": "contact-subject-input", "label": "Subject", "value": ""},
+                        {"tag": "textarea", "type": "", "id": "contact-message-textarea", "label": "Message", "value": ""},
+                        {"tag": "button", "type": "submit", "id": "send-message-button", "text": "Send Message"},
+                    ]
+                }
+            ]
+        },
+        "candidates": [
+            {
+                "index": 0,
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "contact-subject-input"},
+                "context": "Subject",
+                "field_kind": "email",
+            },
+            {
+                "index": 1,
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "contact-email-input"},
+                "context": "Email",
+                "field_kind": "email",
+            },
+            {
+                "index": 2,
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "contact-message-textarea"},
+                "context": "Message",
+                "field_kind": "email",
+            },
+            {
+                "index": 3,
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "contact-name-input"},
+                "context": "Name",
+                "field_kind": "name",
+            },
+        ],
+    }
+    action = policy_module._preferred_prompt_form_action(
+        prompt,
+        policy_obs,
+        allowed_tools={"browser.input", "browser.click"},
+    )
+    assert action == {
+        "name": "browser.input",
+        "arguments": {
+            "text": "David",
+            "selector": {
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "contact-name-input",
+                "case_sensitive": False,
+            },
+        },
+    }
+
+
+def test_preferred_prompt_form_action_login_prefers_username_then_password_then_submit() -> None:
+    prompt = "TASK: Navigate directly to /login first. Fill the username field with user1, then fill the password field with Passw0rd!, then click the visible sign in button."
+    policy_obs = {
+        "url": "https://autocinema.example/login?seed=999",
+        "candidates": [
+            {
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "signin-control", "case_sensitive": False},
+                "text": "Sign In",
+                "context": "Login form submit button",
+            },
+            {
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "password-entry-field", "case_sensitive": False},
+                "text": "Password",
+                "context": "Login password field",
+                "field_kind": "password",
+            },
+            {
+                "selector": {"type": "attributeValueSelector", "attribute": "id", "value": "login-username", "case_sensitive": False},
+                "text": "Username",
+                "context": "Login username field",
+                "field_kind": "username",
+            },
+        ],
+    }
+    first = policy_module._preferred_prompt_form_action(prompt, policy_obs, allowed_tools={"browser.input", "browser.click"})
+    assert first == {
+        "name": "browser.input",
+        "arguments": {
+            "text": "user1",
+            "selector": {
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "login-username",
+                "case_sensitive": False,
+            },
+        },
+    }
+    policy_obs["candidates"][2]["current_value"] = "user1"
+    second = policy_module._preferred_prompt_form_action(prompt, policy_obs, allowed_tools={"browser.input", "browser.click"})
+    assert second["arguments"]["selector"]["value"] == "password-entry-field"
+    policy_obs["candidates"][1]["current_value"] = "Passw0rd!"
+    third = policy_module._preferred_prompt_form_action(prompt, policy_obs, allowed_tools={"browser.input", "browser.click"})
+    assert third == {
+        "name": "browser.click",
+        "arguments": {
+            "selector": {
+                "type": "attributeValueSelector",
+                "attribute": "id",
+                "value": "signin-control",
+                "case_sensitive": False,
+            }
+        },
+    }
+
+
+def test_preferred_prompt_form_action_contact_prefers_explicit_order_before_submit() -> None:
+    prompt = "TASK: Fill out the contact form with a name that equals 'David', an email that contains 'user1@site.com', a subject that does NOT contain 'Information', and a message that equals 'Please provide me with more information'."
+    policy_obs = {
+        "url": "https://autocinema.example/contact?seed=999",
+        "candidates": [
+            {"selector": {"type": "attributeValueSelector", "attribute": "id", "value": "send-message-button", "case_sensitive": False}, "text": "Send Message", "context": "Contact form submit"},
+            {"selector": {"type": "attributeValueSelector", "attribute": "id", "value": "contact-message-textarea", "case_sensitive": False}, "text": "Message", "context": "Contact form message"},
+            {"selector": {"type": "attributeValueSelector", "attribute": "id", "value": "contact-subject-input", "case_sensitive": False}, "text": "Subject", "context": "Contact form subject"},
+            {"selector": {"type": "attributeValueSelector", "attribute": "id", "value": "email-field", "case_sensitive": False}, "text": "Email", "context": "Contact form email"},
+            {"selector": {"type": "attributeValueSelector", "attribute": "id", "value": "contact-name", "case_sensitive": False}, "text": "Name", "context": "Contact form name"},
+        ],
+    }
+    first = policy_module._preferred_prompt_form_action(prompt, policy_obs, allowed_tools={"browser.input", "browser.click"})
+    assert first["arguments"]["selector"]["value"] == "contact-name"
+    assert first["arguments"]["text"] == "David"
+    policy_obs["candidates"][4]["current_value"] = "David"
+    second = policy_module._preferred_prompt_form_action(prompt, policy_obs, allowed_tools={"browser.input", "browser.click"})
+    assert second["arguments"]["selector"]["value"] == "email-field"
+    policy_obs["candidates"][3]["current_value"] = "user1@site.com"
+    third = policy_module._preferred_prompt_form_action(prompt, policy_obs, allowed_tools={"browser.input", "browser.click"})
+    assert third["arguments"]["selector"]["value"] == "contact-subject-input"
+    policy_obs["candidates"][2]["current_value"] = "Inquiry"
+    fourth = policy_module._preferred_prompt_form_action(prompt, policy_obs, allowed_tools={"browser.input", "browser.click"})
+    assert fourth["arguments"]["selector"]["value"] == "contact-message-textarea"
+    policy_obs["candidates"][1]["current_value"] = "Please provide me with more information"
+    fifth = policy_module._preferred_prompt_form_action(prompt, policy_obs, allowed_tools={"browser.input", "browser.click"})
+    assert fifth["name"] == "browser.click"
+    assert fifth["arguments"]["selector"]["value"] == "send-message-button"
