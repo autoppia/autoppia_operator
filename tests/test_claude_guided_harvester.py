@@ -142,7 +142,32 @@ def test_ordered_selector_candidates_prefers_dom_heuristic_when_no_exact_match_f
 
     ordered = _ordered_selector_candidates(planned_action, resolved_candidates, [], exact_match_found=False)
 
-    assert [item["value"] for item in ordered] == ["contact-name-input", "name-field", "actual-seed-name-id"]
+    assert [item["value"] for item in ordered] == ["actual-seed-name-id", "contact-name-input", "name-field"]
+
+
+def test_guided_actions_from_explicit_steps_sanitize_css_like_selector_hints() -> None:
+    brief = {
+        "fields": [
+            {"name": "username", "ids": ["#username"], "value": "<username>", "value_rule": "exact"},
+            {"name": "password", "ids": ["input#password"], "value": "<password>", "value_rule": "exact"},
+        ],
+        "steps": [
+            {"type": "NavigateAction", "url": "/login"},
+            {"type": "TypeAction", "ids": ["#username", "input[name='username']"], "text_hints": ["Username"], "text": "<username>"},
+            {"type": "TypeAction", "ids": ["input#password", "input[type='password']"], "text_hints": ["Password"], "text": "<password>"},
+            {"type": "ClickAction", "ids": ["button[type='submit']", "#login"], "text_hints": ["Sign in"]},
+        ],
+    }
+
+    actions = _guided_actions_from_brief(task_url="http://84.247.180.192:8000/?seed=1", brief=brief)
+
+    assert actions[1]["field_name"] == "username"
+    assert actions[1]["selector_candidates"][0]["value"] == "username"
+    assert all("[" not in item["value"] for item in actions[1]["selector_candidates"] if "value" in item)
+    assert actions[2]["field_name"] == "password"
+    assert actions[2]["selector_candidates"][0]["value"] == "password"
+    assert actions[3]["field_name"] == "submit"
+    assert actions[3]["selector_candidates"][0]["value"] == "login"
 
 
 def test_ordered_selector_candidates_prefers_existing_exact_dom_ids_before_other_explicit_variants() -> None:

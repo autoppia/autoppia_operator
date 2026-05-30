@@ -155,7 +155,7 @@ def _sanitize_type_ids(ids: list[str] | None) -> list[str]:
     seen: set[str] = set()
     blocked_tokens = ("button", "submit", "action", "toggle", "link")
     for value in ids or []:
-        candidate = str(value).strip()
+        candidate = _normalize_id_hint(str(value).strip())
         if not candidate:
             continue
         lowered = candidate.lower()
@@ -168,7 +168,56 @@ def _sanitize_type_ids(ids: list[str] | None) -> list[str]:
     return out
 
 
+def _sanitize_click_ids(ids: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in ids or []:
+        candidate = _normalize_id_hint(str(value).strip())
+        if not candidate:
+            continue
+        lowered = candidate.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        out.append(candidate)
+    return out
+
+
+def _normalize_id_hint(value: str) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    if candidate.startswith("#") and all(ch not in candidate for ch in " []>:+~="):
+        return candidate[1:]
+    if "#" in candidate and all(ch not in candidate for ch in " []>:+~="):
+        tail = candidate.rsplit("#", 1)[-1].strip()
+        if tail:
+            return tail
+    if any(ch in candidate for ch in " []>:+~="):
+        return ""
+    return candidate
+
+
+def _infer_field_name_for_step(payload: dict[str, Any], fields: list[dict[str, Any]]) -> str:
+    explicit = str(payload.get("field_name") or payload.get("name") or "").strip()
+    if explicit:
+        return explicit
+    text = str(payload.get("text") or "").strip().lower()
+    ids = {str(item).strip().lower() for item in (payload.get("ids") or []) if str(item).strip()}
+    for field in fields:
+        name = str(field.get("name") or "").strip()
+        if not name:
+            continue
+        if text and name.lower() in text:
+            return name
+        field_ids = {str(item).strip().lower() for item in (field.get("ids") or []) if str(item).strip()}
+        if ids and field_ids and ids.intersection(field_ids):
+            return name
+    return ""
+
+
 def _guided_actions_from_brief(*, task_url: str, brief: dict[str, Any], web_project_id: str = "autocinema") -> list[dict[str, Any]]:
+    fields = [item for item in (brief.get("fields") or []) if isinstance(item, dict)]
     explicit_steps = brief.get("steps")
     if isinstance(explicit_steps, list) and explicit_steps:
         actions: list[dict[str, Any]] = []
@@ -183,6 +232,12 @@ def _guided_actions_from_brief(*, task_url: str, brief: dict[str, Any], web_proj
                 ids = harvester_support._expand_id_variants([str(entry).strip() for entry in (payload.get("ids") or []) if str(entry).strip()])
                 if action_type == "TypeAction":
                     ids = _sanitize_type_ids(ids)
+                    field_name = _infer_field_name_for_step(payload, fields)
+                    if field_name:
+                        payload["field_name"] = field_name
+                else:
+                    ids = _sanitize_click_ids(ids)
+                    payload.setdefault("field_name", "submit")
                 texts = [str(entry).strip() for entry in (payload.get("text_hints") or []) if str(entry).strip()]
                 if ids or texts:
                     payload["selector_candidates"] = harvester_support._selector_candidates(ids=ids, texts=texts)
@@ -280,7 +335,7 @@ def _ordered_selector_candidates(
     if existing_exact:
         selector_stream = existing_exact + explicit + [selector for selector in list(resolved_candidates or []) if selector not in existing_exact]
     elif explicit:
-        selector_stream = explicit + list(resolved_candidates or [])
+        selector_stream = list(resolved_candidates or []) + explicit
     elif resolved_candidates and not exact_match_found:
         selector_stream = list(resolved_candidates)
     else:
@@ -494,15 +549,29 @@ async def _execute_action_candidates(session, planned_action: dict[str, Any]) ->
   }
 
     if (type === "ClickAction" && !heuristic) {
-    for (const control of controls) {
-      const id = String(control.id || "");
-      const text = (control.textContent || "").trim();
-      if ((labelHints.some((hint) => hint && textMatch(text, hint)) || labelHints.some((hint) => hint && textMatch(id, hint))) && id) {
-        heuristic = selectorForElement(control);
-        break;
+    if (fieldName === "submit") {
+      for (const control of controls) {
+        const tag = control.tagName.toLowerCase();
+        const typeAttr = String(control.getAttribute("type") || "");
+        const id = String(control.id || "");
+        if (tag === "button" && typeAttr === "submit" && id) {
+          heuristic = selectorForElement(control);
+          break;
+        }
       }
     }
-    if (!heuristic && fieldName !== "logout") {
+    if (!heuristic) {
+      for (const control of controls) {
+        const tag = control.tagName.toLowerCase();
+        const id = String(control.id || "");
+        const text = (control.textContent || "").trim();
+        if ((tag === "button" || tag === "a" || tag === "input") && labelHints.some((hint) => hint && textMatch(text, hint)) && id) {
+          heuristic = selectorForElement(control);
+          break;
+        }
+      }
+    }
+    if (!heuristic && fieldName !== "logout" && fieldName !== "submit") {
       for (const control of controls) {
         const tag = control.tagName.toLowerCase();
         const typeAttr = String(control.getAttribute("type") || "");

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,8 +53,13 @@ def run_autoppia_operator(config: OperatorRunConfig) -> dict[str, Any]:
 
     brief_path = paths.root / "candidate_brief.json"
     eval_out = paths.root / "last_eval.json"
+    env_parts = ["DEMO_WEBS_ENDPOINT=http://84.247.180.192"]
+    for name in ("AUTOPPIA_IWA_ROOT", "AUTOPPIA_WEBS_DEMO_ROOT"):
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            env_parts.append(f"{name}={shlex.quote(value)}")
     eval_command = (
-        "DEMO_WEBS_ENDPOINT=http://84.247.180.192 "
+        f"{' '.join(env_parts)} "
         "python scripts/training/eval_guided_trajectory.py "
         f"--web-project-id {config.web_project_id} "
         f"--use-case {config.use_case.upper()} "

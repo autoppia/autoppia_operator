@@ -11,9 +11,10 @@ from training.deterministic_harvester.normalizer import load_task_row as load_no
 from training.harvester_support import brief_prompt_lines, summarize_attempt_for_claude
 from training.layout import use_case_layout
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 TASK_CACHE_PATH = REPO_ROOT.parent / "autoppia_rl" / "data" / "tasks" / "cache" / "autoppia_cinema_tasks.json"
-WEB_REPO_ROOT = REPO_ROOT.parent / "autoppia_webs_demo" / "web_1_autocinema"
+WEBS_DEMO_ROOT = Path(os.environ.get("AUTOPPIA_WEBS_DEMO_ROOT", "")).expanduser().resolve() if os.environ.get("AUTOPPIA_WEBS_DEMO_ROOT") else REPO_ROOT.parent / "autoppia_webs_demo"
+WEB_REPO_ROOT = WEBS_DEMO_ROOT / "web_1_autocinema"
 DEFAULT_BRIEF_MODEL = "gpt-5.4-mini"
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -9,7 +10,8 @@ from urllib.parse import urlparse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WEB_ID_VARIANTS = REPO_ROOT.parent / "autoppia_webs_demo" / "web_1_autocinema" / "src" / "dynamic" / "v3" / "data" / "id-variants.json"
+WEBS_DEMO_ROOT = Path(os.environ.get("AUTOPPIA_WEBS_DEMO_ROOT", "")).expanduser().resolve() if os.environ.get("AUTOPPIA_WEBS_DEMO_ROOT") else REPO_ROOT.parent / "autoppia_webs_demo"
+WEB_ID_VARIANTS = WEBS_DEMO_ROOT / "web_1_autocinema" / "src" / "dynamic" / "v3" / "data" / "id-variants.json"
 
 
 def brief_prompt_lines(payload: dict[str, Any] | None) -> list[str]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,8 +9,16 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-IWA_PROJECTS_ROOT = REPO_ROOT.parent / "autoppia_iwa" / "autoppia_iwa" / "src" / "demo_webs" / "projects"
-WEBS_DEMO_ROOT = REPO_ROOT.parent / "autoppia_webs_demo"
+
+
+def _repo_root_from_env(name: str, default: Path) -> Path:
+    raw = str(os.environ.get(name, "")).strip()
+    return Path(raw).expanduser().resolve() if raw else default
+
+
+IWA_REPO_ROOT = _repo_root_from_env("AUTOPPIA_IWA_ROOT", REPO_ROOT.parent / "autoppia_iwa")
+WEBS_DEMO_ROOT = _repo_root_from_env("AUTOPPIA_WEBS_DEMO_ROOT", REPO_ROOT.parent / "autoppia_webs_demo")
+IWA_PROJECTS_ROOT = IWA_REPO_ROOT / "autoppia_iwa" / "src" / "demo_webs" / "projects"
 
 
 @dataclass(frozen=True)
