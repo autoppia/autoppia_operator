@@ -1658,6 +1658,20 @@ class StepEngine:
         state_before = state.model_copy(deep=True)
         allowed = self._normalize_allowed(payload_dict.get("allowed_tools"))
         mode_in = state.mode
+        if str(url or "").strip().lower() in {"", "about:blank"}:
+            state.mode = "DONE"
+            out: Dict[str, Any] = {
+                "protocol_version": "1.0",
+                "actions": [],
+                "done": True,
+                "content": "Unable to continue: blank page has no navigation target.",
+                "internal_state": state.to_internal_state(),
+                "error": "blank_page_no_navigation_target",
+                "failure_reason": "blank_page_no_navigation_target",
+            }
+            if include_reasoning:
+                out["reasoning"] = "Goal: Continue with the task. Current page: blank page. Decision: stop because there is no navigation target."
+            return out
         if url and not state.session_query:
             state.session_query = _query_map(url)
         self._debug_log(
