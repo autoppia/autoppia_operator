@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from src.operator.agents.step_engine import ApifiedWebAgent as StepApifiedWebAgent
+from src.operator.agents.heuristic_runtime.structured_heuristic_operator import (
+    StructuredInferenceOperator as HeuristicStructuredInferenceOperator,
+)
 
 
 class CleanModelInferenceOperator(StepApifiedWebAgent):
@@ -11,8 +14,8 @@ class CleanModelInferenceOperator(StepApifiedWebAgent):
         return "clean_model_inference"
 
 
-# Keep the historical export name so entrypoint/import sites stay stable.
-StructuredInferenceOperator = CleanModelInferenceOperator
+# Keep the historical export name for deterministic structured tests/tools.
+StructuredInferenceOperator = HeuristicStructuredInferenceOperator
 
 __all__ = [
     "CleanModelInferenceOperator",
