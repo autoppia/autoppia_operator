@@ -1341,6 +1341,9 @@ class StepEngine:
             "content": final_content if done else None,
             "internal_state": state.to_internal_state(),
         }
+        if any(str(item) == "PRE:blank_page_no_navigation_target" for item in meta_exec_trace):
+            out["error"] = "blank_page_no_navigation_target"
+            out["failure_reason"] = "blank_page_no_navigation_target"
         if isinstance(reasoning, str) and reasoning:
             out["reasoning"] = reasoning
         if include_reasoning and isinstance(state.memory.reasoning_trace, dict) and state.memory.reasoning_trace:
@@ -1821,6 +1824,14 @@ class StepEngine:
             for item in history[-4:]
             if isinstance(item, dict) and str(item.get("error") or "").strip()
         ]
+        current_url = str(url or "").strip().lower()
+        if current_url in {"", "about:blank"} and not ranked_candidates:
+            return (
+                None,
+                True,
+                "Unable to continue: blank page has no navigation target.",
+                "blank_page_no_navigation_target",
+            )
         if bool(flags.get("cookie_banner")) or (bool(flags.get("modal_dialog")) and not bool(flags.get("interactive_modal_form"))):
             if allow("browser.send_keys") and any("intercepts pointer events" in err for err in recent_errors):
                 return {"type": "SendKeysIWAAction", "keys": "Escape"}, False, "", "popup_escape"
@@ -3557,7 +3568,6 @@ class StepEngine:
             state.blocklist.until_step = max(state.blocklist.until_step, int(step_index) + 2)
 
         last_action_type = str(state.last_action_sig or "").split("|", 1)[0].strip().lower()
-        current_url = str(url or "").strip().lower()
         if allow("browser.go_back") and current_url not in {"", "about:blank"}:
             return (
                 {"type": "NavigateAction", "go_back": True, "go_forward": False},
