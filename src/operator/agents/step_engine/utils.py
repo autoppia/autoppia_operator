@@ -203,6 +203,44 @@ def _dom_digest(html: str) -> str:
         return ""
 
 
+def clean_snapshot_html_for_llm(html: str) -> str:
+    """Drop noisy DOM before parsing and LLM prompt construction."""
+    s = str(html or "")
+    if not s:
+        return ""
+    for tag in ("script", "style", "noscript", "template"):
+        s = re.sub(rf"<{tag}\b[^>]*>.*?</{tag}>", "", s, flags=re.I | re.S)
+    for tag in ("iframe", "embed", "object"):
+        s = re.sub(rf"<{tag}\b[^>]*>.*?</{tag}>", "", s, flags=re.I | re.S)
+        s = re.sub(rf"<{tag}\b[^>]*/>", "", s, flags=re.I)
+    s = re.sub(r"<svg\b[^>]*>.*?</svg>", "", s, flags=re.I | re.S)
+    s = re.sub(r"<!--.*?-->", "", s, flags=re.S)
+
+    def _shorten_data_attr_dq(match: Any) -> str:
+        val = match.group(2)
+        if val.lower().startswith("data:"):
+            return f'{match.group(1)}="[data-uri-truncated]"'
+        return match.group(0)
+
+    def _shorten_data_attr_sq(match: Any) -> str:
+        val = match.group(2)
+        if val.lower().startswith("data:"):
+            return f"{match.group(1)}='[data-uri-truncated]'"
+        return match.group(0)
+
+    s = re.sub(r'(src|href)\s*=\s*"([^"]{800,})"', _shorten_data_attr_dq, s, flags=re.I)
+    s = re.sub(r"(src|href)\s*=\s*'([^']{800,})'", _shorten_data_attr_sq, s, flags=re.I)
+    s = re.sub(r"\s(on[a-z]{2,20})\s*=\s*([\"'])(?:(?!\2).){400,}\2", "", s, flags=re.I)
+    try:
+        max_raw = int(os.getenv("FSM_SNAPSHOT_HTML_MAX_CHARS", "400000") or "400000")
+    except Exception:
+        max_raw = 400_000
+    max_raw = max(8_000, min(max_raw, 2_000_000))
+    if len(s) > max_raw:
+        s = s[:max_raw] + "\n<!-- fsm:snapshot_html_truncated -->"
+    return s
+
+
 def _tokenize(text: str) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]{2,}", str(text or "").lower())}
 
