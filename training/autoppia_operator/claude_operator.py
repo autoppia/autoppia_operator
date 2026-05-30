@@ -11,7 +11,7 @@ from training.autoppia_operator.artifacts import (
     build_operator_manifest,
     operator_run_root,
 )
-from training.claude_code_harvester import run_claude_code_harvest
+from training.autoppia_operator.discovery import run_claude_code_harvest
 from training.claude_guided_harvester import run_guided_brief
 
 

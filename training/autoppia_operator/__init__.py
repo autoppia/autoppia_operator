@@ -13,7 +13,14 @@ from training.autoppia_operator.artifacts import (
     is_verified_success,
     operator_run_root,
 )
-from training.autoppia_operator.claude_operator import OperatorRunConfig, run_autoppia_operator
+
+
+def __getattr__(name: str):
+    if name in {"OperatorRunConfig", "run_autoppia_operator"}:
+        from training.autoppia_operator.claude_operator import OperatorRunConfig, run_autoppia_operator
+
+        return {"OperatorRunConfig": OperatorRunConfig, "run_autoppia_operator": run_autoppia_operator}[name]
+    raise AttributeError(name)
 
 __all__ = [
     "OPERATOR_ARTIFACT_VERSION",

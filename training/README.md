@@ -14,7 +14,9 @@ trajectories; the distilled model learns to imitate them.
 
 Kept modules:
 - `training/autoppia_operator/`: canonical Autoppia Operator namespace and artifact contract.
-- `training/claude_code_harvester.py`: Claude-focused harvesting entrypoint.
+- `training/autoppia_operator/briefs.py`: Claude brief generation for trajectory discovery.
+- `training/autoppia_operator/discovery.py`: Claude/evaluator retry loop for verified trajectories.
+- `training/claude_code_harvester.py`: compatibility shim for old imports.
 - `training/claude_guided_harvester.py`: teacher-guided action hints for focused harvests.
 - `training/harvester.py`: legacy compatibility backend for baseline, code-aware, and guided collection.
 - `training/focus_pipeline.py`: compatibility wrapper around the unified harvester and eval helpers.

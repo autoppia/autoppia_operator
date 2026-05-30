@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import training.claude_code_harvester as module
-from training.claude_code_harvester import brief_prompt_lines, summarize_attempt_for_claude
+import training.autoppia_operator.briefs as module
+import training.claude_code_harvester as legacy_module
+from training.autoppia_operator.briefs import brief_prompt_lines, summarize_attempt_for_claude
 
 
 def test_brief_prompt_lines_flattens_route_fields_submit_and_pitfalls() -> None:
@@ -219,3 +220,8 @@ def test_generate_claude_brief_uses_gateway_for_gpt_models(monkeypatch, tmp_path
     assert payload["brief"]["route"] == ["/contact"]
     assert payload["brief"]["steps"][0]["type"] == "NavigateAction"
     assert payload["meta"]["model"] == "gpt-5.4-mini"
+
+
+def test_legacy_claude_code_harvester_reexports_operator_entrypoints() -> None:
+    assert legacy_module.generate_claude_brief is module.generate_claude_brief
+    assert callable(legacy_module.run_claude_code_harvest)

@@ -39,7 +39,7 @@ from training.focus_pipeline import (
     build_task_cache_override,
     focus_root,
 )
-from training.claude_code_harvester import generate_claude_brief, save_claude_brief
+from training.autoppia_operator.briefs import generate_claude_brief, save_claude_brief
 from training.harvester import (
     HarvestConfig,
     collect_rows_for_seeds,

@@ -69,3 +69,8 @@ The manifest uses `artifact_version=autoppia-operator.v1` and has
 Existing `training/harvester*.py` files are legacy compatibility backends. New
 operator-facing code should import from `training.autoppia_operator`. Distillation
 code should live under `training.distilled_agent` or existing fine-tuning modules.
+
+Inside `training.autoppia_operator`, brief construction belongs in `briefs.py`,
+the Claude/evaluator retry loop belongs in `discovery.py`, run artifact helpers
+belong in `artifacts.py`, and the user-facing CLI orchestration belongs in
+`claude_operator.py`.

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from training.claude_code_harvester import generate_claude_brief
+from training.autoppia_operator.briefs import generate_claude_brief
 from training.claude_guided_harvester import _guided_actions_from_brief, run_guided_brief
 from training.focus_pipeline import (
     build_prompt_override,

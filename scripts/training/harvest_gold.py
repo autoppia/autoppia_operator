@@ -15,7 +15,7 @@ os.environ["DEMO_WEB_SERVICE_PORT"] = "8090"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from training.claude_code_harvester import run_claude_code_harvest
+from training.autoppia_operator.discovery import run_claude_code_harvest
 from training.claude_guided_harvester import run_guided_brief
 from training.layout import use_case_layout
 from training.demo_project_context import build_project_context
