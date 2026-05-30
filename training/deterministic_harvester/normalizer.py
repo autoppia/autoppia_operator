@@ -76,22 +76,22 @@ _FIELD_ALIASES: dict[str, str] = {
 }
 
 _ROUTE_BY_USE_CASE: dict[str, str] = {
-    "ADD_COMMENT": "/movies",
+    "ADD_COMMENT": "/",
     "ADD_FILM": "/profile",
-    "ADD_TO_WATCHLIST": "/movies",
+    "ADD_TO_WATCHLIST": "/",
     "CONTACT": "/contact",
     "DELETE_FILM": "/profile",
     "EDIT_FILM": "/profile",
     "EDIT_USER": "/profile",
-    "FILM_DETAIL": "/movies",
+    "FILM_DETAIL": "/",
     "FILTER_FILM": "/search",
     "LOGIN": "/login",
     "LOGOUT": "/profile",
     "REGISTRATION": "/register",
-    "REMOVE_FROM_WATCHLIST": "/movies",
+    "REMOVE_FROM_WATCHLIST": "/",
     "SEARCH_FILM": "/search",
-    "SHARE_MOVIE": "/movies",
-    "WATCH_TRAILER": "/movies",
+    "SHARE_MOVIE": "/",
+    "WATCH_TRAILER": "/",
 }
 
 # autobooks (IWA p02) — primary route hints for `route_target` / success expectations
@@ -372,6 +372,26 @@ _ROUTE_BY_USE_CASE_AUTOLIST: dict[str, str] = {
     "AUTOLIST_TEAM_ROLE_ASSIGNED": "/teams",
 }
 
+# autohealth (IWA p14)
+_ROUTE_BY_USE_CASE_AUTOHEALTH: dict[str, str] = {
+    "OPEN_APPOINTMENT_FORM": "/appointments",
+    "APPOINTMENT_BOOKED_SUCCESSFULLY": "/appointments",
+    "REQUEST_QUICK_APPOINTMENT": "/",
+    "SEARCH_APPOINTMENT": "/appointments",
+    "SEARCH_DOCTORS": "/doctors",
+    "SEARCH_PRESCRIPTION": "/prescriptions",
+    "REFILL_PRESCRIPTION": "/prescriptions",
+    "VIEW_PRESCRIPTION": "/prescriptions",
+    "SEARCH_MEDICAL_ANALYSIS": "/medical-records",
+    "VIEW_MEDICAL_ANALYSIS": "/medical-records",
+    "VIEW_DOCTOR_PROFILE": "/doctors",
+    "VIEW_DOCTOR_EDUCATION": "/doctors",
+    "VIEW_DOCTOR_AVAILABILITY": "/doctors",
+    "FILTER_DOCTOR_REVIEWS": "/doctors",
+    "OPEN_CONTACT_DOCTOR_FORM": "/doctors",
+    "CONTACT_DOCTOR": "/doctors",
+}
+
 
 def _route_target(*, web_project_id: str, use_case: str) -> str:
     pid = str(web_project_id or "").strip().lower() or "autocinema"
@@ -391,6 +411,8 @@ def _route_target(*, web_project_id: str, use_case: str) -> str:
         return _ROUTE_BY_USE_CASE_AUTOMAIL.get(use_case, "/")
     if pid == "autolist":
         return _ROUTE_BY_USE_CASE_AUTOLIST.get(use_case, "/")
+    if pid == "autohealth":
+        return _ROUTE_BY_USE_CASE_AUTOHEALTH.get(use_case, "/")
     if pid == "autolodge":
         return _ROUTE_BY_USE_CASE_AUTOLODGE.get(use_case, "/")
     if pid == "autowork":
@@ -433,6 +455,32 @@ _DEFAULT_VALUES: dict[str, str] = {
     "username": "user1",
     "website": "https://example.org",
     "year": "2021",
+    # autohealth defaults
+    "appointment_request": "true",
+    "consultation_fee": "180",
+    "date": "2025-10-15",
+    "doctor_name": "Dr. Olivia Carter",
+    "doctor_filter": "Dr.",
+    "emergency_contact": "Jordan Cole",
+    "filter_rating": "5",
+    "insurance_provider": "Aetna",
+    "language": "English",
+    "medicine_name": "Vitamin D",
+    "notes": "Please review my latest symptoms.",
+    "patient_email": "patient@example.com",
+    "patient_name": "Maria Anderson",
+    "patient_phone": "+1-202-555-0153",
+    "preferred_contact_method": "phone",
+    "reason_for_visit": "Chronic migraine management",
+    "record_date": "2025-10-12",
+    "record_title": "Follow-up report",
+    "record_type": "Lab results",
+    "sort_order": "Newest First",
+    "speciality": "Cardiology",
+    "start_date": "2024-07-05",
+    "status": "Active",
+    "time": "01:15 PM",
+    "urgency": "Low - General inquiry",
 }
 
 _MOVIE_FILTER_FIELDS = {
@@ -458,6 +506,36 @@ _KNOWN_CREDENTIAL_PLACEHOLDERS = {
     "<signup_email>",
     "<signup_password>",
     "<web_agent_id>",
+}
+
+_AUTOHEALTH_FIELD_ALIASES: dict[str, str] = {
+    "doctor": "doctor_name",
+    "doctor_name": "doctor_name",
+    "specialty": "speciality",
+    "speciality": "speciality",
+    "patient_name": "patient_name",
+    "patient_email": "patient_email",
+    "patient_phone": "patient_phone",
+    "reason_for_visit": "reason_for_visit",
+    "insurance_provider": "insurance_provider",
+    "emergency_contact": "emergency_contact",
+    "notes": "notes",
+    "date": "date",
+    "time": "time",
+    "medicine_name": "medicine_name",
+    "record_title": "record_title",
+    "record_type": "record_type",
+    "record_date": "record_date",
+    "language": "language",
+    "consultation_fee": "consultation_fee",
+    "filter_rating": "filter_rating",
+    "urgency": "urgency",
+    "preferred_contact_method": "preferred_contact_method",
+    "appointment_request": "appointment_request",
+}
+
+_PROJECT_FIELD_ALLOWLIST: dict[str, set[str]] = {
+    "autohealth": set(_AUTOHEALTH_FIELD_ALIASES.values()),
 }
 
 
@@ -489,6 +567,8 @@ def _normalize_field(raw: str) -> str:
     key = str(raw or "").strip().lower().replace(" ", "_").replace(".", "_")
     while "__" in key:
         key = key.replace("__", "_")
+    if key in _AUTOHEALTH_FIELD_ALIASES:
+        return _AUTOHEALTH_FIELD_ALIASES[key]
     return _FIELD_ALIASES.get(key, key)
 
 
@@ -784,12 +864,23 @@ def _pick_value(field: str, operator: str, value: Any, seed: int) -> str:
     return raw or candidate
 
 
-def _maybe_store_field_value(field_values: dict[str, str], hint: ConstraintHint, seed: int) -> None:
+def _maybe_store_field_value(
+    field_values: dict[str, str],
+    hint: ConstraintHint,
+    seed: int,
+    *,
+    web_project_id: str,
+) -> None:
     if not hint.field:
         return
     if hint.field in _MOVIE_FILTER_FIELDS and hint.field not in {"title", "director", "genres", "year", "duration", "rating"}:
         return
-    if hint.field not in _DEFAULT_VALUES and hint.field not in {"title", "director", "genres", "year", "duration", "rating", "movie_name"}:
+    project_allowed = _PROJECT_FIELD_ALLOWLIST.get(str(web_project_id or "").strip().lower(), set())
+    if (
+        hint.field not in _DEFAULT_VALUES
+        and hint.field not in {"title", "director", "genres", "year", "duration", "rating", "movie_name"}
+        and hint.field not in project_allowed
+    ):
         return
     if hint.field in field_values and hint.operator not in {"equals", "contains"}:
         return
@@ -903,7 +994,7 @@ def normalize_task_row(task_row: dict[str, Any], *, seed: int | None = None) -> 
     constraints = _constraint_hints_from_task(task_row)
 
     for hint in constraints:
-        _maybe_store_field_value(field_values, hint, task_seed)
+        _maybe_store_field_value(field_values, hint, task_seed, web_project_id=web_project_id)
         _update_entity_filters(entity_filters, hint)
 
     if use_case in _AUTH_EVENT_PRIORITY_FIELDS:
@@ -1203,6 +1294,30 @@ def normalize_task_row(task_row: dict[str, Any], *, seed: int | None = None) -> 
             success_expectations["url_contains"] = ["/teams", "/"]
         else:
             success_expectations["url_contains"] = ["/tasks", "/", "/task"]
+    elif str(web_project_id or "").strip().lower() == "autohealth":
+        if use_case in {
+            "SEARCH_DOCTORS",
+            "VIEW_DOCTOR_PROFILE",
+            "VIEW_DOCTOR_EDUCATION",
+            "VIEW_DOCTOR_AVAILABILITY",
+            "FILTER_DOCTOR_REVIEWS",
+            "OPEN_CONTACT_DOCTOR_FORM",
+            "CONTACT_DOCTOR",
+        }:
+            success_expectations["url_contains"] = ["/doctors", "/", "/doctors/"]
+        elif use_case in {
+            "OPEN_APPOINTMENT_FORM",
+            "APPOINTMENT_BOOKED_SUCCESSFULLY",
+            "REQUEST_QUICK_APPOINTMENT",
+            "SEARCH_APPOINTMENT",
+        }:
+            success_expectations["url_contains"] = ["/appointments", "/"]
+        elif use_case in {"SEARCH_PRESCRIPTION", "REFILL_PRESCRIPTION", "VIEW_PRESCRIPTION"}:
+            success_expectations["url_contains"] = ["/prescriptions", "/"]
+        elif use_case in {"SEARCH_MEDICAL_ANALYSIS", "VIEW_MEDICAL_ANALYSIS"}:
+            success_expectations["url_contains"] = ["/medical-records", "/"]
+        else:
+            success_expectations["url_contains"] = ["/"]
     elif use_case == "CONTACT":
         success_expectations["texts"] = ["Message Sent!"]
         success_expectations["url_contains"] = ["/contact"]

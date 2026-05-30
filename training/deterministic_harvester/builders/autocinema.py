@@ -44,6 +44,7 @@ from training.deterministic_harvester.selectors import (
     register_submit_selectors,
     register_username_selectors,
     save_changes_selectors,
+    search_input_selectors,
     search_submit_selectors,
     share_button_selectors,
     trailer_button_selectors,
@@ -143,7 +144,7 @@ def _search_actions(objective: DeterministicTaskObjective) -> list[dict[str, Any
     query = str(objective.field_values.get("query") or objective.field_values.get("movie_name") or "The Matrix")
     return [
         navigate("/search", objective=objective),
-        type_text(query, field_name="search"),
+        type_text(query, selectors=search_input_selectors(objective.web_project_id, objective.seed), field_name="search"),
         click(selectors=search_submit_selectors(objective.web_project_id, objective.seed), field_name="submit"),
     ]
 

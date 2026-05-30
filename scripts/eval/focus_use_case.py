@@ -169,7 +169,6 @@ def cmd_collect(args: argparse.Namespace) -> int:
         use_case=use_case,
         target_seeds=seeds,
         rows=rows,
-        merge_existing=not args.no_merge_existing,
     )
     print(json.dumps({"episodes_path": str(episodes_path), "summary_path": str(summary_path), "summary": summary}, indent=2))
     return 0
@@ -351,7 +350,6 @@ def cmd_claude_harvest(args: argparse.Namespace) -> int:
         use_case=use_case,
         target_seeds=seeds,
         rows=rows,
-        merge_existing=not args.no_merge_existing,
     )
     output_payload = {"episodes_path": str(episodes_path), "summary_path": str(summary_path), "summary": summary}
     if deterministic_only:
@@ -430,7 +428,6 @@ def cmd_replay_candidates(args: argparse.Namespace) -> int:
         use_case=use_case,
         target_seeds=target_seeds,
         rows=rows,
-        merge_existing=not args.no_merge_existing,
     )
     print(
         json.dumps(
@@ -472,7 +469,6 @@ def cmd_run_guided_brief(args: argparse.Namespace) -> int:
         use_case=use_case,
         target_seeds=seeds,
         rows=rows,
-        merge_existing=not args.no_merge_existing,
     )
     print(json.dumps({"episodes_path": str(episodes_path), "summary_path": str(summary_path), "summary": summary}, indent=2))
     return 0
@@ -498,7 +494,6 @@ def main(argv: list[str] | None = None) -> int:
     collect.add_argument("--max-usd", type=float, default=0.0)
     collect.add_argument("--max-attempts", type=int, default=0)
     collect.add_argument("--headed", action="store_true")
-    collect.add_argument("--no-merge-existing", action="store_true")
     collect.set_defaults(func=cmd_collect)
 
     export_sft = sub.add_parser("export-sft")
@@ -587,7 +582,6 @@ def main(argv: list[str] | None = None) -> int:
     claude_harvest.add_argument("--execution-mode", choices=["direct", "operator"], default="direct")
     claude_harvest.add_argument("--deterministic-only", action="store_true")
     claude_harvest.add_argument("--headed", action="store_true")
-    claude_harvest.add_argument("--no-merge-existing", action="store_true")
     claude_harvest.set_defaults(func=cmd_claude_harvest)
 
     generate_candidates = sub.add_parser("generate-candidates")
@@ -629,7 +623,6 @@ def main(argv: list[str] | None = None) -> int:
     replay_candidates_cmd.add_argument("--execution-mode", choices=["direct", "operator"], default="operator")
     replay_candidates_cmd.add_argument("--deterministic-only", action="store_true")
     replay_candidates_cmd.add_argument("--headed", action="store_true")
-    replay_candidates_cmd.add_argument("--no-merge-existing", action="store_true")
     replay_candidates_cmd.set_defaults(func=cmd_replay_candidates)
 
     run_guided = sub.add_parser("run-guided-brief")
@@ -642,7 +635,6 @@ def main(argv: list[str] | None = None) -> int:
     run_guided.add_argument("--max-steps", type=int, default=12)
     run_guided.add_argument("--task-cache", default="")
     run_guided.add_argument("--collect-workers", type=int, default=1)
-    run_guided.add_argument("--no-merge-existing", action="store_true")
     run_guided.set_defaults(func=cmd_run_guided_brief)
 
     args = parser.parse_args(argv)
