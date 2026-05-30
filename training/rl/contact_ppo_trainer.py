@@ -23,12 +23,27 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from peft import LoraConfig, PeftModel, TaskType, get_peft_model
-from transformers import AutoTokenizer, BitsAndBytesConfig
-
-from training.finetune_bu import MODEL_ID, _ensure_deps, _load_trainable_model
 from training.rl.contact_env import ContactRLEnv
 from training.rl.judge import judge_step_progress
+
+try:
+    from training.finetune_bu import MODEL_ID
+except Exception:  # pragma: no cover - keeps lightweight PPO helpers importable
+    MODEL_ID = "Qwen/Qwen3-4B"
+
+
+def _load_training_dependencies() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
+    try:
+        from peft import LoraConfig, PeftModel, TaskType, get_peft_model
+        from transformers import AutoTokenizer, BitsAndBytesConfig
+        from training.finetune_bu import _ensure_deps, _load_trainable_model
+    except ModuleNotFoundError as exc:  # pragma: no cover - exercised when optional deps are missing
+        missing = exc.name or "training dependency"
+        raise ModuleNotFoundError(
+            f"{missing} is required to run ContactPPOTrainer. "
+            "Install the training extras before launching PPO training."
+        ) from exc
+    return AutoTokenizer, BitsAndBytesConfig, LoraConfig, PeftModel, TaskType, get_peft_model, _ensure_deps, _load_trainable_model
 
 
 def _ensure_repo_src_package() -> None:
@@ -671,6 +686,16 @@ class ContactPPOTrainer:
         judge_enabled: bool = False,
         gradient_checkpointing: bool = False,
     ) -> None:
+        (
+            AutoTokenizer,
+            BitsAndBytesConfig,
+            LoraConfig,
+            PeftModel,
+            TaskType,
+            get_peft_model,
+            _ensure_deps,
+            _load_trainable_model,
+        ) = _load_training_dependencies()
         _ensure_deps()
         self.output_dir = Path(output_dir).expanduser().resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
