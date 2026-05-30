@@ -2,7 +2,10 @@ import asyncio
 
 from autoppia_iwa.src.data_generation.tasks.classes import Task
 from autoppia_iwa.src.data_generation.tests.classes import CheckEventTest
-from autoppia_iwa.src.evaluation.stateful_evaluator.evaluator import AsyncStatefulEvaluator
+try:
+    from autoppia_iwa.src.evaluation.stateful_evaluator.evaluator import AsyncStatefulEvaluator
+except ModuleNotFoundError:
+    from autoppia_iwa.src.evaluation.stateful_evaluator import AsyncStatefulEvaluator
 from autoppia_iwa.src.web_agents.apified_iterative_agent import ApifiedWebAgent
 
 

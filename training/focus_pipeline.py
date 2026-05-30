@@ -8,6 +8,7 @@ This module is intentionally strict:
 It supports a pragmatic DAgger loop by re-running the same task seed with a
 prompt-corrected task cache when the baseline attempt fails.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,10 +16,11 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from training.deterministic_harvester.normalizer import extract_seed_from_task_url
 from training.layout import use_case_layout
 from training.trace_compaction import compact_trace_dir
 from training.trajectory_contract import build_provenance_fields
@@ -124,8 +126,37 @@ def _rows_from_run_reports(*, gold_root: Path, use_case: str) -> list[dict[str, 
     return rows
 
 
-def focus_root(*, use_case: str) -> Path:
-    return use_case_layout(repo_root=REPO_ROOT, web_project="autocinema", use_case=use_case).root
+def default_task_cache_for_project(project_id: str) -> Path:
+    normalized_project = str(project_id or "").strip() or "autocinema"
+    project_cache = REPO_ROOT / "data" / "task_cache" / f"{normalized_project}_tasks.json"
+    if project_cache.exists():
+        return project_cache
+    project_cache_legacy = REPO_ROOT / "data" / "task_cache" / f"{normalized_project}_tasks_cache.json"
+    if project_cache_legacy.exists():
+        return project_cache_legacy
+    iwa_cache = REPO_ROOT.parent / "autoppia_iwa" / "data" / "task_cache" / f"{normalized_project}_tasks.json"
+    if iwa_cache.exists():
+        return iwa_cache
+    generic_cache = REPO_ROOT / "data" / "task_cache" / "tasks_cache.json"
+    if generic_cache.exists():
+        try:
+            payload = _load_json(generic_cache)
+            tasks = payload.get("tasks", payload if isinstance(payload, list) else [])
+            for row in tasks:
+                if not isinstance(row, dict):
+                    continue
+                row_project_id = str(row.get("web_project_id") or row.get("project_id") or "").strip()
+                if row_project_id == normalized_project:
+                    return generic_cache
+        except Exception:
+            pass
+    if DEFAULT_TASK_CACHE.exists():
+        return DEFAULT_TASK_CACHE
+    return DEFAULT_TASK_CACHE
+
+
+def focus_root(*, use_case: str, project_id: str = "autocinema") -> Path:
+    return use_case_layout(repo_root=REPO_ROOT, web_project=str(project_id or "autocinema"), use_case=use_case).root
 
 
 def build_prompt_override(*, use_case: str, extra_lines: list[str] | None = None) -> str:
@@ -135,40 +166,64 @@ def build_prompt_override(*, use_case: str, extra_lines: list[str] | None = None
     return " ".join(line.strip() for line in lines if line.strip()).strip()
 
 
+def _reseed_task_row(row: dict[str, Any], seed: int) -> None:
+    """Update the task row's id and url to reflect the target seed in-place."""
+    import re
+
+    target = str(int(seed))
+    old_id = str(row.get("id") or "")
+    if old_id:
+        row["id"] = re.sub(r"seed-\d+", f"seed-{target}", old_id)
+    old_url = str(row.get("url") or "")
+    if old_url:
+        row["url"] = re.sub(r"([?&]seed=)\d+", rf"\g<1>{target}", old_url)
+
+
 def build_task_cache_override(
     *,
     source_task_cache: Path,
     use_case: str,
     prompt_override: str,
     out_path: Path,
+    project_id: str | None = None,
+    seed: int | None = None,
 ) -> Path:
     payload = _load_json(source_task_cache)
-    tasks = payload["tasks"] if isinstance(payload, dict) and isinstance(payload.get("tasks"), list) else payload
+    tasks: list[dict[str, Any]] | None = None
+    if isinstance(payload, dict) and isinstance(payload.get("tasks"), list):
+        tasks = payload["tasks"]
+    elif isinstance(payload, dict):
+        for value in payload.values():
+            if isinstance(value, dict) and isinstance(value.get("tasks"), list):
+                tasks = value["tasks"]
+                break
     if not isinstance(tasks, list):
         raise ValueError(f"Unexpected task cache format: {source_task_cache}")
     updated = False
     for row in tasks:
         if not isinstance(row, dict):
             continue
+        if str(project_id or "").strip():
+            row_project_id = str(row.get("web_project_id") or row.get("project_id") or "").strip()
+            if row_project_id and row_project_id != str(project_id).strip():
+                continue
         use_case_payload = row.get("use_case")
         if not isinstance(use_case_payload, dict):
             continue
         if str(use_case_payload.get("name") or "").upper() != use_case.upper():
             continue
+        if seed is not None:
+            _reseed_task_row(row, seed)
         base_prompt = str(row.get("prompt") or "").strip()
-        row["prompt"] = base_prompt
-        row["prompt_clues"] = prompt_override
+        row["prompt"] = f"{base_prompt} {prompt_override}".strip()
         if use_case.upper() == "LOGIN":
-            row["prompt"] = (
-                "First, authenticate with username 'user1' and password 'Passw0rd!' to log in successfully."
-            ).strip()
-            row["prompt_clues"] = prompt_override
+            row["prompt"] = (f"First, authenticate with username '<username>' and password '<password>' to log in successfully. {prompt_override}").strip()
             relevant_data = row.get("relevant_data")
             if isinstance(relevant_data, dict):
                 user_for_login = relevant_data.get("user_for_login")
                 if isinstance(user_for_login, dict):
-                    user_for_login["username"] = "user1"
-                    user_for_login["password"] = "Passw0rd!"
+                    user_for_login["username"] = "<username>"
+                    user_for_login["password"] = "<password>"
             tests = row.get("tests")
             if isinstance(tests, list):
                 for test in tests:
@@ -176,8 +231,7 @@ def build_task_cache_override(
                         continue
                     criteria = test.get("event_criteria")
                     if isinstance(criteria, dict):
-                        criteria["username"] = "user1"
-                        criteria["password"] = "Passw0rd!"
+                        criteria.pop("password", None)
             constraints = use_case_payload.get("constraints")
             if isinstance(constraints, list):
                 for constraint in constraints:
@@ -185,18 +239,38 @@ def build_task_cache_override(
                         continue
                     field = str(constraint.get("field") or "").strip().lower()
                     if field == "username":
-                        constraint["value"] = "user1"
+                        constraint["value"] = "<username>"
                     if field == "password":
-                        constraint["value"] = "Passw0rd!"
+                        constraint["value"] = "<password>"
             additional_prompt_info = str(use_case_payload.get("additional_prompt_info") or "")
             if additional_prompt_info:
-                use_case_payload["additional_prompt_info"] = additional_prompt_info.replace("password123", "Passw0rd!")
-                use_case_payload["additional_prompt_info"] = use_case_payload["additional_prompt_info"].replace("<username>", "user1")
-            row["prompt"] = row["prompt"].replace("password123", "Passw0rd!")
-            row["prompt"] = row["prompt"].replace("<web_agent_id>", "user1").replace("<username>", "user1")
+                use_case_payload["additional_prompt_info"] = additional_prompt_info.replace("password123", "<password>")
+            row["prompt"] = row["prompt"].replace("password123", "<password>")
+        elif use_case.upper() == "REGISTRATION":
+            row["prompt"] = (f"First, register with username '<signup_username>', email '<signup_email>', and password '<signup_password>'. {prompt_override}").strip()
+            tests = row.get("tests")
+            if isinstance(tests, list):
+                for test in tests:
+                    if not isinstance(test, dict):
+                        continue
+                    criteria = test.get("event_criteria")
+                    if not isinstance(criteria, dict):
+                        continue
+                    criteria.pop("password", None)
+        elif use_case.upper() == "LOGOUT":
+            tests = row.get("tests")
+            if isinstance(tests, list):
+                for test in tests:
+                    if not isinstance(test, dict):
+                        continue
+                    criteria = test.get("event_criteria")
+                    if not isinstance(criteria, dict):
+                        continue
+                    criteria.pop("password", None)
         updated = True
     if not updated:
-        raise ValueError(f"No task found for use_case={use_case} in {source_task_cache}")
+        project_suffix = f" project_id={project_id}" if str(project_id or "").strip() else ""
+        raise ValueError(f"No task found for use_case={use_case}{project_suffix} in {source_task_cache}")
     _write_json(out_path, payload if isinstance(payload, dict) else {"tasks": tasks})
     return out_path
 
@@ -213,7 +287,9 @@ def run_eval_attempt(
     task_concurrency: int = 1,
     agent_workers: int = 1,
     task_cache: Path | None = None,
+    web_project_id: str = "autocinema",
     env_overrides: dict[str, str] | None = None,
+    headed: bool = False,
 ) -> AttemptResult:
     gold_root = output_root / "gold"
     runs_dir = gold_root / "runs"
@@ -227,7 +303,7 @@ def run_eval_attempt(
         "--model",
         model,
         "--web-project-id",
-        "autocinema",
+        str(web_project_id or "autocinema"),
         "--use-case",
         use_case,
         "--num-tasks",
@@ -255,12 +331,21 @@ def run_eval_attempt(
     env = {
         "FSM_DIRECT_LOOP": "1",
         "EVAL_CAPTURE_SCREENSHOT": "0",
+        "EVALUATOR_HEADLESS": "0" if bool(headed) else "1",
         **{k: v for k, v in dict(env_overrides or {}).items() if v is not None},
     }
     subprocess.run(cmd, cwd=REPO_ROOT, env={**os.environ, **env}, check=True)
     compact_trace_dir(traces_dir)
     report = _load_json(out_path)
-    row = _episode_row_from_report(report=report, use_case=use_case, seed=seed, attempt_name=attempt_name, out_path=out_path, trace_dir=traces_dir)
+    row = _episode_row_from_report(
+        report=report,
+        use_case=use_case,
+        seed=seed,
+        attempt_name=attempt_name,
+        out_path=out_path,
+        trace_dir=traces_dir,
+        web_project_id=web_project_id,
+    )
     return AttemptResult(seed=seed, attempt_name=attempt_name, out_path=out_path, trace_dir=traces_dir, report=report, row=row)
 
 
@@ -272,6 +357,7 @@ def _episode_row_from_report(
     attempt_name: str,
     out_path: Path,
     trace_dir: Path,
+    web_project_id: str = "autocinema",
 ) -> dict[str, Any] | None:
     episodes = report.get("episodes")
     if not isinstance(episodes, list) or not episodes:
@@ -279,14 +365,15 @@ def _episode_row_from_report(
     episode = episodes[0] if isinstance(episodes[0], dict) else None
     if not isinstance(episode, dict):
         return None
+    effective_seed = int(episode.get("seed") or 0) or extract_seed_from_task_url(str(episode.get("final_url") or "")) or int(seed)
     episode_task_id = str(episode.get("episode_task_id") or "")
     trace_file = trace_dir / "episodes" / f"{episode_task_id}.json"
     row = {
-        "web_project_id": "autocinema",
+        "web_project_id": str(web_project_id or "autocinema"),
         "task_id": str(episode.get("task_id") or ""),
         "episode_task_id": episode_task_id,
         "use_case": use_case,
-        "seed": int(seed),
+        "seed": int(effective_seed),
         "success": bool(episode.get("success")),
         "score": float(episode.get("score") or 0.0),
         "steps": int(episode.get("steps") or 0),
@@ -303,7 +390,7 @@ def _episode_row_from_report(
         "trace_ref": episode_task_id,
         "attempt_name": attempt_name,
         "harvest_mode": "focus_use_case",
-        "notes": f"{use_case} seed={seed} attempt={attempt_name}",
+        "notes": f"{use_case} seed={effective_seed} attempt={attempt_name}",
         "final_url": str(episode.get("final_url") or ""),
     }
     row.update(build_provenance_fields(operator_version="step_engine", policy_mode="direct"))
@@ -341,7 +428,7 @@ def build_focus_summary(*, use_case: str, target_seeds: list[int], rows: list[di
         "avg_cost_usd_per_attempt": round((total_estimated_cost_usd / all_attempts) if all_attempts else 0.0, 8),
         "attempts_by_model": per_model_attempts,
         "passed_target": len(gold_seeds) >= len(target_seeds),
-        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     }
 
 
@@ -425,6 +512,7 @@ def build_runpod_job_command(
 
 def build_focus_eval_command(
     *,
+    project_id: str,
     use_case: str,
     adapter_path: Path,
     endpoint: str,
@@ -441,7 +529,7 @@ def build_focus_eval_command(
         "-m",
         "training.post_finetune_eval",
         "--project-id",
-        "autocinema",
+        str(project_id or "autocinema"),
         "--adapter-path",
         str(adapter_path),
         "--endpoint",
