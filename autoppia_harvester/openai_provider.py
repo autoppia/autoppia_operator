@@ -13,7 +13,12 @@ from autoppia_harvester.trajectory import extract_json_object, normalize_traject
 
 def _build_messages(request: FindTrayectoryRequest) -> list[dict[str, str]]:
     task_payload = {
-        "task": request.model_dump(mode="json"),
+        "task": request.effective_task,
+        "task_id": request.canonical_task_id,
+        "start_url": request.effective_url,
+        "prompt": request.effective_prompt,
+        "web_project_id": request.effective_web_project_id,
+        "raw_request": request.model_dump(mode="json"),
         "iwa_contract": {
             "endpoint": "/find_trayectory",
             "response_field": "trajectory",
@@ -36,6 +41,9 @@ Rules:
 - Selector format: {{"type":"attributeValueSelector","attribute":"id","value":"..."}} or {{"type":"tagContainsSelector","value":"..."}}.
 - Include a navigate action first when the task has a start URL.
 - Preserve any seed query string in navigation URLs.
+- For page-view/navigation tasks, prefer direct navigation to a likely href/path over clicking visible text.
+- If direct navigation is enough, use navigate then wait then done. Avoid speculative clicks that may wait forever.
+- Common route names are usually lowercase paths such as /about, /contact, /cart, /profile, /orders, /checkout.
 - Keep the trajectory short and replayable.
 - Use IWA credential placeholders from the task as literal text when needed.
 
@@ -67,6 +75,8 @@ class OpenAIHarvester:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        if request.canonical_task_id:
+            headers["iwa-task-id"] = request.canonical_task_id
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
         if response.status_code >= 400:

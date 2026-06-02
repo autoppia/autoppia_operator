@@ -22,7 +22,31 @@ class FindTrayectoryRequest(BaseModel):
 
     @property
     def canonical_task_id(self) -> str:
-        return str(self.task_id or self.id or "")
+        nested = getattr(self, "task", None)
+        nested_id = nested.get("id") if isinstance(nested, dict) else None
+        return str(self.task_id or self.id or nested_id or "")
+
+    @property
+    def effective_task(self) -> dict[str, Any]:
+        nested = getattr(self, "task", None)
+        if isinstance(nested, dict):
+            return nested
+        return self.model_dump(mode="json")
+
+    @property
+    def effective_url(self) -> str:
+        task = self.effective_task
+        return str(task.get("url") or self.url or "")
+
+    @property
+    def effective_prompt(self) -> str:
+        task = self.effective_task
+        return str(task.get("prompt") or self.prompt or "")
+
+    @property
+    def effective_web_project_id(self) -> str:
+        task = self.effective_task
+        return str(task.get("web_project_id") or self.web_project_id or "")
 
 
 class ToolCall(BaseModel):
