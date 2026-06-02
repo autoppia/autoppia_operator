@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from autoppia_harvester.models import HarvestRequest, HarvestResponse
+from autoppia_harvester.models import FindTrayectoryRequest, FindTrayectoryResponse
 from autoppia_harvester.trajectory import extract_json_object, normalize_trajectory
 
 
@@ -93,7 +93,7 @@ class ClaudeCodeHarvester:
         self.model = os.getenv("AUTOPPIA_HARVESTER_CLAUDE_MODEL", "sonnet")
         self.timeout = int(os.getenv("AUTOPPIA_HARVESTER_TIMEOUT_SECONDS", "900"))
 
-    async def harvest(self, request: HarvestRequest) -> HarvestResponse:
+    async def find_trayectory(self, request: FindTrayectoryRequest) -> FindTrayectoryResponse:
         if not self.claude_bin:
             raise RuntimeError("Claude CLI is not installed or not on PATH")
 
@@ -105,7 +105,7 @@ class ClaudeCodeHarvester:
             "created_at": now_iso(),
             "task": request.model_dump(mode="json"),
             "iwa_contract": {
-                "endpoint": "/harvest",
+                "endpoint": "/find_trayectory",
                 "response_field": "trajectory",
                 "trajectory_item_shape": {"name": "click", "arguments": {"selector": {"type": "attributeValueSelector", "attribute": "id", "value": "cta"}}},
                 "allowed_tools": request.tools or request.allowed_tools or DEFAULT_ALLOWED_TOOLS,
@@ -158,7 +158,7 @@ class ClaudeCodeHarvester:
         parsed = extract_json_object(output_text)
         trajectory = normalize_trajectory(parsed)
 
-        return HarvestResponse(
+        return FindTrayectoryResponse(
             web_agent_id=os.getenv("AUTOPPIA_HARVESTER_WEB_AGENT_ID", "autoppia-harvester"),
             task_id=request.canonical_task_id,
             trajectory=trajectory,
@@ -169,3 +169,6 @@ class ClaudeCodeHarvester:
             success=bool(parsed.get("success")) and bool(trajectory),
             failure_reason=str(parsed.get("failure_reason") or parsed.get("failureReason") or ""),
         )
+
+    async def harvest(self, request: FindTrayectoryRequest) -> FindTrayectoryResponse:
+        return await self.find_trayectory(request)

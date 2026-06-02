@@ -1,13 +1,13 @@
 # autoppia_harvester
 
-Minimal IWA-compatible harvester service.
+Concrete IWA-compatible harvester service powered by Claude Code.
 
 It exposes:
 
 - `GET /health`
-- `POST /harvest`
+- `POST /find_trayectory`
 
-`/harvest` accepts the task payload sent by `autoppia_iwa.src.web_agents.apified_harvester.ApifiedHarvester` and returns a harvested trajectory:
+`/find_trayectory` accepts the task payload sent by `autoppia_iwa.src.web_agents.apified_harvester.ApifiedHarvester` and returns a trajectory:
 
 ```json
 {
@@ -22,11 +22,20 @@ It exposes:
 }
 ```
 
+`POST /harvest` exists only as a deprecated alias while old callers migrate.
+
 Run locally:
 
 ```bash
 pip install -r requirements.txt
 uvicorn main:app --host 127.0.0.1 --port 5060
+```
+
+Check subnet readiness:
+
+```bash
+python check.py
+pytest
 ```
 
 Useful env vars:
@@ -36,3 +45,4 @@ Useful env vars:
 - `AUTOPPIA_HARVESTER_TIMEOUT_SECONDS` default `900`
 - `AUTOPPIA_HARVESTER_WORKDIR` default `/tmp/autoppia_harvester`
 - `AUTOPPIA_IWA_ROOT` default sibling `../autoppia_iwa`
+- `ANTHROPIC_API_KEY` or existing Claude Code auth

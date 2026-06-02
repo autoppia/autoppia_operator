@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class HarvestRequest(BaseModel):
+class FindTrayectoryRequest(BaseModel):
     id: str | None = None
     task_id: str | None = None
     url: str = ""
@@ -33,7 +33,7 @@ class ToolCall(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class HarvestResponse(BaseModel):
+class FindTrayectoryResponse(BaseModel):
     web_agent_id: str = "autoppia-harvester"
     task_id: str = ""
     trajectory: list[ToolCall] = Field(default_factory=list)
@@ -47,3 +47,7 @@ class HarvestResponse(BaseModel):
     summary: str = ""
     success: bool = False
     failure_reason: str = ""
+
+
+TrajectoryRequest = FindTrayectoryRequest
+TrajectoryResponse = FindTrayectoryResponse
