@@ -28,7 +28,7 @@ def test_find_trayectory_returns_subnet_shape(monkeypatch):
                 summary="ok",
             )
 
-    monkeypatch.setattr(app_module, "ClaudeCodeHarvester", FakeHarvester)
+    monkeypatch.setattr(app_module, "build_harvester", FakeHarvester)
     client = TestClient(app)
     response = client.post(
         "/find_trayectory",
