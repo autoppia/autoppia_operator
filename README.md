@@ -28,8 +28,17 @@ Run locally:
 
 ```bash
 pip install -r requirements.txt
+export ANTHROPIC_API_KEY=...
 uvicorn main:app --host 127.0.0.1 --port 5060
 ```
+
+Subnet runtime:
+
+- The validator sandbox image provides the `claude` CLI.
+- The validator passes `ANTHROPIC_API_KEY` into the sandbox.
+- Miners only need to implement `GET /health` and `POST /find_trayectory`.
+- `/find_trayectory` must return `trajectory` as a list of IWA tool calls.
+- Do not require custom Docker images for Claude Code harvesters.
 
 Check subnet readiness:
 
@@ -45,4 +54,4 @@ Useful env vars:
 - `AUTOPPIA_HARVESTER_TIMEOUT_SECONDS` default `900`
 - `AUTOPPIA_HARVESTER_WORKDIR` default `/tmp/autoppia_harvester`
 - `AUTOPPIA_IWA_ROOT` default sibling `../autoppia_iwa`
-- `ANTHROPIC_API_KEY` or existing Claude Code auth
+- `ANTHROPIC_API_KEY`
